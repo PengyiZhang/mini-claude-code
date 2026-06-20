@@ -1,0 +1,10 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+*.tsbuildinfo
+
+# tsc emits these next to their .ts sources — keep the .ts, ignore the rest
+/*.d.ts
+/playwright.config.js
+/vite.config.js

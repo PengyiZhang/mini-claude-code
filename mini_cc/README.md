@@ -191,6 +191,12 @@ match the tenant_id resolved from the bearer API key, else 403.
 | `GET`    | `/tenants/{tid}/projects/{pid}/sessions`          | list session_ids                          |
 | `DELETE` | `/tenants/{tid}/projects/{pid}/sessions/{sid}`    | stop + unregister; 404 if unknown         |
 | `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/send` | stream events as SSE; 409 if project busy |
+| `GET`    | `/tenants/{tid}/projects/{pid}/files/tree?path=`  | list directory children; 400 on traversal |
+| `GET`    | `/tenants/{tid}/projects/{pid}/files/content?path=` | read up to 256 KB of a text file        |
+| `POST`   | `/tenants/{tid}/projects/{pid}/files/mkdir?path=` | create a directory                        |
+| `POST`   | `/tenants/{tid}/projects/{pid}/files/upload?path=` | multipart upload; optional `rel_paths` form field preserves folder structure |
+| `DELETE` | `/tenants/{tid}/projects/{pid}/files?path=`       | delete file or directory                  |
+| `GET`    | `/tenants/{tid}/projects/{pid}/download`          | stream the project workspace as a ZIP     |
 
 Error envelope (one shape for every error):
 
@@ -343,6 +349,67 @@ client, so no network and no real API calls. Tests cover:
 - SSE: event ordering, error event forwarding, generator-exception
   cleanup, sentinel
 - Concurrency: 409 `project_busy` when project lock is held
+
+---
+
+## Web UI (P4)
+
+A Devin-style dark-themed React frontend lives under `mini_cc/web/`. It
+exercises the same HTTP/SSE surface documented above — no separate API.
+
+**Stack**: Vite + React 19 + TypeScript + Tailwind + Zustand + React
+Router. Playwright drives the e2e suite.
+
+### Running locally
+
+The dev backend listens on `127.0.0.1:8002` (8001 was occupied by
+another service on the dev machine; the frontend's default API base
+follows suit). A LiteLLM Anthropic-compatible proxy on `:8000`
+proxies model calls to e.g. `glm-4.7`.
+
+```bash
+# one-time
+pip install -r requirements.txt              # adds python-multipart for uploads
+cd mini_cc/web && npm install
+
+# terminal 1 — backend (port 8002)
+python -m mini_cc.server keygen my_tenant    # prints mck_<hex>
+MINI_CC_DATA_DIR=$PWD/mini_cc_data \
+MINI_CC_ANTHROPIC_BASE_URL=http://127.0.0.1:8000 \
+MINI_CC_ANTHROPIC_API_KEY=any-fake-key \
+python -m mini_cc.server
+
+# terminal 2 — frontend (port 5173)
+cd mini_cc/web && npm run dev
+```
+
+Open http://localhost:5173 and sign in with the `mck_<hex>` key from
+`keygen`. The login form picks the tenant automatically from the key.
+
+### Features
+
+- **Tenant switcher** in the top bar; profiles persist in `localStorage`.
+  Manage / reveal / remove keys on the Tenants page.
+- **Project list** with create / delete / open.
+- **Workspace** with three tabs:
+  - **Chat** — SSE-streamed assistant replies, foldable activity cards
+    (tool_use / tool_result) that default-collapsed, click to expand.
+  - **Files** — recursive tree with a right-click context menu: upload
+    files, upload folder (preserves structure via `webkitdirectory`),
+    new folder, preview, delete. Download project as ZIP.
+  - **Sessions** — list, open, remove.
+
+### Playwright e2e
+
+```bash
+cd mini_cc/web
+MINI_CC_DATA_DIR=$PWD/../mini_cc_data_e2e npm run e2e
+```
+
+`e2e/globalSetup.ts` provisions a fresh `e2e` tenant + key + project
+(`e2e_proj`) against the running backend. Four specs cover auth,
+project creation, file upload + preview + zip download, and a streamed
+chat turn through LiteLLM.
 
 ---
 

@@ -49,7 +49,7 @@ def cmd_serve(args) -> int:
     host = _env("MINI_CC_HOST", "127.0.0.1")
     port = int(_env("MINI_CC_PORT", "8000"))
     print(f"[mini_cc] data_dir={data_dir} host={host} port={port}")
-    uvicorn.run(app, host=host, port=port, handle_signals=True)
+    uvicorn.run(app, host=host, port=port)
     return 0
 
 

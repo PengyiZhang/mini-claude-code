@@ -187,6 +187,12 @@ data: [DONE]\n\n
 | `GET`    | `/tenants/{tid}/projects/{pid}/sessions`          | 列出 session_id                            |
 | `DELETE` | `/tenants/{tid}/projects/{pid}/sessions/{sid}`    | 停止并注销;未知 404                       |
 | `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/send` | 以 SSE 流式返回事件;项目被占用时 409    |
+| `GET`    | `/tenants/{tid}/projects/{pid}/files/tree?path=`  | 列出目录子项;路径穿越 400                  |
+| `GET`    | `/tenants/{tid}/projects/{pid}/files/content?path=` | 读取最多 256 KB 的文本文件                |
+| `POST`   | `/tenants/{tid}/projects/{pid}/files/mkdir?path=` | 创建目录                                   |
+| `POST`   | `/tenants/{tid}/projects/{pid}/files/upload?path=` | multipart 上传;可选 `rel_paths` 字段保留文件夹结构 |
+| `DELETE` | `/tenants/{tid}/projects/{pid}/files?path=`       | 删除文件或目录                             |
+| `GET`    | `/tenants/{tid}/projects/{pid}/download`          | 以 ZIP 流式下载项目工作区                  |
 
 错误信封(所有错误统一一种形状):
 
@@ -331,6 +337,65 @@ client,不打网络、不发真实 API。覆盖范围:
 - 会话:start / list / remove(未知 404)
 - SSE:事件顺序、error 事件转发、generator 异常后的清理、哨兵
 - 并发:项目锁被持有时返回 409 `project_busy`
+
+---
+
+## Web UI(P4)
+
+`mini_cc/web/` 下是一套 Devin 风格的深色 React 前端。它直接走上面
+列出的 HTTP/SSE 接口,没有额外的 API。
+
+**技术栈**:Vite + React 19 + TypeScript + Tailwind + Zustand +
+React Router。e2e 用 Playwright。
+
+### 本地运行
+
+开发后端监听 `127.0.0.1:8002`(8001 被开发机器上别的服务占用,
+前端默认 API base 也跟着用 8002)。LiteLLM 作为 Anthropic 兼容代理
+监听 `:8000`,转发到 `glm-4.7` 之类模型。
+
+```bash
+# 一次性
+pip install -r requirements.txt              # 含上传用的 python-multipart
+cd mini_cc/web && npm install
+
+# 终端 1 —— 后端(端口 8002)
+python -m mini_cc.server keygen my_tenant    # 输出 mck_<hex>
+MINI_CC_DATA_DIR=$PWD/mini_cc_data \
+MINI_CC_ANTHROPIC_BASE_URL=http://127.0.0.1:8000 \
+MINI_CC_ANTHROPIC_API_KEY=any-fake-key \
+python -m mini_cc.server
+
+# 终端 2 —— 前端(端口 5173)
+cd mini_cc/web && npm run dev
+```
+
+打开 http://localhost:5173,用 `keygen` 输出的 `mck_<hex>` 登录。
+登录表单会从 key 自动解析 tenant。
+
+### 功能
+
+- 顶栏的**租户切换**;profile 存在 `localStorage`。Tenants 页可
+  管理 / 显示 / 删除 key。
+- **项目列表**,支持新建 / 删除 / 打开。
+- **工作区**有三个 tab:
+  - **Chat** —— SSE 流式助手回复;可折叠的活动卡片(tool_use /
+    tool_result)默认收起,点击展开。
+  - **Files** —— 递归文件树,右键菜单:上传文件、上传文件夹
+    (通过 `webkitdirectory` 保留结构)、新建文件夹、预览、删除。
+    支持下载项目 ZIP。
+  - **Sessions** —— 列表、打开、删除。
+
+### Playwright e2e
+
+```bash
+cd mini_cc/web
+MINI_CC_DATA_DIR=$PWD/../mini_cc_data_e2e npm run e2e
+```
+
+`e2e/globalSetup.ts` 会针对运行中的后端预配置一个全新的 `e2e`
+租户 + key + 项目(`e2e_proj`)。四条用例覆盖鉴权、项目创建、
+文件上传 + 预览 + zip 下载、以及通过 LiteLLM 的流式对话。
 
 ---
 

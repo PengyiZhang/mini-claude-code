@@ -14,6 +14,7 @@ from ..projects import ProjectManager
 from ..session import SessionManager
 from .errors import MiniCCError, envelope, map_sdk_exception
 from .routes import projects as projects_routes
+from .routes import resources as resources_routes
 from .routes import sessions as sessions_routes
 
 
@@ -71,6 +72,8 @@ def build_app(*, data_dir: Path,
 
     app.include_router(projects_routes.router)
     app.include_router(sessions_routes.router)
+    app.include_router(resources_routes.router)
+    app.include_router(resources_routes.download_router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:
