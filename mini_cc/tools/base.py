@@ -9,6 +9,7 @@ from ..sandbox import Sandbox
 from ..storage import Storage
 
 if TYPE_CHECKING:
+    from ..mcp import MCPPool
     from ..skills import SkillLoader
     from ..scheduler import CronScheduler
 
@@ -24,6 +25,7 @@ class ToolContext:
     mark_todos_updated: Callable[[], None] | None = None
     skills_loader: Optional["SkillLoader"] = None
     scheduler: Optional["CronScheduler"] = None
+    mcp_pool: Optional["MCPPool"] = None
 
 
 class Tool(Protocol):

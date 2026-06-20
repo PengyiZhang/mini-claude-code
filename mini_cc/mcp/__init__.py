@@ -1,6 +1,7 @@
-"""MCP client pool — port pending. See P0 plan.
+"""MCP client pool — per-project MCP server connections.
 
-s20 reference: code.py lines 1531-1646. Will provide per-project MCP
-server connections and a connect_mcp tool.
+Ports s20 lines 1531-1646 from s20_comprehensive/code.py.
 """
-from __future__ import annotations
+from .client import MCPClient, MCPPool, normalize_mcp_name
+
+__all__ = ["MCPClient", "MCPPool", "normalize_mcp_name"]

@@ -19,6 +19,7 @@ from typing import Callable, Iterator
 
 from ..config import (DEFAULT_MAX_TOKENS, ESCALATED_MAX_TOKENS, MAX_RECOVERY_RETRIES,
                       default_config)
+from ..mcp import MCPPool
 from ..sandbox import Sandbox
 from ..scheduler import CronScheduler
 from ..skills import SkillLoader
@@ -55,6 +56,7 @@ class ProjectRef:
     skills_catalog: str = ""
     skills_loader: SkillLoader | None = None
     scheduler: CronScheduler | None = None
+    mcp_pool: MCPPool | None = None
     mcp_servers: list[str] = field(default_factory=list)
     client_factory: Callable | None = None  # override for tests
 
@@ -66,7 +68,10 @@ class AgentLoop:
                  model: str | None = None):
         self.project = project
         self.session_id = session_id
-        self.tools = tools if tools is not None else builtin_tools()
+        # If caller passes a frozen tool list, we use it as-is; otherwise we
+        # rebuild each iteration so newly-connected MCP tools appear live.
+        self._frozen_tools = tools
+        self.tools: list[Tool] = tools if tools is not None else self._build_tools()
         self._handlers = dispatch(self.tools)
         self.on_event = on_event
         self.messages: list[dict] = project.storage.load_messages(
@@ -79,6 +84,21 @@ class AgentLoop:
         self._stop = threading.Event()
         self._rounds_since_todo = 0
         self._client = None
+
+    # ── Tool pool ───────────────────────────────────────────────────────
+    def _build_tools(self) -> list[Tool]:
+        """Builtin tools + any MCP tools the project currently has connected."""
+        tools = builtin_tools()
+        if self.project.mcp_pool is not None:
+            tools = tools + self.project.mcp_pool.all_tools()
+        return tools
+
+    def _refresh_tools(self) -> None:
+        """Rebuild the tool pool (called each iteration) unless caller froze it."""
+        if self._frozen_tools is not None:
+            return
+        self.tools = self._build_tools()
+        self._handlers = dispatch(self.tools)
 
     # ── Persistence ─────────────────────────────────────────────────────
     def _persist(self):
@@ -115,13 +135,15 @@ class AgentLoop:
         while not self._stop.is_set():
             self._inject_cron_fired()
             self._maybe_remind_todos()
+            self._refresh_tools()
             prepare_context(self.messages)
 
             system = assemble_system_prompt(
                 project_root=self.project.project_root,
                 tools=self.tools,
                 memories=self.project.storage.load_memory(self.project.project_id)[:2000],
-                mcp_servers=self.project.mcp_servers,
+                mcp_servers=(self.project.mcp_pool.list_connected()
+                             if self.project.mcp_pool else self.project.mcp_servers),
                 skills_catalog=self.project.skills_catalog,
             )
 
@@ -227,6 +249,7 @@ class AgentLoop:
             mark_todos_updated=_mark,
             skills_loader=self.project.skills_loader,
             scheduler=self.project.scheduler,
+            mcp_pool=self.project.mcp_pool,
         )
 
     def _execute_tool_calls(self, content):

@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .core.loop import AgentLoop, ProjectRef
+from .mcp import MCPPool
 from .sandbox import SubprocessSandbox
 from .scheduler import CronScheduler
 from .skills import SkillLoader
@@ -28,6 +29,7 @@ def agent_loop(messages: list, context: dict):
     storage = FSStorage(cwd / ".mini_cc_state")
     skills_loader = SkillLoader(cwd)
     scheduler = CronScheduler("shim", storage)
+    mcp_pool = MCPPool("shim")
     ref = ProjectRef(
         project_id="shim",
         project_root=str(cwd),
@@ -36,6 +38,8 @@ def agent_loop(messages: list, context: dict):
         skills_catalog=skills_loader.catalog(),
         skills_loader=skills_loader,
         scheduler=scheduler,
+        mcp_pool=mcp_pool,
+        mcp_servers=mcp_pool.list_connected(),
     )
     loop = AgentLoop(ref, "shim")
     loop.messages = messages

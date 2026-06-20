@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..core.loop import ProjectRef
+from ..mcp import MCPPool
 from ..sandbox import Policy, SubprocessSandbox
 from ..scheduler import CronScheduler
 from ..skills import SkillLoader
@@ -39,6 +40,7 @@ class Project:
     storage: Storage
     skills_loader: SkillLoader
     scheduler: CronScheduler
+    mcp_pool: MCPPool
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -49,6 +51,8 @@ class Project:
             skills_catalog=self.skills_loader.catalog(),
             skills_loader=self.skills_loader,
             scheduler=self.scheduler,
+            mcp_pool=self.mcp_pool,
+            mcp_servers=self.mcp_pool.list_connected(),
         )
 
     def rescan_skills(self) -> None:
@@ -106,6 +110,7 @@ class ProjectManager:
         storage = self.storage_factory(self._state_root())
         skills_loader = SkillLoader(ws)
         scheduler = CronScheduler(project_id, storage)
+        mcp_pool = MCPPool(project_id)
         return Project(
             project_id=project_id,
             root=self.root,
@@ -115,6 +120,7 @@ class ProjectManager:
             storage=storage,
             skills_loader=skills_loader,
             scheduler=scheduler,
+            mcp_pool=mcp_pool,
         )
 
 

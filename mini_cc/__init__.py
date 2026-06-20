@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from .config import AnthropicConfig, default_config, set_default_config
 from .core import AgentLoop, ProjectRef, RecoveryState, assemble_system_prompt
+from .mcp import MCPClient, MCPPool, normalize_mcp_name
 from .projects import Project, ProjectManager, ProjectMeta
 from .sandbox import (CommandBlockedError, PathEscapeError, Policy,
                       Sandbox, SubprocessSandbox, Violation)
@@ -45,6 +46,8 @@ __all__ = [
     "Skill", "SkillLoader",
     # scheduler
     "CronScheduler",
+    # mcp
+    "MCPClient", "MCPPool", "normalize_mcp_name",
     # tools
     "Tool", "FunctionTool", "ToolContext", "builtin_tools",
 ]
