@@ -6,6 +6,7 @@ at the session layer.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -27,6 +28,21 @@ from .layout import (ProjectMeta, list_project_ids, read_meta, state_path,
 
 
 StorageFactory = Callable[[Path], Storage]
+
+# Safe ID characters: letters, digits, underscore, hyphen. Used for both
+# project_id (when caller-supplied) and any future URL path component.
+# Rejects path separators, dots, whitespace — closes the path-traversal
+# hole in delete (shutil.rmtree at line 113).
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_project_id(project_id: str) -> None:
+    if not project_id:
+        raise ValueError("project_id must be non-empty")
+    if not _SAFE_ID.match(project_id):
+        raise ValueError(
+            "project_id must match [A-Za-z0-9_-]+ "
+            f"(got: {project_id!r})")
 
 
 def _fs_factory(root: Path) -> Storage:
@@ -85,6 +101,7 @@ class ProjectManager:
     def create(self, tenant_id: str, project_id: str | None = None,
                display_name: str = "") -> Project:
         project_id = project_id or f"proj_{uuid.uuid4().hex[:12]}"
+        _validate_project_id(project_id)
         if read_meta(self.root, project_id) is not None:
             raise ValueError(f"project_id already exists: {project_id}")
         meta = ProjectMeta(

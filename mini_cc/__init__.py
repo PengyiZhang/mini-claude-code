@@ -15,6 +15,7 @@ Quick start:
 from __future__ import annotations
 
 from .config import AnthropicConfig, default_config, set_default_config
+from .auth import TenantKeyRegistry, TenantPrincipal
 from .core import (AgentLoop, DENY_LIST, DESTRUCTIVE, Hooks, ProjectRef,
                    RecoveryState, assemble_system_prompt, make_audit_hook,
                    make_large_output_hook, make_log_hook,
@@ -37,6 +38,8 @@ __version__ = "0.1.0"
 __all__ = [
     # config
     "AnthropicConfig", "default_config", "set_default_config",
+    # auth
+    "TenantKeyRegistry", "TenantPrincipal",
     # core
     "AgentLoop", "ProjectRef", "RecoveryState", "assemble_system_prompt",
     "Hooks", "make_permission_hook", "make_log_hook",

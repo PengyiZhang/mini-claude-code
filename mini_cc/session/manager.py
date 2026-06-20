@@ -67,6 +67,29 @@ class SessionManager:
         if sess:
             sess.stop()
 
+    def remove(self, project_id: str, session_id: str) -> bool:
+        """Stop the session (if running) and unregister it. Returns True
+        if a session was present, False otherwise."""
+        sess = self._sessions.pop((project_id, session_id), None)
+        if sess is None:
+            return False
+        sess.stop()
+        return True
+
+    def try_lock(self, project_id: str) -> bool:
+        """Non-blocking probe of the per-project send lock. Returns True
+        if the lock is currently free, False if another send holds it.
+
+        The probe acquires-then-releases so it does not itself block
+        subsequent sends. Used by HTTP transports to return 409 instead
+        of blocking an HTTP worker thread on a busy project.
+        """
+        lock = self._lock_for(project_id)
+        got = lock.acquire(blocking=False)
+        if got:
+            lock.release()
+        return got
+
     def send(self, project_id: str, session_id: str,
              user_input: str) -> Iterator[dict]:
         """Send a user turn and stream events. Same project_id serializes;

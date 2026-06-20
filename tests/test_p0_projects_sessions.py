@@ -67,3 +67,67 @@ def test_session_manager_unknown_project(tmp_path):
     sm = SessionManager(pm)
     with pytest.raises(KeyError):
         sm.start_session("missing", "sess1")
+
+
+# ── P3: HTTP-driven helpers ─────────────────────────────────────────
+
+def test_session_remove_unregisters_and_stops(tmp_path):
+    """SessionManager.remove stops the loop AND drops the registration."""
+    pm = ProjectManager(tmp_path / "projects")
+    pm.create(tenant_id="t1", project_id="a")
+    sm = SessionManager(pm)
+    sm.start_session("a", "sess1")
+    assert "sess1" in sm.list("a")
+    assert sm.remove("a", "sess1") is True
+    assert "sess1" not in sm.list("a")
+
+
+def test_session_remove_unknown_returns_false(tmp_path):
+    pm = ProjectManager(tmp_path / "projects")
+    pm.create(tenant_id="t1", project_id="a")
+    sm = SessionManager(pm)
+    assert sm.remove("a", "nope") is False
+
+
+def test_session_try_lock_reports_busy(tmp_path):
+    """When another caller holds the project lock, try_lock returns False."""
+    import threading
+    pm = ProjectManager(tmp_path / "projects")
+    pm.create(tenant_id="t1", project_id="a")
+    sm = SessionManager(pm)
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        lock = sm._lock_for("a")
+        with lock:
+            held.set()
+            release.wait(timeout=2)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(timeout=2)
+    try:
+        # Project is busy → try_lock returns False
+        assert sm.try_lock("a") is False
+    finally:
+        release.set()
+        t.join()
+    # Now free again
+    assert sm.try_lock("a") is True
+
+
+def test_project_id_rejects_traversal(tmp_path):
+    """Invalid project_id characters (path separators, dots) are rejected."""
+    pm = ProjectManager(tmp_path / "projects")
+    for bad in ["../etc", "a/b", "a b", "a:b", "a\nb"]:
+        with pytest.raises(ValueError):
+            pm.create(tenant_id="t1", project_id=bad)
+
+
+def test_project_id_accepts_safe_chars(tmp_path):
+    pm = ProjectManager(tmp_path / "projects")
+    for ok in ["a", "proj_a-b", "proj123", "A_B-C"]:
+        pm.create(tenant_id="t1", project_id=ok)
+        assert pm.get(ok).project_id == ok
+
