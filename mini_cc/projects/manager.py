@@ -15,6 +15,7 @@ from typing import Callable
 
 from ..core.loop import ProjectRef
 from ..sandbox import Policy, SubprocessSandbox
+from ..scheduler import CronScheduler
 from ..skills import SkillLoader
 from ..storage import FSStorage, Storage
 from .layout import (ProjectMeta, list_project_ids, read_meta, state_path,
@@ -37,6 +38,7 @@ class Project:
     sandbox: SubprocessSandbox
     storage: Storage
     skills_loader: SkillLoader
+    scheduler: CronScheduler
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -46,6 +48,7 @@ class Project:
             storage=self.storage,
             skills_catalog=self.skills_loader.catalog(),
             skills_loader=self.skills_loader,
+            scheduler=self.scheduler,
         )
 
     def rescan_skills(self) -> None:
@@ -102,6 +105,7 @@ class ProjectManager:
         sandbox = SubprocessSandbox(project_id, ws, policy=self.policy)
         storage = self.storage_factory(self._state_root())
         skills_loader = SkillLoader(ws)
+        scheduler = CronScheduler(project_id, storage)
         return Project(
             project_id=project_id,
             root=self.root,
@@ -110,6 +114,7 @@ class ProjectManager:
             sandbox=sandbox,
             storage=storage,
             skills_loader=skills_loader,
+            scheduler=scheduler,
         )
 
 

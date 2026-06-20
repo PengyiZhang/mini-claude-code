@@ -5,14 +5,15 @@ from typing import Iterable
 
 from .base import FunctionTool, Tool, ToolContext
 from . import bash as _bash
+from . import cron as _cron
 from . import fs as _fs
 from . import skills as _skills
 from . import todo as _todo
 
 
 def builtin_tools() -> list[Tool]:
-    """Return the default built-in tools. MCP / cron / teams are layered on later."""
-    return [*_fs.ALL, *_bash.ALL, *_todo.ALL, *_skills.ALL]
+    """Return the default built-in tools. MCP / teams are layered on later."""
+    return [*_fs.ALL, *_bash.ALL, *_todo.ALL, *_skills.ALL, *_cron.ALL]
 
 
 def to_anthropic(tools: Iterable[Tool]) -> list[dict]:

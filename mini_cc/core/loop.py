@@ -20,6 +20,7 @@ from typing import Callable, Iterator
 from ..config import (DEFAULT_MAX_TOKENS, ESCALATED_MAX_TOKENS, MAX_RECOVERY_RETRIES,
                       default_config)
 from ..sandbox import Sandbox
+from ..scheduler import CronScheduler
 from ..skills import SkillLoader
 from ..storage import Storage
 from ..tools import Tool, ToolContext, builtin_tools, dispatch, to_anthropic
@@ -53,6 +54,7 @@ class ProjectRef:
     storage: Storage
     skills_catalog: str = ""
     skills_loader: SkillLoader | None = None
+    scheduler: CronScheduler | None = None
     mcp_servers: list[str] = field(default_factory=list)
     client_factory: Callable | None = None  # override for tests
 
@@ -111,6 +113,7 @@ class AgentLoop:
         max_tokens = DEFAULT_MAX_TOKENS
 
         while not self._stop.is_set():
+            self._inject_cron_fired()
             self._maybe_remind_todos()
             prepare_context(self.messages)
 
@@ -197,6 +200,20 @@ class AgentLoop:
                                   "content": "<reminder>Update your todos.</reminder>"})
             self._rounds_since_todo = 0
 
+    def _inject_cron_fired(self) -> None:
+        """Tick the project scheduler and inject any fired prompts as user
+        messages so the model sees them this turn."""
+        sched = self.project.scheduler
+        if sched is None:
+            return
+        sched.tick()
+        fired = sched.consume_fired()
+        for job in fired:
+            self.messages.append({"role": "user",
+                                  "content": f"[Scheduled] {job.prompt}"})
+            self._emit({"type": "cron_fired", "job_id": job.job_id,
+                        "prompt": job.prompt})
+
     def _make_ctx(self) -> ToolContext:
         def _mark():
             self.project.storage.save_todos(
@@ -209,6 +226,7 @@ class AgentLoop:
             todos=self.todos,
             mark_todos_updated=_mark,
             skills_loader=self.project.skills_loader,
+            scheduler=self.project.scheduler,
         )
 
     def _execute_tool_calls(self, content):

@@ -1,6 +1,7 @@
-"""Cron scheduler — port pending. See P0 plan.
+"""Cron scheduler — per-project job registry.
 
-s20 reference: code.py lines 1330-1528. Will provide per-project cron
-scheduling backed by storage.load_cron / save_cron.
+Ports s20 lines 1330-1528 from s20_comprehensive/code.py.
 """
-from __future__ import annotations
+from .cron import (CronScheduler, cron_matches, validate_cron)
+
+__all__ = ["CronScheduler", "cron_matches", "validate_cron"]

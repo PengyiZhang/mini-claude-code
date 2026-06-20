@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .core.loop import AgentLoop, ProjectRef
 from .sandbox import SubprocessSandbox
+from .scheduler import CronScheduler
 from .skills import SkillLoader
 from .storage import FSStorage
 
@@ -26,6 +27,7 @@ def agent_loop(messages: list, context: dict):
     sandbox = SubprocessSandbox("shim", cwd)
     storage = FSStorage(cwd / ".mini_cc_state")
     skills_loader = SkillLoader(cwd)
+    scheduler = CronScheduler("shim", storage)
     ref = ProjectRef(
         project_id="shim",
         project_root=str(cwd),
@@ -33,6 +35,7 @@ def agent_loop(messages: list, context: dict):
         storage=storage,
         skills_catalog=skills_loader.catalog(),
         skills_loader=skills_loader,
+        scheduler=scheduler,
     )
     loop = AgentLoop(ref, "shim")
     loop.messages = messages

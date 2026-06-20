@@ -10,6 +10,7 @@ from ..storage import Storage
 
 if TYPE_CHECKING:
     from ..skills import SkillLoader
+    from ..scheduler import CronScheduler
 
 
 @dataclass
@@ -22,6 +23,7 @@ class ToolContext:
     todos: list[dict]
     mark_todos_updated: Callable[[], None] | None = None
     skills_loader: Optional["SkillLoader"] = None
+    scheduler: Optional["CronScheduler"] = None
 
 
 class Tool(Protocol):

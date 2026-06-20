@@ -19,6 +19,7 @@ from .core import AgentLoop, ProjectRef, RecoveryState, assemble_system_prompt
 from .projects import Project, ProjectManager, ProjectMeta
 from .sandbox import (CommandBlockedError, PathEscapeError, Policy,
                       Sandbox, SubprocessSandbox, Violation)
+from .scheduler import CronScheduler
 from .session import Session, SessionManager
 from .skills import Skill, SkillLoader
 from .storage import CronJob, FSStorage, Storage, Task
@@ -42,6 +43,8 @@ __all__ = [
     "Storage", "FSStorage", "Task", "CronJob",
     # skills
     "Skill", "SkillLoader",
+    # scheduler
+    "CronScheduler",
     # tools
     "Tool", "FunctionTool", "ToolContext", "builtin_tools",
 ]
