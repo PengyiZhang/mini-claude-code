@@ -25,6 +25,7 @@ from ..scheduler import CronScheduler
 from ..skills import SkillLoader
 from ..storage import Storage
 from ..tools import Tool, ToolContext, builtin_tools, dispatch, to_anthropic
+from ..tools.background import BackgroundScheduler, should_run_background
 from .compaction import prepare_context, compact_history
 from .recovery import RecoveryState, is_prompt_too_long_error, with_retry
 from .system_prompt import assemble_system_prompt
@@ -57,6 +58,7 @@ class ProjectRef:
     skills_loader: SkillLoader | None = None
     scheduler: CronScheduler | None = None
     mcp_pool: MCPPool | None = None
+    background: BackgroundScheduler | None = None
     mcp_servers: list[str] = field(default_factory=list)
     client_factory: Callable | None = None  # override for tests
 
@@ -134,6 +136,7 @@ class AgentLoop:
 
         while not self._stop.is_set():
             self._inject_cron_fired()
+            self._inject_background_notifications()
             self._maybe_remind_todos()
             self._refresh_tools()
             prepare_context(self.messages)
@@ -236,6 +239,16 @@ class AgentLoop:
             self._emit({"type": "cron_fired", "job_id": job.job_id,
                         "prompt": job.prompt})
 
+    def _inject_background_notifications(self) -> None:
+        bg = self.project.background
+        if bg is None:
+            return
+        notes = bg.collect_notifications()
+        if notes:
+            self.messages.append({"role": "user", "content": "\n".join(notes)})
+            for _ in notes:
+                self._emit({"type": "background_notification"})
+
     def _make_ctx(self) -> ToolContext:
         def _mark():
             self.project.storage.save_todos(
@@ -266,11 +279,20 @@ class AgentLoop:
             self._emit({"type": "tool_use", "name": name,
                         "input": tool_input, "id": tool_use_id})
 
-            tool = self._handlers.get(name)
-            if tool is None:
-                output = f"Unknown tool: {name}"
+            # Slow bash ops get offloaded; result lands as a notification
+            # in a later turn.
+            bg = self.project.background
+            if (bg is not None and should_run_background(name, tool_input)
+                    and name in self._handlers):
+                bg_id = bg.start(ctx, self._handlers, name, tool_input, tool_use_id)
+                output = (f"[Background task {bg_id} started] "
+                          "Result will arrive as a task_notification.")
             else:
-                output = tool.handle(ctx, tool_input)
+                tool = self._handlers.get(name)
+                if tool is None:
+                    output = f"Unknown tool: {name}"
+                else:
+                    output = tool.handle(ctx, tool_input)
 
             if name == "todo_write":
                 self._rounds_since_todo = 0

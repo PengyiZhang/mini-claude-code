@@ -69,10 +69,15 @@ class Policy:
     def check_git_args(self, args: list[str]) -> Violation | None:
         if not args:
             return Violation(rule="git_no_args", match="")
-        # Skip leading global flags like -C / --git-dir
+        # Skip leading global flags. -C / --git-dir / --work-tree take a value
+        # that would otherwise look like the subcommand.
+        value_flags = {"-C", "--git-dir", "--work-tree", "--namespace"}
         i = 0
         while i < len(args) and args[i].startswith("-"):
-            i += 1
+            if args[i] in value_flags:
+                i += 2  # consume the value
+            else:
+                i += 1
         sub = args[i] if i < len(args) else ""
         if sub not in self.allowed_git:
             return Violation(rule="git_subcommand_not_allowed", match=sub)

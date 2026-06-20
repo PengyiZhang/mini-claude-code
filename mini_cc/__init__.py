@@ -25,6 +25,7 @@ from .session import Session, SessionManager
 from .skills import Skill, SkillLoader
 from .storage import CronJob, FSStorage, Storage, Task
 from .tools import FunctionTool, Tool, ToolContext, builtin_tools
+from .tools.background import BackgroundScheduler
 
 __version__ = "0.1.0"
 
@@ -50,4 +51,5 @@ __all__ = [
     "MCPClient", "MCPPool", "normalize_mcp_name",
     # tools
     "Tool", "FunctionTool", "ToolContext", "builtin_tools",
+    "BackgroundScheduler",
 ]

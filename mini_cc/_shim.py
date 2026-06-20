@@ -14,6 +14,7 @@ from .sandbox import SubprocessSandbox
 from .scheduler import CronScheduler
 from .skills import SkillLoader
 from .storage import FSStorage
+from .tools.background import BackgroundScheduler
 
 
 def agent_loop(messages: list, context: dict):
@@ -30,6 +31,7 @@ def agent_loop(messages: list, context: dict):
     skills_loader = SkillLoader(cwd)
     scheduler = CronScheduler("shim", storage)
     mcp_pool = MCPPool("shim")
+    background = BackgroundScheduler()
     ref = ProjectRef(
         project_id="shim",
         project_root=str(cwd),
@@ -39,6 +41,7 @@ def agent_loop(messages: list, context: dict):
         skills_loader=skills_loader,
         scheduler=scheduler,
         mcp_pool=mcp_pool,
+        background=background,
         mcp_servers=mcp_pool.list_connected(),
     )
     loop = AgentLoop(ref, "shim")

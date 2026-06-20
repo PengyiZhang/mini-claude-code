@@ -19,6 +19,7 @@ from ..sandbox import Policy, SubprocessSandbox
 from ..scheduler import CronScheduler
 from ..skills import SkillLoader
 from ..storage import FSStorage, Storage
+from ..tools.background import BackgroundScheduler
 from .layout import (ProjectMeta, list_project_ids, read_meta, state_path,
                      write_meta, workspace_path)
 
@@ -41,6 +42,7 @@ class Project:
     skills_loader: SkillLoader
     scheduler: CronScheduler
     mcp_pool: MCPPool
+    background: BackgroundScheduler
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -52,6 +54,7 @@ class Project:
             skills_loader=self.skills_loader,
             scheduler=self.scheduler,
             mcp_pool=self.mcp_pool,
+            background=self.background,
             mcp_servers=self.mcp_pool.list_connected(),
         )
 
@@ -111,6 +114,7 @@ class ProjectManager:
         skills_loader = SkillLoader(ws)
         scheduler = CronScheduler(project_id, storage)
         mcp_pool = MCPPool(project_id)
+        background = BackgroundScheduler()
         return Project(
             project_id=project_id,
             root=self.root,
@@ -121,6 +125,7 @@ class ProjectManager:
             skills_loader=skills_loader,
             scheduler=scheduler,
             mcp_pool=mcp_pool,
+            background=background,
         )
 
 
