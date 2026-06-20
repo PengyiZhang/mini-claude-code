@@ -24,6 +24,7 @@ from ..sandbox import Sandbox
 from ..scheduler import CronScheduler
 from ..skills import SkillLoader
 from ..storage import Storage
+from ..teams import TeammateSpawner
 from ..tools import Tool, ToolContext, builtin_tools, dispatch, to_anthropic
 from ..tools.background import BackgroundScheduler, should_run_background
 from .compaction import prepare_context, compact_history
@@ -59,6 +60,7 @@ class ProjectRef:
     scheduler: CronScheduler | None = None
     mcp_pool: MCPPool | None = None
     background: BackgroundScheduler | None = None
+    teams: TeammateSpawner | None = None
     mcp_servers: list[str] = field(default_factory=list)
     client_factory: Callable | None = None  # override for tests
 
@@ -263,6 +265,7 @@ class AgentLoop:
             skills_loader=self.project.skills_loader,
             scheduler=self.project.scheduler,
             mcp_pool=self.project.mcp_pool,
+            teams=self.project.teams,
         )
 
     def _execute_tool_calls(self, content):

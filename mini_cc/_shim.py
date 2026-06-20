@@ -14,6 +14,7 @@ from .sandbox import SubprocessSandbox
 from .scheduler import CronScheduler
 from .skills import SkillLoader
 from .storage import FSStorage
+from .teams import TeammateSpawner
 from .tools.background import BackgroundScheduler
 
 
@@ -44,6 +45,11 @@ def agent_loop(messages: list, context: dict):
         background=background,
         mcp_servers=mcp_pool.list_connected(),
     )
+    teams = TeammateSpawner(
+        workspace=cwd,
+        loop_factory=lambda sid: AgentLoop(ref, sid),
+    )
+    ref.teams = teams
     loop = AgentLoop(ref, "shim")
     loop.messages = messages
     for ev in loop.run(None):

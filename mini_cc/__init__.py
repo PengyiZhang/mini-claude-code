@@ -24,6 +24,7 @@ from .scheduler import CronScheduler
 from .session import Session, SessionManager
 from .skills import Skill, SkillLoader
 from .storage import CronJob, FSStorage, Storage, Task
+from .teams import MessageBus, TeammateInfo, TeammateSpawner
 from .tools import FunctionTool, Tool, ToolContext, builtin_tools
 from .tools.background import BackgroundScheduler
 
@@ -47,6 +48,8 @@ __all__ = [
     "Skill", "SkillLoader",
     # scheduler
     "CronScheduler",
+    # teams
+    "MessageBus", "TeammateInfo", "TeammateSpawner",
     # mcp
     "MCPClient", "MCPPool", "normalize_mcp_name",
     # tools

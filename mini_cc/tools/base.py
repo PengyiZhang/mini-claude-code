@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..mcp import MCPPool
     from ..skills import SkillLoader
     from ..scheduler import CronScheduler
+    from ..teams import TeammateSpawner
 
 
 @dataclass
@@ -26,6 +27,7 @@ class ToolContext:
     skills_loader: Optional["SkillLoader"] = None
     scheduler: Optional["CronScheduler"] = None
     mcp_pool: Optional["MCPPool"] = None
+    teams: Optional["TeammateSpawner"] = None
 
 
 class Tool(Protocol):

@@ -19,6 +19,7 @@ from ..sandbox import Policy, SubprocessSandbox
 from ..scheduler import CronScheduler
 from ..skills import SkillLoader
 from ..storage import FSStorage, Storage
+from ..teams import TeammateSpawner
 from ..tools.background import BackgroundScheduler
 from .layout import (ProjectMeta, list_project_ids, read_meta, state_path,
                      write_meta, workspace_path)
@@ -43,6 +44,7 @@ class Project:
     scheduler: CronScheduler
     mcp_pool: MCPPool
     background: BackgroundScheduler
+    teams: TeammateSpawner
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -55,6 +57,7 @@ class Project:
             scheduler=self.scheduler,
             mcp_pool=self.mcp_pool,
             background=self.background,
+            teams=self.teams,
             mcp_servers=self.mcp_pool.list_connected(),
         )
 
@@ -115,7 +118,7 @@ class ProjectManager:
         scheduler = CronScheduler(project_id, storage)
         mcp_pool = MCPPool(project_id)
         background = BackgroundScheduler()
-        return Project(
+        project = Project(
             project_id=project_id,
             root=self.root,
             workspace=ws,
@@ -126,7 +129,21 @@ class ProjectManager:
             scheduler=scheduler,
             mcp_pool=mcp_pool,
             background=background,
+            teams=None,  # filled in below
         )
+        # TeammateSpawner needs a loop_factory that closes over the Project
+        # (and hence its as_ref()), so it has to be built after construction.
+        project.teams = TeammateSpawner(
+            workspace=ws,
+            loop_factory=lambda sid, _p=project: _build_teammate_loop(_p, sid),
+        )
+        return project
+
+
+def _build_teammate_loop(project: "Project", session_id: str):
+    """Build a sub-AgentLoop for a teammate thread."""
+    from ..core.loop import AgentLoop
+    return AgentLoop(project.as_ref(), session_id)
 
 
 def project_dir_safe(root: Path, project_id: str) -> Path:
