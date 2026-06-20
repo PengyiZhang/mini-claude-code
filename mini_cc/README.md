@@ -187,10 +187,11 @@ match the tenant_id resolved from the bearer API key, else 403.
 | `GET`    | `/tenants/{tid}/projects`                         | list projects for this tenant             |
 | `GET`    | `/tenants/{tid}/projects/{pid}`                   | get; 404 if missing or cross-tenant       |
 | `DELETE` | `/tenants/{tid}/projects/{pid}`                   | remove; 404 if missing                    |
-| `POST`   | `/tenants/{tid}/projects/{pid}/sessions`          | start a session                           |
-| `GET`    | `/tenants/{tid}/projects/{pid}/sessions`          | list session_ids                          |
+| `POST`   | `/tenants/{tid}/projects/{pid}/sessions`          | start; 201 new / 200 idempotent resume; 409 if exists |
+| `GET`    | `/tenants/{tid}/projects/{pid}/sessions`          | list SessionMeta (disk + in_memory flag)  |
 | `DELETE` | `/tenants/{tid}/projects/{pid}/sessions/{sid}`    | stop + unregister; 404 if unknown         |
-| `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/send` | stream events as SSE; 409 if project busy |
+| `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/resume` | warm a cold session; idempotent; 404 if not on disk |
+| `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/send` | stream events as SSE; auto-resumes cold sessions; 409 if project busy |
 | `GET`    | `/tenants/{tid}/projects/{pid}/files/tree?path=`  | list directory children; 400 on traversal |
 | `GET`    | `/tenants/{tid}/projects/{pid}/files/content?path=` | read up to 256 KB of a text file        |
 | `POST`   | `/tenants/{tid}/projects/{pid}/files/mkdir?path=` | create a directory                        |
@@ -343,9 +344,54 @@ so the swap doesn't affect other sessions.
 
 ---
 
+## Session lifecycle (resume across restarts)
+
+A session is **cold** when it exists on disk but no `AgentLoop` is
+built for it in the current process, and **warm** once an `AgentLoop`
+holds its transcript in memory. Messages, todos, and the session
+index live on disk under `<state_root>/<project_id>/`; `AgentLoop`
+reloads them on construction.
+
+Three resume paths:
+
+1. **Auto-resume on send.** `POST /sessions/{sid}/send` warms a cold
+   session transparently — no extra round-trip. 404 only if neither
+   in-memory nor on-disk.
+2. **Idempotent start.** `POST /sessions` with an existing
+   `session_id` returns **200** (re-warm) instead of 409. Use for
+   "open this session if it exists, otherwise create it".
+3. **Explicit resume.** `POST /sessions/{sid}/resume` warms a cold
+   session and returns its `SessionMeta`. Useful for priming before
+   the first send (e.g. warming a freshly-restarted server).
+
+`GET /sessions` returns `SessionMeta` for every on-disk session:
+
+```json
+[{
+  "session_id": "s1",
+  "created_at": "2026-06-20T22:11:08.110Z",
+  "last_active_at": "2026-06-20T22:14:42.009Z",
+  "message_count": 14,
+  "in_memory": true
+}]
+```
+
+The index lives at `<state_root>/<project_id>/sessions/index.json`.
+For projects created before this feature, the index is rebuilt
+lazily from the `messages/*.json` files on first read.
+
+**Mid-turn crash recovery:** if the server died mid-turn, the
+transcript's tail may be an assistant message with `tool_use` blocks
+that never got their `tool_result`. On warm-load, the loop appends a
+synthetic user turn with one `tool_result` per dangling id, content
+`[interrupted by server restart]`, `is_error: true`. This unblocks
+the model without losing prior context.
+
+---
+
 ## Testing
 
-The framework ships with 220 passing tests + 24 subtests (pytest).
+The framework ships with 259 passing tests + 24 subtests (pytest).
 Mirrors of s20's mocking patterns live in `tests/test_p0_*.py`.
 
 ```bash
@@ -434,9 +480,6 @@ These are **not** bugs — they were deliberately cut. File an issue
 before picking them up so we can align on scope.
 
 - **WebSocket transport.** SSE only for now.
-- **Session resume across server restarts.** Sessions live in process
-  memory; project state (messages, todos, tasks) persists on disk and
-  survives restart, but live `AgentLoop` instances do not.
 - **Interactive permission prompts.** s20 prompts the operator via
   `input()`; an SDK / server context can't. `make_permission_hook`
   returns a non-interactive gate by default; apps needing interactive

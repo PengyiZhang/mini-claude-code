@@ -59,7 +59,8 @@ def test_session_manager_starts_and_lists(tmp_path):
     sm = SessionManager(pm)
     s = sm.start_session("a", "sess1")
     assert s.session_id == "sess1"
-    assert "sess1" in sm.list("a")
+    ids = [m.session_id for m in sm.list("a")]
+    assert "sess1" in ids
 
 
 def test_session_manager_unknown_project(tmp_path):
@@ -77,9 +78,11 @@ def test_session_remove_unregisters_and_stops(tmp_path):
     pm.create(tenant_id="t1", project_id="a")
     sm = SessionManager(pm)
     sm.start_session("a", "sess1")
-    assert "sess1" in sm.list("a")
+    ids = [m.session_id for m in sm.list("a")]
+    assert "sess1" in ids
     assert sm.remove("a", "sess1") is True
-    assert "sess1" not in sm.list("a")
+    ids_after = [m.session_id for m in sm.list("a")]
+    assert "sess1" not in ids_after
 
 
 def test_session_remove_unknown_returns_false(tmp_path):

@@ -31,3 +31,15 @@ class ProjectOut(BaseModel):
 class SessionOut(BaseModel):
     project_id: str
     session_id: str
+    created: bool = Field(
+        default=True,
+        description="False when this call re-warmed an existing session "
+                    "(idempotent resume); True when a new session was created.")
+
+
+class SessionMeta(BaseModel):
+    session_id: str
+    created_at: str
+    last_active_at: str
+    message_count: int
+    in_memory: bool

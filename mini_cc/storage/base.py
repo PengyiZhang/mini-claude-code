@@ -25,6 +25,20 @@ class CronJob:
     durable: bool = False
 
 
+@dataclass
+class SessionMeta:
+    """Per-session metadata for resume across server restarts.
+
+    `in_memory` is filled in at runtime by the SessionManager and is
+    not persisted to the index file.
+    """
+    session_id: str
+    created_at: str
+    last_active_at: str
+    message_count: int
+    in_memory: bool = False
+
+
 class Storage(Protocol):
     """Per-project state persistence.
 
@@ -50,6 +64,12 @@ class Storage(Protocol):
     # Cron
     def load_cron(self, project_id: str) -> list[CronJob]: ...
     def save_cron(self, project_id: str, jobs: list[CronJob]) -> None: ...
+
+    # Session index (resume-across-restart)
+    def list_sessions(self, project_id: str) -> list[SessionMeta]: ...
+    def save_session_meta(self, project_id: str, meta: SessionMeta) -> None: ...
+    def delete_session_meta(self, project_id: str, session_id: str) -> None: ...
+    def delete_session(self, project_id: str, session_id: str) -> None: ...
 
     # Transcripts
     def write_transcript(self, project_id: str, msgs: list[dict]) -> None: ...

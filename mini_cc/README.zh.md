@@ -183,10 +183,11 @@ data: [DONE]\n\n
 | `GET`    | `/tenants/{tid}/projects`                         | 列出该租户的所有项目                       |
 | `GET`    | `/tenants/{tid}/projects/{pid}`                   | 查单个;缺失或跨租户 404                   |
 | `DELETE` | `/tenants/{tid}/projects/{pid}`                   | 删除;缺失 404                             |
-| `POST`   | `/tenants/{tid}/projects/{pid}/sessions`          | 开会话                                     |
-| `GET`    | `/tenants/{tid}/projects/{pid}/sessions`          | 列出 session_id                            |
+| `POST`   | `/tenants/{tid}/projects/{pid}/sessions`          | 开会话;新建 201 / 幂等续接 200             |
+| `GET`    | `/tenants/{tid}/projects/{pid}/sessions`          | 列出 SessionMeta(含 in_memory 标记)       |
 | `DELETE` | `/tenants/{tid}/projects/{pid}/sessions/{sid}`    | 停止并注销;未知 404                       |
-| `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/send` | 以 SSE 流式返回事件;项目被占用时 409    |
+| `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/resume` | 显式 warm 一个冷会话;幂等;不在盘上 404 |
+| `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/send` | 以 SSE 流式返回事件;自动 warm 冷会话;项目被占用时 409 |
 | `GET`    | `/tenants/{tid}/projects/{pid}/files/tree?path=`  | 列出目录子项;路径穿越 400                  |
 | `GET`    | `/tenants/{tid}/projects/{pid}/files/content?path=` | 读取最多 256 KB 的文本文件                |
 | `POST`   | `/tenants/{tid}/projects/{pid}/files/mkdir?path=` | 创建目录                                   |
@@ -317,9 +318,50 @@ set_default_config(AnthropicConfig(
 
 ---
 
+## Session 生命周期(跨重启续接)
+
+一个 session **冷(cold)** 是指它只在磁盘上、当前进程内没有对应的
+`AgentLoop`;**热(warm)** 是指 `AgentLoop` 已经把它的对话历史载入内存。
+Messages、todos 和 session index 都落在 `<state_root>/<project_id>/`
+下;`AgentLoop` 构造时会从盘上重新加载。
+
+三种续接路径:
+
+1. **send 时自动续接。** `POST /sessions/{sid}/send` 透明地 warm 一个
+   冷会话 —— 无需额外往返。只有当内存和盘上都没有时才 404。
+2. **幂等 start。** `POST /sessions` 传入已存在的 `session_id` 时返回
+   **200**(re-warm)而不是 409。适用于"存在就打开,不存在就创建"。
+3. **显式 resume。** `POST /sessions/{sid}/resume` warm 一个冷会话并
+   返回它的 `SessionMeta`。适合在第一次 send 之前预热(比如刚重启
+   server 之后)。
+
+`GET /sessions` 返回每个盘上 session 的 `SessionMeta`:
+
+```json
+[{
+  "session_id": "s1",
+  "created_at": "2026-06-20T22:11:08.110Z",
+  "last_active_at": "2026-06-20T22:14:42.009Z",
+  "message_count": 14,
+  "in_memory": true
+}]
+```
+
+索引文件位于 `<state_root>/<project_id>/sessions/index.json`。对于
+该特性之前创建的项目,首次读取时会从 `messages/*.json` 文件懒重建
+索引。
+
+**中途崩溃恢复:** 如果 server 在 turn 中途死掉,对话尾部可能是一个
+带 `tool_use` 块、但没有对应 `tool_result` 的 assistant 消息。warm
+时 loop 会追加一条合成的 user turn,为每个悬挂的 tool_use 补一条
+`tool_result`,内容为 `[interrupted by server restart]`,
+`is_error: true`。这样既不丢上文,也能让模型继续推进。
+
+---
+
 ## 测试
 
-本框架带 220 个通过的测试 + 24 个子测试(pytest)。s20 的 mock 模式
+本框架带 259 个通过的测试 + 24 个子测试(pytest)。s20 的 mock 模式
 镜像在 `tests/test_p0_*.py`。
 
 ```bash
@@ -405,8 +447,6 @@ MINI_CC_DATA_DIR=$PWD/../mini_cc_data_e2e npm run e2e
 范围。
 
 - **WebSocket 传输。** 暂时只有 SSE。
-- **跨重启的 session 续接。** Session 在进程内存里;项目状态(messages、
-  todos、tasks)落盘并跨重启保留,但活的 `AgentLoop` 实例不行。
 - **交互式权限提示。** s20 是通过 `input()` 提示操作员;SDK / server
   场景做不到。`make_permission_hook` 默认是 non-interactive gate;需要
   交互提示的应用请自己注册 hook。

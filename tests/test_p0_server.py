@@ -362,12 +362,16 @@ def test_session_lifecycle(app_and_client):
     r = client.post("/tenants/tenant1/projects/p1/sessions",
                     headers=AUTH, json={"session_id": "s1"})
     assert r.status_code == 201
-    assert r.json() == {"project_id": "p1", "session_id": "s1"}
+    body = r.json()
+    assert body["project_id"] == "p1"
+    assert body["session_id"] == "s1"
+    assert body["created"] is True
 
-    # List
+    # List — now returns SessionMeta objects, not bare session_ids.
     r = client.get("/tenants/tenant1/projects/p1/sessions", headers=AUTH)
     assert r.status_code == 200
-    assert "s1" in r.json()
+    ids = [m["session_id"] for m in r.json()]
+    assert "s1" in ids
 
     # Remove
     r = client.delete("/tenants/tenant1/projects/p1/sessions/s1",

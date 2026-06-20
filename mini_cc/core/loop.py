@@ -35,6 +35,8 @@ from .system_prompt import assemble_system_prompt
 CONTINUATION_PROMPT = ("Continue from the previous response. "
                        "Do not repeat completed work.")
 
+INTERRUPTED_TOOL_RESULT = "[interrupted by server restart]"
+
 
 def _block_type(b) -> str | None:
     if isinstance(b, dict):
@@ -46,6 +48,51 @@ def _has_tool_use(content) -> bool:
     if not isinstance(content, list):
         return False
     return any(_block_type(b) == "tool_use" for b in content)
+
+
+def _block_id(b) -> str | None:
+    if isinstance(b, dict):
+        return b.get("id")
+    return getattr(b, "id", None)
+
+
+def repair_dangling_tool_uses(messages: list[dict]) -> bool:
+    """If the tail of the transcript is an assistant message with tool_use
+    blocks that have no matching tool_result, append a synthetic user
+    turn marking each tool as '[interrupted by server restart]'.
+
+    Used at session warm-load so a server crash mid-turn doesn't leave
+    the model staring at a tool_use it can never see answered. Returns
+    True if a repair happened, False otherwise. Mutates `messages` in
+    place.
+    """
+    if not messages:
+        return False
+    last = messages[-1]
+    if last.get("role") != "assistant":
+        return False
+    content = last.get("content")
+    if not isinstance(content, list):
+        return False
+    dangling_ids = [_block_id(b) for b in content
+                    if _block_type(b) == "tool_use"]
+    dangling_ids = [i for i in dangling_ids if i]
+    if not dangling_ids:
+        return False
+    # If the next entry (there is none here since `last` is the tail)
+    # would have provided results, we wouldn't be here. Append a
+    # synthetic user turn with one tool_result per dangling id.
+    messages.append({
+        "role": "user",
+        "content": [
+            {"type": "tool_result",
+             "tool_use_id": tid,
+             "content": INTERRUPTED_TOOL_RESULT,
+             "is_error": True}
+            for tid in dangling_ids
+        ],
+    })
+    return True
 
 
 @dataclass
