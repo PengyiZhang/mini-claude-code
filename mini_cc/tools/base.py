@@ -3,10 +3,13 @@ a ToolContext that carries per-project sandbox + storage."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Optional, TYPE_CHECKING
 
 from ..sandbox import Sandbox
 from ..storage import Storage
+
+if TYPE_CHECKING:
+    from ..skills import SkillLoader
 
 
 @dataclass
@@ -18,6 +21,7 @@ class ToolContext:
     storage: Storage
     todos: list[dict]
     mark_todos_updated: Callable[[], None] | None = None
+    skills_loader: Optional["SkillLoader"] = None
 
 
 class Tool(Protocol):

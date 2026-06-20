@@ -20,6 +20,7 @@ from typing import Callable, Iterator
 from ..config import (DEFAULT_MAX_TOKENS, ESCALATED_MAX_TOKENS, MAX_RECOVERY_RETRIES,
                       default_config)
 from ..sandbox import Sandbox
+from ..skills import SkillLoader
 from ..storage import Storage
 from ..tools import Tool, ToolContext, builtin_tools, dispatch, to_anthropic
 from .compaction import prepare_context, compact_history
@@ -51,6 +52,7 @@ class ProjectRef:
     sandbox: Sandbox
     storage: Storage
     skills_catalog: str = ""
+    skills_loader: SkillLoader | None = None
     mcp_servers: list[str] = field(default_factory=list)
     client_factory: Callable | None = None  # override for tests
 
@@ -206,6 +208,7 @@ class AgentLoop:
             storage=self.project.storage,
             todos=self.todos,
             mark_todos_updated=_mark,
+            skills_loader=self.project.skills_loader,
         )
 
     def _execute_tool_calls(self, content):

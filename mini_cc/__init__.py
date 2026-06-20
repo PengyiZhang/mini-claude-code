@@ -20,6 +20,7 @@ from .projects import Project, ProjectManager, ProjectMeta
 from .sandbox import (CommandBlockedError, PathEscapeError, Policy,
                       Sandbox, SubprocessSandbox, Violation)
 from .session import Session, SessionManager
+from .skills import Skill, SkillLoader
 from .storage import CronJob, FSStorage, Storage, Task
 from .tools import FunctionTool, Tool, ToolContext, builtin_tools
 
@@ -39,6 +40,8 @@ __all__ = [
     "Session", "SessionManager",
     # storage
     "Storage", "FSStorage", "Task", "CronJob",
+    # skills
+    "Skill", "SkillLoader",
     # tools
     "Tool", "FunctionTool", "ToolContext", "builtin_tools",
 ]

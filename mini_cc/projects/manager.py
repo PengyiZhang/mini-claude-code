@@ -15,6 +15,7 @@ from typing import Callable
 
 from ..core.loop import ProjectRef
 from ..sandbox import Policy, SubprocessSandbox
+from ..skills import SkillLoader
 from ..storage import FSStorage, Storage
 from .layout import (ProjectMeta, list_project_ids, read_meta, state_path,
                      write_meta, workspace_path)
@@ -35,6 +36,7 @@ class Project:
     meta: ProjectMeta
     sandbox: SubprocessSandbox
     storage: Storage
+    skills_loader: SkillLoader
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -42,7 +44,13 @@ class Project:
             project_root=str(self.workspace),
             sandbox=self.sandbox,
             storage=self.storage,
+            skills_catalog=self.skills_loader.catalog(),
+            skills_loader=self.skills_loader,
         )
+
+    def rescan_skills(self) -> None:
+        """Re-scan skills directory; call after adding/removing skill files."""
+        self.skills_loader.scan()
 
 
 class ProjectManager:
@@ -93,6 +101,7 @@ class ProjectManager:
         ws = workspace_path(self.root, project_id)
         sandbox = SubprocessSandbox(project_id, ws, policy=self.policy)
         storage = self.storage_factory(self._state_root())
+        skills_loader = SkillLoader(ws)
         return Project(
             project_id=project_id,
             root=self.root,
@@ -100,6 +109,7 @@ class ProjectManager:
             meta=meta,
             sandbox=sandbox,
             storage=storage,
+            skills_loader=skills_loader,
         )
 
 

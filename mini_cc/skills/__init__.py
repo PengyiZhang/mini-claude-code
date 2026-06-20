@@ -1,6 +1,7 @@
-"""Skills loader — port pending. See P0 plan.
+"""Skills loader — per-project skill registry.
 
-s20 reference: code.py lines 285-341. Will scan <workspace>/skills/*/
-SKILL.md per project and expose load_skill(name).
+Ports s20 lines 285-341 from s20_comprehensive/code.py.
 """
-from __future__ import annotations
+from .loader import Skill, SkillLoader, _parse_frontmatter
+
+__all__ = ["Skill", "SkillLoader"]
