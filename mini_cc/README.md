@@ -260,6 +260,21 @@ Environment variables (read by `python -m mini_cc.server`):
 | `MINI_CC_HOST`          | `127.0.0.1`      | server bind address                          |
 | `MINI_CC_PORT`          | `8000`           | server port                                  |
 | `MINI_CC_CORS_ORIGINS`  | (empty)          | comma-separated allowed origins for browser SSE |
+| `MINI_CC_LOG_FORMAT`    | `json`           | `json` or `text` (one line per event)        |
+| `MINI_CC_LOG_LEVEL`     | `INFO`           | root logger level                            |
+| `MINI_CC_RATE_LIMIT_RPM_DEFAULT` | `60`    | per-tenant requests/min (token bucket)       |
+| `MINI_CC_RATE_LIMIT_RPM` | (empty)         | `tenant=rpm,tenant=rpm,...` overrides        |
+
+The rate limiter is a per-tenant token bucket: capacity = RPM (so a
+fresh tenant can burst a full minute of calls at once), refill =
+RPM/60 per second. Applies to `POST /sessions/{sid}/send` and
+`POST /projects` (the resource-consuming endpoints). 429 carries a
+`Retry-After` header.
+
+Every response gets an `X-Trace-Id` header (UUID4 hex, or the inbound
+one if you set `X-Trace-Id` on the request). The same id flows
+through `contextvars` into the JSON log lines, so correlating a
+request to its log entries is just `grep <trace_id>`.
 
 Programmatic config:
 
@@ -422,20 +437,13 @@ before picking them up so we can align on scope.
 - **Session resume across server restarts.** Sessions live in process
   memory; project state (messages, todos, tasks) persists on disk and
   survives restart, but live `AgentLoop` instances do not.
-- **Mid-turn cancellation of in-flight Anthropic API calls.** Current
-  cancellation (client disconnect / `session.stop()`) takes effect at
-  the next iteration boundary. The in-flight HTTP call to Anthropic
-  completes.
 - **Interactive permission prompts.** s20 prompts the operator via
   `input()`; an SDK / server context can't. `make_permission_hook`
   returns a non-interactive gate by default; apps needing interactive
   prompts register their own.
-- **Per-tenant rate limiting.**
 - **Container-level sandbox isolation (P5).** Today's sandbox is a
   defense-in-depth soft layer; for untrusted code, run mini_cc inside
   a container.
-- **`pyproject.toml`.** None today; dependencies live in
-  `requirements.txt` and the entry is `python -m mini_cc.server`.
 
 ---
 

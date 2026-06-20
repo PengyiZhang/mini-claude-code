@@ -37,12 +37,33 @@ class _MockClient:
         self.calls = []
         outer = self
 
+        class _Stream:
+            """Context-manager mock matching the SDK's messages.stream()."""
+            def __init__(self_inner, response):
+                self_inner._response = response
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *exc):
+                return False
+            def __iter__(self_inner):
+                return iter(())  # no streaming events; loop body just polls _stop
+            def get_final_message(self_inner):
+                return self_inner._response
+            def close(self_inner):
+                pass
+
         class _M:
             def create(self_inner, **kw):
                 outer.calls.append(kw)
                 if not outer.script:
                     raise RuntimeError("script exhausted")
                 return outer.script.pop(0)
+
+            def stream(self_inner, **kw):
+                outer.calls.append(kw)
+                if not outer.script:
+                    raise RuntimeError("script exhausted")
+                return _Stream(outer.script.pop(0))
 
         self._m = _M()
 

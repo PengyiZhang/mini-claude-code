@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-cc"
+version = "0.1.0"
+description = "Multi-tenant, sandboxed, backend-integrable mini Claude Code."
+readme = "mini_cc/README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "mini_cc contributors" }]
+dependencies = [
+    "anthropic>=0.25.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.5",
+    "httpx>=0.26",
+    "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+mini-cc = "mini_cc.server.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mini_cc*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

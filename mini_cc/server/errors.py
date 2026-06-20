@@ -45,6 +45,11 @@ class Forbidden(MiniCCError):
     code = "forbidden"
 
 
+class TooManyRequests(MiniCCError):
+    status_code = 429
+    code = "rate_limited"
+
+
 def envelope(exc: MiniCCError) -> dict[str, Any]:
     return {"error": {
         "code": exc.code,

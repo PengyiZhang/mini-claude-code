@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Path
 from fastapi.responses import StreamingResponse
 
-from ..deps import get_pm, get_sm, require_tenant, validate_id
+from ..deps import check_rate_limit, get_pm, get_sm, require_tenant, validate_id
 from ..errors import Conflict, NotFound, map_sdk_exception
 from ..schemas import CreateSessionRequest, SendMessageRequest, SessionOut
 from ..sse import sse_stream
@@ -70,7 +70,7 @@ def remove_session(sid: str = Path(...),
 def send_message(body: SendMessageRequest,
                  sid: str = Path(...),
                  pid: str = Path(...),
-                 tid: str = Depends(require_tenant),
+                 tid: str = Depends(check_rate_limit),
                  pm=Depends(get_pm),
                  sm=Depends(get_sm)) -> StreamingResponse:
     validate_id(pid)

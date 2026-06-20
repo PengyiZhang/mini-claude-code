@@ -190,16 +190,32 @@ class AgentLoop:
                 )
 
             try:
-                response = with_retry(
-                    lambda: self.client.messages.create(
+                def _call_model():
+                    # Use streaming form so we can poll self._stop between
+                    # events and abort the in-flight HTTP request mid-turn.
+                    # Returns the final Message on normal completion, or
+                    # None if cancelled (signals the caller to exit run()).
+                    with self.client.messages.stream(
                         model=self.state.current_model,
                         system=system,
                         messages=self.messages,
                         tools=to_anthropic(self.tools),
-                        max_tokens=max_tokens),
-                    self.state,
-                    on_event=self._emit,
-                )
+                        max_tokens=max_tokens,
+                    ) as stream:
+                        for _ in stream:
+                            if self._stop.is_set():
+                                stream.close()
+                                return None
+                        return stream.get_final_message()
+
+                response = with_retry(_call_model, self.state, on_event=self._emit)
+
+                if response is None:
+                    # Cancelled mid-stream — exit cleanly without persisting
+                    # a half-built assistant turn.
+                    yield {"type": "done"}
+                    self._persist()
+                    return
             except Exception as e:
                 if is_prompt_too_long_error(e) and not self.state.has_attempted_reactive_compact:
                     self.messages[:] = compact_history(

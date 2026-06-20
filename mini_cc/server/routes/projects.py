@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path
 
-from ..deps import get_pm, require_tenant, validate_id
+from ..deps import check_rate_limit, get_pm, require_tenant, validate_id
 from ..errors import Conflict, NotFound, map_sdk_exception
 from ..schemas import CreateProjectRequest, ProjectOut
 
@@ -22,7 +22,7 @@ def _to_out(p) -> ProjectOut:
 
 @router.post("", status_code=201, response_model=ProjectOut)
 def create_project(body: CreateProjectRequest,
-                   tid: str = Depends(require_tenant),
+                   tid: str = Depends(check_rate_limit),
                    pm=Depends(get_pm)) -> ProjectOut:
     try:
         if body.project_id is not None:

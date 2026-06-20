@@ -13,6 +13,8 @@ from ..auth import TenantKeyRegistry
 from ..projects import ProjectManager
 from ..session import SessionManager
 from .errors import MiniCCError, envelope, map_sdk_exception
+from .middleware import TraceIdMiddleware
+from .ratelimit import TenantRateLimiter
 from .routes import projects as projects_routes
 from .routes import resources as resources_routes
 from .routes import sessions as sessions_routes
@@ -36,7 +38,8 @@ def build_app(*, data_dir: Path,
               key_registry: TenantKeyRegistry,
               pm: ProjectManager,
               sm: SessionManager,
-              cors_origins: list[str] | None = None) -> FastAPI:
+              cors_origins: list[str] | None = None,
+              rate_limiter: TenantRateLimiter | None = None) -> FastAPI:
     """Wire a FastAPI app over the given SDK managers."""
     app = FastAPI(
         title="mini_cc",
@@ -48,6 +51,11 @@ def build_app(*, data_dir: Path,
     app.state.key_registry = key_registry
     app.state.pm = pm
     app.state.sm = sm
+    app.state.rate_limiter = rate_limiter
+
+    # TraceId is the outermost so every downstream log line (including
+    # CORS rejections) carries a trace_id.
+    app.add_middleware(TraceIdMiddleware)
 
     if cors_origins:
         app.add_middleware(
@@ -55,14 +63,21 @@ def build_app(*, data_dir: Path,
             allow_origins=cors_origins,
             allow_credentials=True,
             allow_methods=["*"],
-            allow_headers=["Authorization", "Content-Type", "Last-Event-ID"],
-            expose_headers=["*"],
+            allow_headers=["Authorization", "Content-Type", "Last-Event-ID",
+                           "X-Trace-Id"],
+            expose_headers=["X-Trace-Id"],
         )
 
     # Error handlers — render every MiniCCError through the standard envelope.
     @app.exception_handler(MiniCCError)
     async def _handle_mini_cc(request: Request, exc: MiniCCError):
-        return JSONResponse(status_code=exc.status_code, content=envelope(exc))
+        headers: dict[str, str] | None = None
+        retry_after = getattr(request.state, "rate_limit_retry_after", None)
+        if retry_after:
+            headers = {"Retry-After": str(retry_after)}
+        return JSONResponse(status_code=exc.status_code,
+                            content=envelope(exc),
+                            headers=headers)
 
     @app.exception_handler(Exception)
     async def _handle_unknown(request: Request, exc: Exception) -> JSONResponse:

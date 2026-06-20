@@ -172,12 +172,32 @@ class _MockClient:
         self.calls = []
         outer = self
 
+        class _Stream:
+            def __init__(self_inner, response):
+                self_inner._response = response
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *exc):
+                return False
+            def __iter__(self_inner):
+                return iter(())
+            def get_final_message(self_inner):
+                return self_inner._response
+            def close(self_inner):
+                pass
+
         class _M:
             def create(self_inner, **kw):
                 outer.calls.append(kw)
                 if not outer.script:
                     raise RuntimeError("script exhausted")
                 return outer.script.pop(0)
+
+            def stream(self_inner, **kw):
+                outer.calls.append(kw)
+                if not outer.script:
+                    raise RuntimeError("script exhausted")
+                return _Stream(outer.script.pop(0))
 
         self._m = _M()
 
@@ -424,22 +444,36 @@ def test_send_concurrent_returns_409(app_and_client):
 
     class _BlockingClient:
         def __init__(self):
-            self._m = _Blocking()
             self.calls = []
 
         @property
         def messages(self):
-            outer = self
-
             class _M:
                 def create(s, **kw):
-                    outer.calls.append(kw)
                     if not started.is_set():
                         started.set()
                     release.wait(timeout=5)
                     return _MockResponse(
                         [_Block(type="text", text="done")],
                         stop_reason="end_turn")
+                def stream(s, **kw):
+                    class _S:
+                        def __enter__(self_inner):
+                            return self_inner
+                        def __exit__(self_inner, *exc):
+                            return False
+                        def __iter__(self_inner):
+                            if not started.is_set():
+                                started.set()
+                            release.wait(timeout=5)
+                            return iter(())
+                        def get_final_message(self_inner):
+                            return _MockResponse(
+                                [_Block(type="text", text="done")],
+                                stop_reason="end_turn")
+                        def close(self_inner):
+                            pass
+                    return _S()
             return _M()
 
     # Reset the fake client to the blocking one

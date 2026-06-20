@@ -27,11 +27,43 @@ def _key_registry():
     return TenantKeyRegistry(_data_dir() / "keys.json")
 
 
+def _parse_rate_limit_env() -> tuple[int, dict[str, int]]:
+    """Parse MINI_CC_RATE_LIMIT_RPM_DEFAULT and MINI_CC_RATE_LIMIT_RPM.
+
+    The latter is ``tenant=rpm,tenant=rpm,...``. Returns (default, overrides).
+    """
+    default = int(_env("MINI_CC_RATE_LIMIT_RPM_DEFAULT", "60"))
+    overrides: dict[str, int] = {}
+    raw = _env("MINI_CC_RATE_LIMIT_RPM", "")
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            raise ValueError(
+                f"MINI_CC_RATE_LIMIT_RPM entry {chunk!r} must be tenant=rpm")
+        t, r = chunk.split("=", 1)
+        t = t.strip()
+        r = r.strip()
+        if not t or not r.isdigit():
+            raise ValueError(
+                f"MINI_CC_RATE_LIMIT_RPM entry {chunk!r} malformed")
+        overrides[t] = int(r)
+    return default, overrides
+
+
 def cmd_serve(args) -> int:
     import uvicorn
     from ..projects import ProjectManager
     from ..session import SessionManager
     from .app import build_app
+    from .logging_config import configure_logging
+    from .ratelimit import TenantRateLimiter
+
+    configure_logging(
+        format=_env("MINI_CC_LOG_FORMAT", "json"),
+        level=_env("MINI_CC_LOG_LEVEL", "INFO"),
+    )
 
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -40,15 +72,25 @@ def cmd_serve(args) -> int:
     sm = SessionManager(pm)
     reg = _key_registry()
 
+    default_rpm, overrides = _parse_rate_limit_env()
+    limiter = TenantRateLimiter(default_rpm=default_rpm, overrides=overrides)
+
     cors_raw = _env("MINI_CC_CORS_ORIGINS", "")
     cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()]
 
     app = build_app(data_dir=data_dir, key_registry=reg, pm=pm, sm=sm,
-                    cors_origins=cors_origins)
+                    cors_origins=cors_origins, rate_limiter=limiter)
 
     host = _env("MINI_CC_HOST", "127.0.0.1")
     port = int(_env("MINI_CC_PORT", "8000"))
-    print(f"[mini_cc] data_dir={data_dir} host={host} port={port}")
+
+    import logging
+    logging.getLogger("mini_cc").info(
+        "starting server",
+        extra={"host": host, "port": port,
+               "rate_limit_default_rpm": default_rpm,
+               "rate_limit_overrides": overrides,
+               "data_dir": str(data_dir)})
     uvicorn.run(app, host=host, port=port)
     return 0
 

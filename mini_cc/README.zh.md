@@ -407,16 +407,11 @@ MINI_CC_DATA_DIR=$PWD/../mini_cc_data_e2e npm run e2e
 - **WebSocket 传输。** 暂时只有 SSE。
 - **跨重启的 session 续接。** Session 在进程内存里;项目状态(messages、
   todos、tasks)落盘并跨重启保留,但活的 `AgentLoop` 实例不行。
-- **对进行中的 Anthropic API 调用做中途取消。** 目前的取消(客户端
-  断开 / `session.stop()`)在下一次迭代边界生效。发给 Anthropic 的那次
-  HTTP 调用本身会跑完。
 - **交互式权限提示。** s20 是通过 `input()` 提示操作员;SDK / server
   场景做不到。`make_permission_hook` 默认是 non-interactive gate;需要
   交互提示的应用请自己注册 hook。
-- **按租户限流。**
 - **容器级沙箱隔离(P5)。** 目前的 sandbox 只是 defense-in-depth 软层;
   对不受信代码,请把 mini_cc 跑在容器里。
-- **`pyproject.toml`。** 目前没有;依赖在 `requirements.txt`,入口是
   `python -m mini_cc.server`。
 
 ---
