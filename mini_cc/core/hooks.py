@@ -88,3 +88,60 @@ def make_permission_hook(*, allow_destructive: bool = False,
                             "allow_destructive=True")
         return None
     return hook
+
+
+def make_log_hook(sink: Callable[[str, dict], None]
+                  ) -> Callable[[str, dict], None]:
+    """PreToolUse hook that forwards every tool invocation to `sink`
+    as `sink(name, tool_input)`. Returns None (never blocks) so it
+    composes cleanly with permission hooks. Ports s20's log_hook.
+
+    Use for audit / telemetry / tracing.
+    """
+    def hook(tool_name: str, tool_input: dict) -> None:
+        sink(tool_name, tool_input or {})
+    return hook
+
+
+def make_large_output_hook(threshold: int = 100_000,
+                           sink: Callable[[str, int], None] = print
+                           ) -> Callable[[str, dict, str], None]:
+    """PostToolUse hook that calls `sink(tool_name, output_len)` when
+    a tool's output exceeds `threshold` characters. Ports s20's
+    large_output_hook. Returns None.
+
+    The hook signals only; truncation happens later via tool_result_budget
+    in the compaction layer.
+    """
+    def hook(tool_name: str, tool_input: dict, output: str) -> None:
+        n = len(str(output))
+        if n > threshold:
+            sink(tool_name, n)
+    return hook
+
+
+def make_audit_hook(sink: Callable[[str, dict], None]
+                    ) -> "Hooks":
+    """Convenience: build a Hooks registry pre-wired to send every event
+    to a single `sink(event_name, payload)` callable. The payload dict
+    keys vary by event:
+
+    - UserPromptSubmit: {"query": str}
+    - PreToolUse:       {"name": str, "input": dict}
+    - PostToolUse:      {"name": str, "input": dict, "output": str}
+    - Stop:             {} (no payload)
+
+    None of the callbacks return anything, so they never block or
+    rewrite; pair with a permission hook if you also need to enforce.
+    """
+    h = Hooks()
+    h.register(Hooks.UserPromptSubmit,
+               lambda q: sink(Hooks.UserPromptSubmit, {"query": q}))
+    h.register(Hooks.PreToolUse,
+               lambda n, i: sink(Hooks.PreToolUse, {"name": n, "input": i}))
+    h.register(Hooks.PostToolUse,
+               lambda n, i, o: sink(Hooks.PostToolUse,
+                                    {"name": n, "input": i, "output": o}))
+    h.register(Hooks.Stop,
+               lambda: sink(Hooks.Stop, {}))
+    return h

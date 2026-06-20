@@ -116,6 +116,17 @@ class AgentLoop:
         self.project.storage.save_todos(
             self.project.project_id, self.session_id, self.todos)
 
+    def _save_transcript(self, messages: list[dict]) -> None:
+        """Pre-compaction snapshot. Writes the full message list to storage
+        before any content is discarded, so callers can replay the original
+        conversation later."""
+        try:
+            self.project.storage.write_transcript(
+                self.project.project_id, messages)
+        except Exception:
+            # Transcript is best-effort; never block compaction on it.
+            pass
+
     def _emit(self, ev: dict):
         if self.on_event:
             self.on_event(ev)
@@ -151,7 +162,7 @@ class AgentLoop:
             self._inject_background_notifications()
             self._maybe_remind_todos()
             self._refresh_tools()
-            prepare_context(self.messages)
+            prepare_context(self.messages, before_compact=self._save_transcript)
 
             if self.system_prompt_override is not None:
                 system = self.system_prompt_override
@@ -178,7 +189,8 @@ class AgentLoop:
                 )
             except Exception as e:
                 if is_prompt_too_long_error(e) and not self.state.has_attempted_reactive_compact:
-                    self.messages[:] = compact_history(self.messages)
+                    self.messages[:] = compact_history(
+                        self.messages, before_compact=self._save_transcript)
                     self.state.has_attempted_reactive_compact = True
                     continue
                 self.messages.append({"role": "assistant", "content": [

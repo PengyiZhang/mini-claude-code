@@ -1,5 +1,7 @@
 from .compaction import prepare_context, compact_history, estimate_size
-from .hooks import DENY_LIST, DESTRUCTIVE, Hooks, make_permission_hook
+from .hooks import (DENY_LIST, DESTRUCTIVE, Hooks, make_audit_hook,
+                    make_large_output_hook, make_log_hook,
+                    make_permission_hook)
 from .loop import AgentLoop, ProjectRef
 from .recovery import RecoveryState, with_retry, is_prompt_too_long_error
 from .subagent import spawn_subagent
@@ -10,6 +12,8 @@ __all__ = [
     "RecoveryState", "with_retry", "is_prompt_too_long_error",
     "assemble_system_prompt",
     "prepare_context", "compact_history", "estimate_size",
-    "Hooks", "make_permission_hook", "DENY_LIST", "DESTRUCTIVE",
+    "Hooks", "make_permission_hook", "make_log_hook",
+    "make_large_output_hook", "make_audit_hook",
+    "DENY_LIST", "DESTRUCTIVE",
     "spawn_subagent",
 ]

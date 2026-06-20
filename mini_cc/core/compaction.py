@@ -9,7 +9,7 @@ Ports the layered scheme from s20 (1055-1204):
 from __future__ import annotations
 
 import json
-from typing import Iterable
+from typing import Callable, Iterable
 
 CONTEXT_LIMIT = 50000
 KEEP_RECENT_TOOL_RESULTS = 3
@@ -105,22 +105,37 @@ def micro_compact(messages: list[dict]) -> list[dict]:
     return out
 
 
-def compact_history(messages: list[dict], keep_recent: int = 6) -> list[dict]:
+def compact_history(messages: list[dict], keep_recent: int = 6,
+                    before_compact: Callable[[list[dict]], None] | None = None
+                    ) -> list[dict]:
     """Aggressive: replace everything but the last `keep_recent` messages
     with a single summary placeholder. (LLM-driven summarization is a later
-    enhancement; for now we keep the recency window.)"""
+    enhancement; for now we keep the recency window.)
+
+    If `before_compact` is provided, it is called with the full message
+    list *before* the recency window is applied — giving the caller a
+    chance to persist a transcript of the discarded content (ports
+    s20's write_transcript-on-compact behavior).
+    """
     if len(messages) <= keep_recent:
         return messages
+    if before_compact is not None:
+        before_compact(messages)
     summary = ("[Earlier conversation compacted. "
                f"{len(messages) - keep_recent} messages summarized.]")
     return [{"role": "user", "content": summary}, *messages[-keep_recent:]]
 
 
-def prepare_context(messages: list[dict]) -> list[dict]:
-    """Apply the layered compaction pipeline (in place)."""
+def prepare_context(messages: list[dict],
+                    before_compact: Callable[[list[dict]], None] | None = None
+                    ) -> list[dict]:
+    """Apply the layered compaction pipeline (in place).
+
+    `before_compact` is forwarded to compact_history if it fires.
+    """
     messages[:] = tool_result_budget(messages)
     messages[:] = snip_compact(messages)
     messages[:] = micro_compact(messages)
     if estimate_size(messages) > CONTEXT_LIMIT:
-        messages[:] = compact_history(messages)
+        messages[:] = compact_history(messages, before_compact=before_compact)
     return messages
