@@ -28,6 +28,7 @@ from ..teams import TeammateSpawner
 from ..tools import Tool, ToolContext, builtin_tools, dispatch, to_anthropic
 from ..tools.background import BackgroundScheduler, should_run_background
 from .compaction import prepare_context, compact_history
+from .hooks import Hooks
 from .recovery import RecoveryState, is_prompt_too_long_error, with_retry
 from .system_prompt import assemble_system_prompt
 
@@ -69,7 +70,9 @@ class AgentLoop:
     def __init__(self, project: ProjectRef, session_id: str,
                  tools: list[Tool] | None = None,
                  on_event: Callable[[dict], None] | None = None,
-                 model: str | None = None):
+                 model: str | None = None,
+                 system_prompt_override: str | None = None,
+                 hooks: "Hooks | None" = None):
         self.project = project
         self.session_id = session_id
         # If caller passes a frozen tool list, we use it as-is; otherwise we
@@ -78,6 +81,8 @@ class AgentLoop:
         self.tools: list[Tool] = tools if tools is not None else self._build_tools()
         self._handlers = dispatch(self.tools)
         self.on_event = on_event
+        self.system_prompt_override = system_prompt_override
+        self.hooks = hooks
         self.messages: list[dict] = project.storage.load_messages(
             project.project_id, session_id)
         self.todos: list[dict] = project.storage.load_todos(
@@ -133,6 +138,11 @@ class AgentLoop:
         the user message already (used by the s20 shim).
         """
         if user_input is not None:
+            if self.hooks is not None and self.hooks.has(Hooks.UserPromptSubmit):
+                replaced = self.hooks.trigger(
+                    Hooks.UserPromptSubmit, user_input)
+                if isinstance(replaced, str):
+                    user_input = replaced
             self.messages.append({"role": "user", "content": user_input})
         max_tokens = DEFAULT_MAX_TOKENS
 
@@ -143,14 +153,17 @@ class AgentLoop:
             self._refresh_tools()
             prepare_context(self.messages)
 
-            system = assemble_system_prompt(
-                project_root=self.project.project_root,
-                tools=self.tools,
-                memories=self.project.storage.load_memory(self.project.project_id)[:2000],
-                mcp_servers=(self.project.mcp_pool.list_connected()
-                             if self.project.mcp_pool else self.project.mcp_servers),
-                skills_catalog=self.project.skills_catalog,
-            )
+            if self.system_prompt_override is not None:
+                system = self.system_prompt_override
+            else:
+                system = assemble_system_prompt(
+                    project_root=self.project.project_root,
+                    tools=self.tools,
+                    memories=self.project.storage.load_memory(self.project.project_id)[:2000],
+                    mcp_servers=(self.project.mcp_pool.list_connected()
+                                 if self.project.mcp_pool else self.project.mcp_servers),
+                    skills_catalog=self.project.skills_catalog,
+                )
 
             try:
                 response = with_retry(
@@ -202,6 +215,8 @@ class AgentLoop:
                     yield {"type": "text", "text": block.text}
 
             if not _has_tool_use(response.content):
+                if self.hooks is not None:
+                    self.hooks.trigger(Hooks.Stop)
                 yield {"type": "done"}
                 self._persist()
                 return
@@ -266,6 +281,7 @@ class AgentLoop:
             scheduler=self.project.scheduler,
             mcp_pool=self.project.mcp_pool,
             teams=self.project.teams,
+            project_ref=self.project,
         )
 
     def _execute_tool_calls(self, content):
@@ -282,20 +298,29 @@ class AgentLoop:
             self._emit({"type": "tool_use", "name": name,
                         "input": tool_input, "id": tool_use_id})
 
-            # Slow bash ops get offloaded; result lands as a notification
-            # in a later turn.
-            bg = self.project.background
-            if (bg is not None and should_run_background(name, tool_input)
-                    and name in self._handlers):
-                bg_id = bg.start(ctx, self._handlers, name, tool_input, tool_use_id)
-                output = (f"[Background task {bg_id} started] "
-                          "Result will arrive as a task_notification.")
+            # PreToolUse hook can deny the call; the denial string
+            # becomes the tool_result content.
+            denied = (self.hooks.trigger(Hooks.PreToolUse, name, tool_input)
+                      if self.hooks is not None else None)
+            if denied is not None:
+                output = str(denied)
             else:
-                tool = self._handlers.get(name)
-                if tool is None:
-                    output = f"Unknown tool: {name}"
+                # Slow bash ops get offloaded; result lands as a
+                # notification in a later turn.
+                bg = self.project.background
+                if (bg is not None and should_run_background(name, tool_input)
+                        and name in self._handlers):
+                    bg_id = bg.start(ctx, self._handlers, name, tool_input, tool_use_id)
+                    output = (f"[Background task {bg_id} started] "
+                              "Result will arrive as a task_notification.")
                 else:
-                    output = tool.handle(ctx, tool_input)
+                    tool = self._handlers.get(name)
+                    if tool is None:
+                        output = f"Unknown tool: {name}"
+                    else:
+                        output = tool.handle(ctx, tool_input)
+                if self.hooks is not None:
+                    self.hooks.trigger(Hooks.PostToolUse, name, tool_input, output)
 
             if name == "todo_write":
                 self._rounds_since_todo = 0

@@ -15,7 +15,9 @@ Quick start:
 from __future__ import annotations
 
 from .config import AnthropicConfig, default_config, set_default_config
-from .core import AgentLoop, ProjectRef, RecoveryState, assemble_system_prompt
+from .core import (AgentLoop, DENY_LIST, DESTRUCTIVE, Hooks, ProjectRef,
+                   RecoveryState, assemble_system_prompt, make_permission_hook,
+                   spawn_subagent)
 from .mcp import MCPClient, MCPPool, normalize_mcp_name
 from .projects import Project, ProjectManager, ProjectMeta
 from .sandbox import (CommandBlockedError, PathEscapeError, Policy,
@@ -36,6 +38,8 @@ __all__ = [
     "AnthropicConfig", "default_config", "set_default_config",
     # core
     "AgentLoop", "ProjectRef", "RecoveryState", "assemble_system_prompt",
+    "Hooks", "make_permission_hook", "DENY_LIST", "DESTRUCTIVE",
+    "spawn_subagent",
     # projects
     "Project", "ProjectManager", "ProjectMeta",
     # sandbox

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from ..core.hooks import Hooks
 from ..core.loop import ProjectRef
 from ..mcp import MCPPool
 from ..sandbox import Policy, SubprocessSandbox
@@ -45,6 +46,7 @@ class Project:
     mcp_pool: MCPPool
     background: BackgroundScheduler
     teams: TeammateSpawner
+    hooks: Hooks
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -118,6 +120,7 @@ class ProjectManager:
         scheduler = CronScheduler(project_id, storage)
         mcp_pool = MCPPool(project_id)
         background = BackgroundScheduler()
+        hooks = Hooks()
         project = Project(
             project_id=project_id,
             root=self.root,
@@ -130,6 +133,7 @@ class ProjectManager:
             mcp_pool=mcp_pool,
             background=background,
             teams=None,  # filled in below
+            hooks=hooks,
         )
         # TeammateSpawner needs a loop_factory that closes over the Project
         # (and hence its as_ref()), so it has to be built after construction.

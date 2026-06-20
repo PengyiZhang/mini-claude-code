@@ -9,6 +9,7 @@ from ..sandbox import Sandbox
 from ..storage import Storage
 
 if TYPE_CHECKING:
+    from ..core.loop import ProjectRef
     from ..mcp import MCPPool
     from ..skills import SkillLoader
     from ..scheduler import CronScheduler
@@ -28,6 +29,10 @@ class ToolContext:
     scheduler: Optional["CronScheduler"] = None
     mcp_pool: Optional["MCPPool"] = None
     teams: Optional["TeammateSpawner"] = None
+    # Subagent dispatch: filled in by AgentLoop._make_ctx so the `task`
+    # tool can spawn a focused sub-agent against the same project.
+    project_ref: Optional["ProjectRef"] = None
+    subagent_client_factory: Optional[Callable] = None
 
 
 class Tool(Protocol):

@@ -47,7 +47,8 @@ class SessionManager:
         session_id = session_id or f"sess_{uuid.uuid4().hex[:8]}"
         project = self.pm.get(project_id)
         loop = AgentLoop(project.as_ref(), session_id,
-                         tools=tools, on_event=on_event, model=model)
+                         tools=tools, on_event=on_event, model=model,
+                         hooks=project.hooks)
         sess = Session(project_id=project_id, session_id=session_id, loop=loop)
         self._sessions[(project_id, session_id)] = sess
         return sess
