@@ -142,6 +142,19 @@ class AgentLoop:
     def stop(self):
         self._stop.set()
 
+    def set_worktree(self, path) -> None:
+        """Replace the loop's sandbox with one rooted at `path`. Subsequent
+        bash/read/write/edit/glob/grep calls resolve paths against the
+        new root. Used by the teams subsystem to redirect a teammate's
+        tool calls into a claimed task's worktree (s20 wt_ctx behavior).
+
+        Requires the loop to own its sandbox (teammates get their own
+        ProjectRef so this swap doesn't affect other sessions).
+        """
+        from ..sandbox import SubprocessSandbox
+        self.project.sandbox = SubprocessSandbox(
+            self.project.project_id, path)
+
     def run(self, user_input: str | None = None) -> Iterator[dict]:
         """Run a single user turn to completion, streaming events.
 

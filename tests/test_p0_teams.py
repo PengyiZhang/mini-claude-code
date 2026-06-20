@@ -587,3 +587,80 @@ def test_idle_poll_inbox_message_becomes_next_prompt(tmp_path):
     assert len(runs) == 2
     assert "<inbox>" in runs[1]
     assert "do more work" in runs[1]
+
+
+# ── wt_ctx auto-cwd on claim ────────────────────────────────────────────
+
+def test_idle_poll_with_worktree_redirects_loop_cwd(tmp_path):
+    """When auto-claiming a task with a worktree, the spawner must
+    redirect the teammate's loop sandbox to the worktree path before
+    the claimed-task turn starts (s20 wt_ctx behavior)."""
+    storage = _storage_with_pending_task(tmp_path, worktree="wt1")
+    wt_path = tmp_path / "ws" / ".worktrees" / "wt1"
+    wt_path.mkdir(parents=True, exist_ok=True)
+
+    set_calls: list = []
+
+    class _Loop:
+        def run(self, user_input):
+            yield {"type": "done"}
+
+        def set_worktree(self, path):
+            set_calls.append(path)
+
+    spawner = TeammateSpawner(
+        tmp_path / "ws", loop_factory=lambda sid: _Loop(),
+        project_id="p", storage=storage,
+        idle_poll_interval=0.02, idle_timeout=1)
+    spawner.spawn("alice", "worker", "first")
+    deadline = time.time() + 5
+    while spawner.list_alive() and time.time() < deadline:
+        time.sleep(0.05)
+    assert spawner.list_alive() == []
+    assert set_calls == [wt_path]
+
+
+def test_idle_poll_no_worktree_does_not_redirect(tmp_path):
+    """A task without a worktree binding must not trigger set_worktree."""
+    storage = _storage_with_pending_task(tmp_path, worktree="")
+
+    set_calls: list = []
+
+    class _Loop:
+        def run(self, user_input):
+            yield {"type": "done"}
+
+        def set_worktree(self, path):
+            set_calls.append(path)
+
+    spawner = TeammateSpawner(
+        tmp_path / "ws", loop_factory=lambda sid: _Loop(),
+        project_id="p", storage=storage,
+        idle_poll_interval=0.02, idle_timeout=0.3)
+    spawner.spawn("alice", "worker", "first")
+    deadline = time.time() + 5
+    while spawner.list_alive() and time.time() < deadline:
+        time.sleep(0.05)
+    assert spawner.list_alive() == []
+    assert set_calls == []
+
+
+def test_agentloop_set_worktree_swaps_sandbox(tmp_path):
+    """AgentLoop.set_worktree replaces its sandbox with one rooted at
+    the worktree path. Subsequent tool calls resolve paths against it."""
+    from mini_cc.core.loop import AgentLoop, ProjectRef
+    from dataclasses import dataclass
+    from typing import Iterator
+
+    original_sandbox = SubprocessSandbox("p", tmp_path / "ws")
+    (tmp_path / "ws").mkdir(parents=True, exist_ok=True)
+    storage = FSStorage(tmp_path / "state")
+    ref = ProjectRef(project_id="p", project_root=str(tmp_path / "ws"),
+                     sandbox=original_sandbox, storage=storage)
+    loop = AgentLoop(ref, "s1")
+    wt = tmp_path / "wt1"
+    wt.mkdir(parents=True, exist_ok=True)
+    loop.set_worktree(wt)
+    # The new sandbox resolves relative paths against wt, not ws
+    assert loop.project.sandbox.project_root == wt.resolve()
+

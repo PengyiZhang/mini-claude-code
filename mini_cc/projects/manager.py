@@ -147,9 +147,16 @@ class ProjectManager:
 
 
 def _build_teammate_loop(project: "Project", session_id: str):
-    """Build a sub-AgentLoop for a teammate thread."""
+    """Build a sub-AgentLoop for a teammate thread.
+
+    The teammate gets its own SubprocessSandbox so the teams subsystem
+    can redirect it (via AgentLoop.set_worktree) into a claimed task's
+    worktree without affecting the lead or other teammates.
+    """
     from ..core.loop import AgentLoop
-    return AgentLoop(project.as_ref(), session_id)
+    ref = project.as_ref()
+    ref.sandbox = SubprocessSandbox(project.project_id, project.workspace)
+    return AgentLoop(ref, session_id)
 
 
 def project_dir_safe(root: Path, project_id: str) -> Path:

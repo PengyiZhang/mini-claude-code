@@ -11,8 +11,11 @@ Behaviour deltas vs s20 (documented simplifications):
 - Plan-approval gate is enforced between turns, not mid-turn. The
   submit_plan tool tells the model to end its turn; the spawner blocks
   the next turn until review_plan arrives.
-- Auto-cwd into a claimed task's worktree is not wired. The teammate is
-  told the worktree path and manages file paths itself.
+- Auto-cwd into a claimed task's worktree is implemented via
+  AgentLoop.set_worktree: after a successful claim, the spawner swaps
+  the teammate's sandbox root to the worktree path. The teammate gets
+  its own sandbox (built in projects.manager._build_teammate_loop) so
+  the swap doesn't affect other sessions.
 """
 from __future__ import annotations
 
@@ -295,7 +298,7 @@ class TeammateSpawner:
                     continue
 
                 # Idle poll for inbox messages or unclaimed tasks.
-                result, user_input = self._idle_poll(info)
+                result, user_input = self._idle_poll(info, loop)
                 if result == "shutdown":
                     should_shutdown = True
                     break
@@ -333,9 +336,16 @@ class TeammateSpawner:
                         return ("[Plan approved]" if approve
                                 else f"[Plan rejected] {msg.get('content', '')}")
 
-    def _idle_poll(self, info: TeammateInfo) -> tuple[str, str | None]:
+    def _idle_poll(self, info: TeammateInfo,
+                   loop: "AgentLoop | None" = None
+                   ) -> tuple[str, str | None]:
         """Wait up to idle_timeout for work. Returns
-        ("shutdown", None) | ("work", user_input) | ("timeout", None)."""
+        ("shutdown", None) | ("work", user_input) | ("timeout", None).
+
+        If `loop` is provided and an auto-claimed task has a worktree
+        binding, the loop is redirected into the worktree path via
+        set_worktree (s20 wt_ctx behavior) before returning.
+        """
         deadline = time.time() + self.idle_timeout
         while time.time() < deadline:
             time.sleep(self.idle_poll_interval)
@@ -356,6 +366,8 @@ class TeammateSpawner:
                         wt_path = (Path(self.bus.workspace) / ".worktrees"
                                    / task.worktree)
                         wt_info = f"\nWork directory: {wt_path}"
+                        if loop is not None and hasattr(loop, "set_worktree"):
+                            loop.set_worktree(wt_path)
                     return ("work",
                             f"<auto-claimed>Task {task.id}: "
                             f"{task.subject}{wt_info}</auto-claimed>")
