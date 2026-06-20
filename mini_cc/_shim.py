@@ -48,6 +48,8 @@ def agent_loop(messages: list, context: dict):
     teams = TeammateSpawner(
         workspace=cwd,
         loop_factory=lambda sid: AgentLoop(ref, sid),
+        project_id="shim",
+        storage=storage,
     )
     ref.teams = teams
     loop = AgentLoop(ref, "shim")

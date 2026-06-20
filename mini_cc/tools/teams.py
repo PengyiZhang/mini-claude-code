@@ -1,14 +1,25 @@
-"""Teams tools: send_message, check_inbox, list_teammates, request_shutdown.
+"""Teams tools: send_message, check_inbox, list_teammates, request_shutdown,
+spawn_teammate, submit_plan, request_plan, review_plan.
 
 All routed through ctx.teams (TeammateSpawner) which owns the project's
-MessageBus. The lead agent uses these; teammates get their own send_message
-via the spawner's sub-AgentLoop.
+MessageBus + ProtocolTracker. The lead agent uses these; teammates get
+their own send_message / submit_plan via the spawner's sub-AgentLoop.
 """
 from __future__ import annotations
 
 import json
 
 from .base import FunctionTool, ToolContext
+
+
+_TEAMMATE_PREFIX = "teammate:"
+
+
+def _name_from_session(ctx: ToolContext) -> str | None:
+    sid = ctx.session_id or ""
+    if sid.startswith(_TEAMMATE_PREFIX):
+        return sid[len(_TEAMMATE_PREFIX):]
+    return None
 
 
 def _send(ctx: ToolContext, args: dict) -> str:
@@ -18,7 +29,10 @@ def _send(ctx: ToolContext, args: dict) -> str:
     to = args["to"]
     content = args["content"]
     msg_type = args.get("msg_type", "message")
-    spawner.bus.send("lead", to, content, msg_type)
+    # Teammates identify themselves by their session name; the lead uses
+    # the literal "lead".
+    from_ = _name_from_session(ctx) or "lead"
+    spawner.bus.send(from_, to, content, msg_type)
     return f"Sent to {to}"
 
 
@@ -26,7 +40,8 @@ def _check_inbox(ctx: ToolContext, args: dict) -> str:
     spawner = ctx.teams
     if spawner is None:
         return "Teams subsystem not configured for this project"
-    msgs = spawner.bus.read_inbox("lead")
+    who = _name_from_session(ctx) or "lead"
+    msgs = spawner.bus.read_inbox(who)
     if not msgs:
         return "Inbox empty."
     return json.dumps(msgs, ensure_ascii=False)
@@ -60,6 +75,35 @@ def _spawn(ctx: ToolContext, args: dict) -> str:
     return f"Teammate '{args['name']}' spawned"
 
 
+def _submit_plan(ctx: ToolContext, args: dict) -> str:
+    spawner = ctx.teams
+    if spawner is None:
+        return "Teams subsystem not configured for this project"
+    name = _name_from_session(ctx)
+    if name is None:
+        return "submit_plan is only available to teammates"
+    plan = args["plan"]
+    req_id = spawner.submit_plan(name, plan)
+    return (f"Plan submitted ({req_id}). "
+            "End your turn and wait for approval.")
+
+
+def _request_plan(ctx: ToolContext, args: dict) -> str:
+    spawner = ctx.teams
+    if spawner is None:
+        return "Teams subsystem not configured for this project"
+    return spawner.request_plan(args["teammate"], args["task"])
+
+
+def _review_plan(ctx: ToolContext, args: dict) -> str:
+    spawner = ctx.teams
+    if spawner is None:
+        return "Teams subsystem not configured for this project"
+    return spawner.review_plan(
+        args["request_id"], bool(args["approve"]),
+        args.get("feedback", ""))
+
+
 SEND_TOOL = FunctionTool(
     name="send_message",
     description="Send a message to another agent's mailbox.",
@@ -77,7 +121,7 @@ SEND_TOOL = FunctionTool(
 
 CHECK_TOOL = FunctionTool(
     name="check_inbox",
-    description="Drain and return all messages in the lead's inbox.",
+    description="Drain and return all messages in the caller's inbox (lead or teammate).",
     input_schema={"type": "object", "properties": {}, "required": []},
     fn=_check_inbox,
 )
@@ -115,4 +159,47 @@ SPAWN_TOOL = FunctionTool(
     fn=_spawn,
 )
 
-ALL = [SEND_TOOL, CHECK_TOOL, LIST_TOOL, SHUTDOWN_TOOL, SPAWN_TOOL]
+SUBMIT_PLAN_TOOL = FunctionTool(
+    name="submit_plan",
+    description=("Submit a plan to the lead for approval. Teammates only. "
+                 "After calling this, end your turn and wait."),
+    input_schema={
+        "type": "object",
+        "properties": {"plan": {"type": "string"}},
+        "required": ["plan"],
+    },
+    fn=_submit_plan,
+)
+
+REQUEST_PLAN_TOOL = FunctionTool(
+    name="request_plan",
+    description="Ask a teammate to submit a plan for a task.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "teammate": {"type": "string"},
+            "task": {"type": "string"},
+        },
+        "required": ["teammate", "task"],
+    },
+    fn=_request_plan,
+)
+
+REVIEW_PLAN_TOOL = FunctionTool(
+    name="review_plan",
+    description="Approve or reject a pending plan_approval_request by id.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "request_id": {"type": "string"},
+            "approve": {"type": "boolean"},
+            "feedback": {"type": "string"},
+        },
+        "required": ["request_id", "approve"],
+    },
+    fn=_review_plan,
+)
+
+ALL = [SEND_TOOL, CHECK_TOOL, LIST_TOOL, SHUTDOWN_TOOL, SPAWN_TOOL,
+       SUBMIT_PLAN_TOOL, REQUEST_PLAN_TOOL, REVIEW_PLAN_TOOL]
+

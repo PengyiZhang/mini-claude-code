@@ -136,6 +136,8 @@ class ProjectManager:
         project.teams = TeammateSpawner(
             workspace=ws,
             loop_factory=lambda sid, _p=project: _build_teammate_loop(_p, sid),
+            project_id=project_id,
+            storage=storage,
         )
         return project
 
