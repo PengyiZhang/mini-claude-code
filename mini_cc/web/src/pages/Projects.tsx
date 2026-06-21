@@ -92,7 +92,6 @@ export default function Projects() {
               placeholder="project_id (optional)"
               value={pid}
               onChange={(e) => setPid(e.target.value)}
-              pattern="[-A-Za-z0-9_]+"
             />
             <input
               className="bg-bg rounded px-3 py-2 border border-border focus:border-accent outline-none md:col-span-2"
