@@ -43,3 +43,19 @@ class SessionMeta(BaseModel):
     last_active_at: str
     message_count: int
     in_memory: bool
+
+
+class PermissionRequestOut(BaseModel):
+    request_id: str
+    session_id: str
+    tool_name: str
+    tool_input: dict
+    created_at: str
+
+
+class DecidePermissionRequest(BaseModel):
+    decision: str = Field(..., description='"allow" or "deny"')
+    message: str | None = Field(
+        default=None,
+        description="Optional deny reason shown to the model as the "
+                    "tool_result content.")

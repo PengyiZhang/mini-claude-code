@@ -192,6 +192,8 @@ match the tenant_id resolved from the bearer API key, else 403.
 | `DELETE` | `/tenants/{tid}/projects/{pid}/sessions/{sid}`    | stop + unregister; 404 if unknown         |
 | `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/resume` | warm a cold session; idempotent; 404 if not on disk |
 | `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/send` | stream events as SSE; auto-resumes cold sessions; 409 if project busy |
+| `GET`    | `/tenants/{tid}/projects/{pid}/sessions/{sid}/permissions` | list pending permission requests; `[]` if no `permissions.toml` |
+| `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/permissions/{req_id}/decide` | body `{decision:"allow"\|"deny", message?}`; 204 / 404 / 409 |
 | `GET`    | `/tenants/{tid}/projects/{pid}/files/tree?path=`  | list directory children; 400 on traversal |
 | `GET`    | `/tenants/{tid}/projects/{pid}/files/content?path=` | read up to 256 KB of a text file        |
 | `POST`   | `/tenants/{tid}/projects/{pid}/files/mkdir?path=` | create a directory                        |
@@ -389,9 +391,43 @@ the model without losing prior context.
 
 ---
 
+## Interactive permissions
+
+Opt-in per project. Create
+`<workspace>/.mini_cc/permissions.toml`:
+
+```toml
+prompt_tools = ["bash", "fs_write", "fs_edit"]
+timeout_seconds = 300   # optional; default 300
+```
+
+When the loop is about to call a tool listed in `prompt_tools`, it:
+
+1. Emits a `permission_request` event to the SSE stream:
+   ```json
+   {"type": "permission_request", "request_id": "<hex>",
+    "tool_name": "bash", "tool_input": {"command": "..."},
+    "id": "<tool_use_id>"}
+   ```
+2. Blocks until the client POSTs a decision to
+   `/permissions/{req_id}/decide`, the timeout elapses, or the
+   session stops.
+3. On `allow` → runs the tool. On `deny` → the `message` (or
+   `[permission timed out]`) becomes the `tool_result` content shown
+   to the model.
+
+Clients can recover after a reconnect via
+`GET /permissions` which lists currently-pending requests.
+
+Without the config file: no interceptor, no prompts, today's
+behavior. The static `make_permission_hook` (deny-list + destructive
+gate) still applies independently.
+
+---
+
 ## Testing
 
-The framework ships with 259 passing tests + 24 subtests (pytest).
+The framework ships with 289 passing tests + 24 subtests (pytest).
 Mirrors of s20's mocking patterns live in `tests/test_p0_*.py`.
 
 ```bash
@@ -480,10 +516,6 @@ These are **not** bugs — they were deliberately cut. File an issue
 before picking them up so we can align on scope.
 
 - **WebSocket transport.** SSE only for now.
-- **Interactive permission prompts.** s20 prompts the operator via
-  `input()`; an SDK / server context can't. `make_permission_hook`
-  returns a non-interactive gate by default; apps needing interactive
-  prompts register their own.
 - **Container-level sandbox isolation (P5).** Today's sandbox is a
   defense-in-depth soft layer; for untrusted code, run mini_cc inside
   a container.

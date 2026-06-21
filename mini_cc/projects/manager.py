@@ -16,6 +16,7 @@ from typing import Callable
 
 from ..core.hooks import Hooks
 from ..core.loop import ProjectRef
+from ..core.permissions import PermissionInterceptor
 from ..mcp import MCPPool
 from ..sandbox import Policy, SubprocessSandbox
 from ..scheduler import CronScheduler
@@ -25,6 +26,7 @@ from ..teams import TeammateSpawner
 from ..tools.background import BackgroundScheduler
 from .layout import (ProjectMeta, list_project_ids, read_meta, state_path,
                      write_meta, workspace_path)
+from .permissions_config import load_permissions_config
 
 
 StorageFactory = Callable[[Path], Storage]
@@ -63,6 +65,8 @@ class Project:
     background: BackgroundScheduler
     teams: TeammateSpawner
     hooks: Hooks
+    permissions: PermissionInterceptor | None = None
+    prompt_tools: set[str] = None  # type: ignore[assignment]
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -77,6 +81,8 @@ class Project:
             background=self.background,
             teams=self.teams,
             mcp_servers=self.mcp_pool.list_connected(),
+            permissions=self.permissions,
+            prompt_tools=self.prompt_tools or set(),
         )
 
     def rescan_skills(self) -> None:
@@ -138,6 +144,12 @@ class ProjectManager:
         mcp_pool = MCPPool(project_id)
         background = BackgroundScheduler()
         hooks = Hooks()
+        # Per-project interactive-permissions config. None when the file
+        # is missing → today's behavior (no prompts).
+        perm_cfg = load_permissions_config(ws)
+        permissions = (PermissionInterceptor(timeout_seconds=perm_cfg.timeout_seconds)
+                       if perm_cfg is not None else None)
+        prompt_tools = perm_cfg.prompt_tools if perm_cfg is not None else set()
         project = Project(
             project_id=project_id,
             root=self.root,
@@ -151,6 +163,8 @@ class ProjectManager:
             background=background,
             teams=None,  # filled in below
             hooks=hooks,
+            permissions=permissions,
+            prompt_tools=prompt_tools,
         )
         # TeammateSpawner needs a loop_factory that closes over the Project
         # (and hence its as_ref()), so it has to be built after construction.

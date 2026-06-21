@@ -29,6 +29,7 @@ from ..tools import Tool, ToolContext, builtin_tools, dispatch, to_anthropic
 from ..tools.background import BackgroundScheduler, should_run_background
 from .compaction import prepare_context, compact_history
 from .hooks import Hooks
+from .permissions import PermissionInterceptor
 from .recovery import RecoveryState, is_prompt_too_long_error, with_retry
 from .system_prompt import assemble_system_prompt
 
@@ -111,6 +112,8 @@ class ProjectRef:
     teams: TeammateSpawner | None = None
     mcp_servers: list[str] = field(default_factory=list)
     client_factory: Callable | None = None  # override for tests
+    permissions: PermissionInterceptor | None = None
+    prompt_tools: set[str] = field(default_factory=set)
 
 
 class AgentLoop:
@@ -385,6 +388,44 @@ class AgentLoop:
                    "input": tool_input, "id": tool_use_id}
             self._emit({"type": "tool_use", "name": name,
                         "input": tool_input, "id": tool_use_id})
+
+            # Interactive permission prompt: if the project opted in to
+            # per-tool prompts (via .mini_cc/permissions.toml), ask the
+            # client before running. Yields a permission_request event,
+            # then blocks on the interceptor's Event until a decision
+            # arrives via HTTP, the timeout elapses, or the session
+            # stops.
+            interceptor = self.project.permissions
+            if (interceptor is not None
+                    and name in self.project.prompt_tools):
+                req = interceptor.create(
+                    self.session_id, name, tool_input)
+                yield {"type": "permission_request",
+                       "request_id": req.request_id,
+                       "tool_name": name, "tool_input": tool_input,
+                       "id": tool_use_id}
+                self._emit({"type": "permission_request",
+                            "request_id": req.request_id,
+                            "tool_name": name, "tool_input": tool_input,
+                            "id": tool_use_id})
+                decided = interceptor.wait(
+                    req.request_id, stop_event=self._stop)
+                if decided is None or decided.decision != "allow":
+                    output = (decided.deny_message if decided
+                              and decided.deny_message
+                              else "[permission timed out]")
+                    yield {"type": "tool_result",
+                           "tool_use_id": tool_use_id,
+                           "content": output}
+                    self._emit({"type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": output})
+                    if name == "todo_write":
+                        self._rounds_since_todo = 0
+                    else:
+                        self._rounds_since_todo += 1
+                    continue
+                # Decision = allow → fall through to normal execution.
 
             # PreToolUse hook can deny the call; the denial string
             # becomes the tool_result content.

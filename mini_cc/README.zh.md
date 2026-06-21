@@ -188,6 +188,8 @@ data: [DONE]\n\n
 | `DELETE` | `/tenants/{tid}/projects/{pid}/sessions/{sid}`    | 停止并注销;未知 404                       |
 | `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/resume` | 显式 warm 一个冷会话;幂等;不在盘上 404 |
 | `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/send` | 以 SSE 流式返回事件;自动 warm 冷会话;项目被占用时 409 |
+| `GET`    | `/tenants/{tid}/projects/{pid}/sessions/{sid}/permissions` | 列出待处理的权限请求;无 `permissions.toml` 时返回 `[]` |
+| `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/permissions/{req_id}/decide` | body `{decision:"allow"\|"deny", message?}`;204 / 404 / 409 |
 | `GET`    | `/tenants/{tid}/projects/{pid}/files/tree?path=`  | 列出目录子项;路径穿越 400                  |
 | `GET`    | `/tenants/{tid}/projects/{pid}/files/content?path=` | 读取最多 256 KB 的文本文件                |
 | `POST`   | `/tenants/{tid}/projects/{pid}/files/mkdir?path=` | 创建目录                                   |
@@ -359,9 +361,39 @@ Messages、todos 和 session index 都落在 `<state_root>/<project_id>/`
 
 ---
 
+## 交互式权限
+
+按项目可选开启。在工作区放一个
+`<workspace>/.mini_cc/permissions.toml`:
+
+```toml
+prompt_tools = ["bash", "fs_write", "fs_edit"]
+timeout_seconds = 300   # 可选;默认 300
+```
+
+当 loop 即将调用 `prompt_tools` 中列出的工具时,它会:
+
+1. 向 SSE 流发送一条 `permission_request` 事件:
+   ```json
+   {"type": "permission_request", "request_id": "<hex>",
+    "tool_name": "bash", "tool_input": {"command": "..."},
+    "id": "<tool_use_id>"}
+   ```
+2. 阻塞,直到客户端 POST 决定到
+   `/permissions/{req_id}/decide`,或超时,或会话停止。
+3. `allow` → 执行工具;`deny` → `message`(或 `[permission timed out]`)
+   作为 `tool_result` 内容返回给模型。
+
+客户端重连后可以用 `GET /permissions` 拉取当前待处理请求。
+
+没有配置文件时:无 interceptor、无提示,就是今天的行为。静态的
+`make_permission_hook`(deny-list + destructive 拦截)依然独立生效。
+
+---
+
 ## 测试
 
-本框架带 259 个通过的测试 + 24 个子测试(pytest)。s20 的 mock 模式
+本框架带 289 个通过的测试 + 24 个子测试(pytest)。s20 的 mock 模式
 镜像在 `tests/test_p0_*.py`。
 
 ```bash
@@ -447,9 +479,6 @@ MINI_CC_DATA_DIR=$PWD/../mini_cc_data_e2e npm run e2e
 范围。
 
 - **WebSocket 传输。** 暂时只有 SSE。
-- **交互式权限提示。** s20 是通过 `input()` 提示操作员;SDK / server
-  场景做不到。`make_permission_hook` 默认是 non-interactive gate;需要
-  交互提示的应用请自己注册 hook。
 - **容器级沙箱隔离(P5)。** 目前的 sandbox 只是 defense-in-depth 软层;
   对不受信代码,请把 mini_cc 跑在容器里。
   `python -m mini_cc.server`。
