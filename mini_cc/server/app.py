@@ -7,13 +7,14 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from ..auth import TenantKeyRegistry
 from ..projects import ProjectManager
 from ..session import SessionManager
 from .errors import MiniCCError, envelope, map_sdk_exception
-from .middleware import TraceIdMiddleware
+from .metrics import MetricsRegistry, default_registry
+from .middleware import MetricsMiddleware, TraceIdMiddleware
 from .ratelimit import TenantRateLimiter
 from .routes import projects as projects_routes
 from .routes import resources as resources_routes
@@ -40,7 +41,8 @@ def build_app(*, data_dir: Path,
               pm: ProjectManager,
               sm: SessionManager,
               cors_origins: list[str] | None = None,
-              rate_limiter: TenantRateLimiter | None = None) -> FastAPI:
+              rate_limiter: TenantRateLimiter | None = None,
+              metrics_registry: MetricsRegistry | None = None) -> FastAPI:
     """Wire a FastAPI app over the given SDK managers."""
     app = FastAPI(
         title="mini_cc",
@@ -49,14 +51,20 @@ def build_app(*, data_dir: Path,
         lifespan=lifespan,
     )
 
+    if metrics_registry is None:
+        metrics_registry = default_registry()
+
     app.state.key_registry = key_registry
     app.state.pm = pm
     app.state.sm = sm
     app.state.rate_limiter = rate_limiter
+    app.state.metrics = metrics_registry
 
     # TraceId is the outermost so every downstream log line (including
-    # CORS rejections) carries a trace_id.
+    # CORS rejections) carries a trace_id. MetricsMiddleware sits
+    # inside it so the trace_id is visible during metric emission.
     app.add_middleware(TraceIdMiddleware)
+    app.add_middleware(MetricsMiddleware, registry=metrics_registry)
 
     if cors_origins:
         app.add_middleware(
@@ -98,5 +106,19 @@ def build_app(*, data_dir: Path,
     @app.get("/health", tags=["meta"])
     def health() -> dict:
         return {"ok": True}
+
+    @app.get("/metrics", tags=["meta"])
+    def metrics_text() -> PlainTextResponse:
+        """Prometheus 0.0.4 text format. Trusted-network only — no auth."""
+        reg: MetricsRegistry = app.state.metrics
+        return PlainTextResponse(
+            reg.render_prometheus(),
+            media_type="text/plain; version=0.0.4; charset=utf-8")
+
+    @app.get("/metrics.json", tags=["meta"])
+    def metrics_json() -> dict:
+        """JSON snapshot for ad-hoc introspection. Trusted-network only."""
+        reg: MetricsRegistry = app.state.metrics
+        return reg.snapshot()
 
     return app

@@ -114,6 +114,8 @@ class ProjectRef:
     client_factory: Callable | None = None  # override for tests
     permissions: PermissionInterceptor | None = None
     prompt_tools: set[str] = field(default_factory=set)
+    tenant_id: str = ""
+    metrics: "object | None" = None  # MetricsRegistry or None
 
 
 class AgentLoop:
@@ -181,6 +183,40 @@ class AgentLoop:
         if self.on_event:
             self.on_event(ev)
 
+    def _record_usage(self, response) -> None:
+        """Push Anthropic usage (input/output/cache tokens) into the
+        project's MetricsRegistry, if one is attached."""
+        reg = self.project.metrics
+        if reg is None:
+            return
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        try:
+            from ..server.metrics import record_tokens
+            record_tokens(
+                reg,
+                self.project.tenant_id or "unknown",
+                input=getattr(usage, "input_tokens", 0) or 0,
+                output=getattr(usage, "output_tokens", 0) or 0,
+                cache_read=getattr(usage, "cache_read_input_tokens", 0) or 0,
+                cache_create=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            )
+        except Exception:
+            # Metrics are best-effort — never break a turn because of them.
+            pass
+
+    def _record_request_status(self, status: str) -> None:
+        """Increment anthropic_request_total{status=...}."""
+        reg = self.project.metrics
+        if reg is None:
+            return
+        try:
+            reg.counters["anthropic_request_total"].inc(
+                tenant=self.project.tenant_id or "unknown", status=status)
+        except Exception:
+            pass
+
     @property
     def client(self):
         if self._client is None:
@@ -245,18 +281,27 @@ class AgentLoop:
                     # events and abort the in-flight HTTP request mid-turn.
                     # Returns the final Message on normal completion, or
                     # None if cancelled (signals the caller to exit run()).
-                    with self.client.messages.stream(
-                        model=self.state.current_model,
-                        system=system,
-                        messages=self.messages,
-                        tools=to_anthropic(self.tools),
-                        max_tokens=max_tokens,
-                    ) as stream:
-                        for _ in stream:
-                            if self._stop.is_set():
-                                stream.close()
-                                return None
-                        return stream.get_final_message()
+                    from ..server.tracing import log_span
+                    with log_span("anthropic.request",
+                                  tenant=self.project.tenant_id or "unknown",
+                                  model=self.state.current_model,
+                                  session_id=self.session_id):
+                        with self.client.messages.stream(
+                            model=self.state.current_model,
+                            system=system,
+                            messages=self.messages,
+                            tools=to_anthropic(self.tools),
+                            max_tokens=max_tokens,
+                        ) as stream:
+                            for _ in stream:
+                                if self._stop.is_set():
+                                    stream.close()
+                                    self._record_request_status("cancelled")
+                                    return None
+                            response = stream.get_final_message()
+                            self._record_usage(response)
+                            self._record_request_status("success")
+                            return response
 
                 response = with_retry(_call_model, self.state, on_event=self._emit)
 
@@ -267,6 +312,7 @@ class AgentLoop:
                     self._persist()
                     return
             except Exception as e:
+                self._record_request_status("error")
                 if is_prompt_too_long_error(e) and not self.state.has_attempted_reactive_compact:
                     self.messages[:] = compact_history(
                         self.messages, before_compact=self._save_transcript)

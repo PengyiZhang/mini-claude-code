@@ -59,6 +59,7 @@ def cmd_serve(args) -> int:
     from ..session import SessionManager
     from .app import build_app
     from .logging_config import configure_logging
+    from .metrics import default_registry
     from .ratelimit import TenantRateLimiter
 
     configure_logging(
@@ -69,7 +70,8 @@ def cmd_serve(args) -> int:
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    pm = ProjectManager(data_dir / "projects")
+    metrics = default_registry()
+    pm = ProjectManager(data_dir / "projects", metrics=metrics)
     sm = SessionManager(pm)
     reg = _key_registry()
 
@@ -80,7 +82,8 @@ def cmd_serve(args) -> int:
     cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()]
 
     app = build_app(data_dir=data_dir, key_registry=reg, pm=pm, sm=sm,
-                    cors_origins=cors_origins, rate_limiter=limiter)
+                    cors_origins=cors_origins, rate_limiter=limiter,
+                    metrics_registry=metrics)
 
     host = _env("MINI_CC_HOST", "127.0.0.1")
     port = int(_env("MINI_CC_PORT", "8000"))

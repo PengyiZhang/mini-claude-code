@@ -308,6 +308,10 @@ Environment variables (read by `python -m mini_cc.server`):
 | `MINI_CC_LOG_LEVEL`     | `INFO`           | root logger level                            |
 | `MINI_CC_RATE_LIMIT_RPM_DEFAULT` | `60`    | per-tenant requests/min (token bucket)       |
 | `MINI_CC_RATE_LIMIT_RPM` | (empty)         | `tenant=rpm,tenant=rpm,...` overrides        |
+| `MINI_CC_METRICS_ENABLED` | `1`           | master switch for the MetricsMiddleware       |
+| `MINI_CC_OTEL_EXPORTER` | (unset)         | `otlp`, `jaeger`, or `console` (else log-only)|
+| `MINI_CC_OTEL_ENDPOINT` | `http://localhost:4317` | OTLP gRPC endpoint              |
+| `MINI_CC_OTEL_SERVICE_NAME` | `mini-cc`    | OTel resource attribute                       |
 
 The rate limiter is a per-tenant token bucket: capacity = RPM (so a
 fresh tenant can burst a full minute of calls at once), refill =
@@ -328,6 +332,72 @@ set_default_config(AnthropicConfig(
     api_key="sk-ant-...",
     primary_model="claude-opus-4-7",
 ))
+```
+
+---
+
+## Observability (Phase E)
+
+mini_cc ships two metric endpoints and an opt-in tracing layer. Both
+inherit the trusted-network model (server binds 127.0.0.1 by default,
+no auth on `/metrics`).
+
+**Metric endpoints**:
+
+- `GET /metrics` — Prometheus 0.0.4 text format. Point a Prometheus
+  scraper at it.
+- `GET /metrics.json` — JSON snapshot of the same data; easier to
+  consume from the web UI or admin scripts.
+
+**Metric catalog**:
+
+| Metric | Type | Labels | Source |
+| ------ | ---- | ------ | ------ |
+| `http_requests_total` | counter | method, route_template, status, tenant | MetricsMiddleware |
+| `http_request_duration_seconds` | histogram | method, route_template, tenant | MetricsMiddleware |
+| `http_in_flight_requests` | gauge | — | MetricsMiddleware |
+| `anthropic_tokens_total` | counter | tenant, kind (input/output/cache_read/cache_create) | AgentLoop |
+| `anthropic_request_total` | counter | tenant, status (success/error/cancelled) | AgentLoop |
+| `anthropic_request_duration_seconds` | histogram | tenant | AgentLoop |
+
+`route_template` uses FastAPI's `{tid}`/`{pid}`/`{sid}` form (not the
+resolved URL), so cardinality is bounded. `tenant` defaults to
+`unknown` for unauthenticated routes (health, the metrics endpoints
+themselves).
+
+**Tracing model**:
+
+- Default mode is *log spans*: each `log_span(name, **fields)` block
+  in `mini_cc.server.tracing` emits a structured `span.end` INFO log
+  line on exit, carrying `span`, `dur_ms`, `trace_id`, and the
+  caller-supplied fields. Zero extra deps.
+- Setting `MINI_CC_OTEL_EXPORTER=otlp` (or `jaeger` / `console`)
+  lazily imports the OpenTelemetry SDK and emits real OTel spans in
+  addition to the log lines. Missing `opentelemetry-*` packages →
+  warning + fall back to log-only mode.
+
+**Token attribution**:
+
+After each Anthropic stream completion, `AgentLoop.run()` reads
+`response.usage` and pushes four counters
+(`input`/`output`/`cache_read`/`cache_create`) per tenant. Cancellations
+increment `anthropic_request_total{status="cancelled"}` instead.
+
+**Quickstart with Prometheus**:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: mini_cc
+    static_configs:
+      - targets: ["localhost:8000"]
+```
+
+```bash
+# Drive some traffic and watch counters tick
+python -m mini_cc.server &
+for i in $(seq 1 5); do curl -s localhost:8000/health >/dev/null; done
+curl -s localhost:8000/metrics | grep http_requests_total
 ```
 
 ---

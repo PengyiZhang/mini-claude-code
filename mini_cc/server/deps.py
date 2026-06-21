@@ -89,6 +89,9 @@ def _resolve(request: Request, tid: str, authorization: str | None,
                      "held": list(rec.scopes)},
             extra_headers={"WWW-Authenticate":
                            f'Bearer scope="{required_scope}"'})
+    # Publish on request.state so the metrics middleware can pick it up
+    # without re-resolving the bearer.
+    request.state.tenant_id = tid
     return tid
 
 

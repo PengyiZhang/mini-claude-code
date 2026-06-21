@@ -67,6 +67,7 @@ class Project:
     hooks: Hooks
     permissions: PermissionInterceptor | None = None
     prompt_tools: set[str] = None  # type: ignore[assignment]
+    _metrics: "object | None" = None  # MetricsRegistry or None
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -83,6 +84,8 @@ class Project:
             mcp_servers=self.mcp_pool.list_connected(),
             permissions=self.permissions,
             prompt_tools=self.prompt_tools or set(),
+            tenant_id=self.meta.tenant_id,
+            metrics=self._metrics,
         )
 
     def rescan_skills(self) -> None:
@@ -93,11 +96,13 @@ class Project:
 class ProjectManager:
     def __init__(self, root: Path,
                  storage_factory: StorageFactory | None = None,
-                 policy: Policy | None = None):
+                 policy: Policy | None = None,
+                 metrics: "object | None" = None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.storage_factory = storage_factory or _fs_factory
         self.policy = policy or Policy()
+        self.metrics = metrics
 
     def _state_root(self) -> Path:
         # All projects share one Storage root for simplicity; FSStorage
@@ -165,6 +170,7 @@ class ProjectManager:
             hooks=hooks,
             permissions=permissions,
             prompt_tools=prompt_tools,
+            _metrics=self.metrics,
         )
         # TeammateSpawner needs a loop_factory that closes over the Project
         # (and hence its as_ref()), so it has to be built after construction.

@@ -292,6 +292,10 @@ fixture 字节保持不变。
 | `MINI_CC_HOST`          | `127.0.0.1`        | 服务绑定地址                                    |
 | `MINI_CC_PORT`          | `8000`             | 服务端口                                        |
 | `MINI_CC_CORS_ORIGINS`  | (空)              | 逗号分隔的允许跨域来源(给浏览器 SSE 用)       |
+| `MINI_CC_METRICS_ENABLED` | `1`              | MetricsMiddleware 的总开关                     |
+| `MINI_CC_OTEL_EXPORTER` | (空)              | `otlp` / `jaeger` / `console`(否则仅日志)     |
+| `MINI_CC_OTEL_ENDPOINT` | `http://localhost:4317` | OTLP gRPC 端点                          |
+| `MINI_CC_OTEL_SERVICE_NAME` | `mini-cc`       | OTel resource 属性                             |
 
 编程式配置:
 
@@ -301,6 +305,65 @@ set_default_config(AnthropicConfig(
     api_key="sk-ant-...",
     primary_model="claude-opus-4-7",
 ))
+```
+
+---
+
+## 可观测性(Phase E)
+
+mini_cc 自带两个 metrics 端点 + 可选 trace 层。都继承「可信网络」
+模型(默认绑定 127.0.0.1,`/metrics` 无 auth)。
+
+**Metrics 端点**:
+
+- `GET /metrics` —— Prometheus 0.0.4 文本格式。让 Prometheus 直接抓。
+- `GET /metrics.json` —— 同一份数据的 JSON 快照,Web UI / 脚本好消费。
+
+**Metrics 目录**:
+
+| Metric | 类型 | 标签 | 来源 |
+| ------ | ---- | ---- | ---- |
+| `http_requests_total` | counter | method, route_template, status, tenant | MetricsMiddleware |
+| `http_request_duration_seconds` | histogram | method, route_template, tenant | MetricsMiddleware |
+| `http_in_flight_requests` | gauge | — | MetricsMiddleware |
+| `anthropic_tokens_total` | counter | tenant, kind (input/output/cache_read/cache_create) | AgentLoop |
+| `anthropic_request_total` | counter | tenant, status (success/error/cancelled) | AgentLoop |
+| `anthropic_request_duration_seconds` | histogram | tenant | AgentLoop |
+
+`route_template` 使用 FastAPI 的 `{tid}`/`{pid}`/`{sid}` 形式(非解析后
+的 URL),保证标签基数有限。`tenant` 在未鉴权路由上默认 `unknown`。
+
+**Trace 模型**:
+
+- 默认是「日志 span」:`mini_cc.server.tracing` 里的
+  `log_span(name, **fields)` 在退出时发一条结构化 `span.end` INFO 日志,
+  含 `span` / `dur_ms` / `trace_id` + 调用方字段。零额外依赖。
+- 设 `MINI_CC_OTEL_EXPORTER=otlp`(或 `jaeger` / `console`)会按需
+  import OpenTelemetry SDK,额外发真正的 OTel span。缺少
+  `opentelemetry-*` 包时打一条 warning,退化为仅日志模式。
+
+**Token 归属**:
+
+每次 Anthropic stream 完成后,`AgentLoop.run()` 读
+`response.usage`,按 tenant 推四个 counter
+(`input`/`output`/`cache_read`/`cache_create`)。被取消时改推
+`anthropic_request_total{status="cancelled"}`。
+
+**Prometheus 抓取示例**:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: mini_cc
+    static_configs:
+      - targets: ["localhost:8000"]
+```
+
+```bash
+# 制造点流量,看 counter 涨
+python -m mini_cc.server &
+for i in $(seq 1 5); do curl -s localhost:8000/health >/dev/null; done
+curl -s localhost:8000/metrics | grep http_requests_total
 ```
 
 ---
