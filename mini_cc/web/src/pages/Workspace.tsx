@@ -147,6 +147,16 @@ export default function Workspace() {
     }
   }
 
+  function abort() {
+    // Abort the in-flight SSE stream. streamSend catches AbortError
+    // and calls onDone instead of onError, so we must finish the
+    // assistant turn here to clear the streaming state — otherwise
+    // the send button stays disabled forever.
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (chatKey) finishAssistant(chatKey);
+  }
+
   async function send() {
     if (!sid || !input.trim() || streaming) return;
     const text = input;
@@ -421,11 +431,15 @@ export default function Workspace() {
                     className="flex-1 bg-bg border border-border rounded px-3 py-2 text-sm outline-none focus:border-accent resize-none disabled:opacity-50"
                   />
                   <button
-                    onClick={send}
-                    disabled={!sid || streaming || !input.trim()}
-                    className="px-4 bg-accent hover:bg-accent-hover disabled:opacity-50 text-white rounded font-medium"
+                    onClick={streaming ? abort : send}
+                    disabled={!sid || (!streaming && !input.trim())}
+                    className={`px-4 text-white rounded font-medium disabled:opacity-50 ${
+                      streaming
+                        ? "bg-err hover:bg-err/90"
+                        : "bg-accent hover:bg-accent-hover"
+                    }`}
                   >
-                    {streaming ? "…" : "send"}
+                    {streaming ? "■ stop" : "send"}
                   </button>
                 </div>
               </div>

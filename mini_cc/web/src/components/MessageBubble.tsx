@@ -98,6 +98,17 @@ function Activity({
 function summarize(input: Record<string, unknown>): string {
   const vals = Object.values(input ?? {});
   if (vals.length === 0) return "";
-  const first = String(vals[0]);
-  return first.length > 60 ? first.slice(0, 60) + "…" : first;
+  const first = vals[0];
+  // Strings/numbers/booleans stringify cleanly, but objects and arrays
+  // come back as "[object Object]" — useless in a one-line summary.
+  // Pick a compact JSON representation for non-primitives, then truncate.
+  const str =
+    first !== null &&
+    typeof first === "object" &&
+    !Array.isArray(first)
+      ? JSON.stringify(first)
+      : Array.isArray(first)
+        ? `[${first.length} item${first.length === 1 ? "" : "s"}]`
+        : String(first);
+  return str.length > 60 ? str.slice(0, 60) + "…" : str;
 }
