@@ -16,6 +16,7 @@ import {
   listPendingPermissions,
   listSessions,
   startSession,
+  uploadFiles,
 } from "../lib/api";
 import { useAuth, useChat } from "../lib/store";
 import type { ChatMessage } from "../lib/store";
@@ -229,6 +230,48 @@ export default function Workspace() {
     }
   }
 
+  // Root-level upload: lets the user populate an empty workspace without
+  // first right-clicking an existing folder (which is impossible when the
+  // tree has no entries yet). Mirrors TreeRow.triggerUpload so behavior is
+  // consistent regardless of entry point.
+  async function uploadToRoot(kind: "file" | "folder") {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.style.display = "none";
+    if (kind === "folder") {
+      (input as HTMLInputElement & { webkitdirectory: boolean }).webkitdirectory = true;
+    }
+    input.onchange = async () => {
+      if (!input.files || input.files.length === 0) {
+        input.remove();
+        return;
+      }
+      setError(null);
+      const files: File[] = [];
+      const rels: string[] = [];
+      for (const f of Array.from(input.files)) {
+        files.push(f);
+        const rel: string =
+          (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
+        // For folder uploads, strip the top-level folder name (matches
+        // TreeRow behavior): we want the *contents*, not a redundant parent.
+        const cleaned = kind === "folder" ? rel.split("/").slice(1).join("/") || rel : rel;
+        rels.push(cleaned);
+      }
+      try {
+        await uploadFiles(profile, pid, "", files, rels);
+        setTreeReload((n) => n + 1);
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : (e as Error).message);
+      } finally {
+        input.remove();
+      }
+    };
+    document.body.appendChild(input);
+    input.click();
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
       <TopBar title={`${pid}`} />
@@ -278,6 +321,18 @@ export default function Workspace() {
 
           {tab === "files" && (
             <div className="space-y-2">
+              <button
+                onClick={() => uploadToRoot("file")}
+                className="w-full text-sm px-3 py-1.5 rounded border border-border hover:border-accent"
+              >
+                ⬆ Upload files…
+              </button>
+              <button
+                onClick={() => uploadToRoot("folder")}
+                className="w-full text-sm px-3 py-1.5 rounded border border-border hover:border-accent"
+              >
+                ⬆ Upload folder…
+              </button>
               <button
                 onClick={download}
                 className="w-full text-sm px-3 py-1.5 rounded border border-border hover:border-accent"
@@ -376,7 +431,7 @@ export default function Workspace() {
                   <FilePreview pid={pid} path={previewPath} />
                 ) : (
                   <div className="text-sm text-ink-dim">
-                    select a file to preview, or right-click any folder to upload files or folders.
+                    select a file to preview, use the upload buttons in the sidebar, or right-click any folder in the tree.
                   </div>
                 )}
               </div>
