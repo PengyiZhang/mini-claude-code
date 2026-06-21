@@ -21,13 +21,20 @@ async function globalSetup() {
   let apiKey = process.env.E2E_API_KEY;
   if (!apiKey) {
     try {
-      const out = execSync(`python -m mini_cc.server keygen e2e`, {
-        env: { ...process.env, MINI_CC_DATA_DIR: DATA_DIR },
-        cwd: REPO_ROOT,
-      })
+      const out = execSync(
+        `python -m mini_cc.server keygen e2e ` +
+          `--scopes "projects:read" --scopes "projects:write" ` +
+          `--scopes "sessions:read" --scopes "sessions:write" ` +
+          `--scopes "files:read" --scopes "files:write"`,
+        {
+          env: { ...process.env, MINI_CC_DATA_DIR: DATA_DIR },
+          cwd: REPO_ROOT,
+        },
+      )
         .toString()
         .trim();
-      apiKey = out;
+      // keygen prints "mck_...  tenant=...  scopes=...  expires=..." — first token is the key.
+      apiKey = out.split(/\s+/)[0];
     } catch (e) {
       throw new Error(
         `failed to generate e2e api key — is the server running with MINI_CC_DATA_DIR=${DATA_DIR}? ` +
@@ -65,7 +72,7 @@ async function globalSetup() {
       )
         .toString()
         .trim();
-      adminKey = out;
+      adminKey = out.split(/\s+/)[0];
     } catch (e) {
       throw new Error(
         `failed to generate e2e admin api key: ${(e as Error).message}`,

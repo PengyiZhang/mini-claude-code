@@ -38,10 +38,12 @@ test.describe("admin", () => {
 
   test("admin login → keys listed", async ({ page }) => {
     await adminSignIn(page);
-    // The e2e-admin key itself + any others should appear.
-    await expect(page.locator("text=/API keys|no keys/i").or(
-      page.locator("table tbody tr"),
-    )).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: /API keys/ })).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.locator("table tbody tr").first()).toBeVisible({
+      timeout: 10_000,
+    });
   });
 
   test("creates a new read-only key", async ({ page }) => {
