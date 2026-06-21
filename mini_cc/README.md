@@ -602,10 +602,34 @@ Open http://localhost:5173 and sign in with the `mck_<hex>` key from
 - **Workspace** with three tabs:
   - **Chat** — SSE-streamed assistant replies, foldable activity cards
     (tool_use / tool_result) that default-collapsed, click to expand.
+    Inline **permission prompts** render when the agent requests a
+    tool call gated by `permissions.toml` (with optional countdown).
+    The sidebar session list shows a **cold/warm dot** per session;
+    hovering exposes a "warm" button that POSTs `/sessions/{sid}/resume`
+    to load the on-disk session into memory.
   - **Files** — recursive tree with a right-click context menu: upload
     files, upload folder (preserves structure via `webkitdirectory`),
     new folder, preview, delete. Download project as ZIP.
   - **Sessions** — list, open, remove.
+
+### Admin UI (Phase F)
+
+The **admin** entry in the top bar opens a separate auth flow that
+requires a `*`-scoped key. Routes are prefixed `/admin/*` and have
+their own `localStorage` slot (`mini_cc.admin.v1`), so admin and chat
+sessions can coexist.
+
+- **AdminLogin** — tenant + key form. Probe is `GET /tenants/{tid}/admin/keys`,
+  which needs `admin:read`. Insufficient-scope keys are rejected with a
+  visible error.
+- **AdminKeys** — full key lifecycle: list, create, edit (PATCH scopes /
+  label / expiry), rotate (with optional `grace_hours`), revoke. Scope
+  chips are color-coded (`*` → red, `admin:read` → amber, `read:*` → sky…).
+- **AdminMetrics** — refreshes `/tenants/{tid}/admin/metrics.json` every
+  5s and renders: per-route HTTP request counts, sparkline of req/min,
+  token counters (input / output / cache_read / cache_create), Anthropic
+  request status table, and bucket-distribution bars for the HTTP and
+  Anthropic latency histograms.
 
 ### Playwright e2e
 
@@ -614,10 +638,12 @@ cd mini_cc/web
 MINI_CC_DATA_DIR=$PWD/../mini_cc_data_e2e npm run e2e
 ```
 
-`e2e/globalSetup.ts` provisions a fresh `e2e` tenant + key + project
-(`e2e_proj`) against the running backend. Four specs cover auth,
-project creation, file upload + preview + zip download, and a streamed
-chat turn through LiteLLM.
+`e2e/globalSetup.ts` provisions a fresh `e2e` tenant, a default-scoped
+key, **and** a `*`-scoped admin key, plus the `e2e_proj` project against
+the running backend. Specs cover auth, project creation, file upload +
+preview + zip download, a streamed chat turn through LiteLLM, and the
+admin flow (login reject for non-admin keys, key listing, new-key
+creation, metrics dashboard render).
 
 ---
 

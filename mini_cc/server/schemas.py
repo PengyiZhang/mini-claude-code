@@ -59,3 +59,39 @@ class DecidePermissionRequest(BaseModel):
         default=None,
         description="Optional deny reason shown to the model as the "
                     "tool_result content.")
+
+
+# ── Admin / keys management (Phase F) ────────────────────────────────
+
+class KeyOut(BaseModel):
+    key: str
+    tenant_id: str
+    scopes: list[str]
+    created_at: str
+    expires_at: str | None
+    label: str
+    rotated_from: str | None
+
+
+class CreateKeyRequest(BaseModel):
+    scopes: list[str] | None = None
+    expires_in: str | None = None
+    label: str = ""
+
+
+class UpdateKeyRequest(BaseModel):
+    scopes: list[str] | None = None
+    expires_in: str | None = None
+    label: str | None = None
+
+
+class RotateKeyRequest(BaseModel):
+    grace_hours: int = 0
+    scopes: list[str] | None = None
+    expires_in: str | None = None
+    label: str | None = None
+
+
+class RotateKeyOut(BaseModel):
+    new_key: KeyOut
+    old_key: KeyOut | None = None  # None when hard-revoked (grace_hours=0)

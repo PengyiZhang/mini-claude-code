@@ -4,7 +4,19 @@ import TopBar from "../components/TopBar";
 import FileTree from "../components/FileTree";
 import FilePreview from "../components/FilePreview";
 import MessageBubble from "../components/MessageBubble";
-import { ApiError, deleteSession, downloadZip, listSessions, startSession } from "../lib/api";
+import PermissionPrompt, {
+  PermissionPromptData,
+  pendingToData,
+} from "../components/PermissionPrompt";
+import SessionRow from "../components/SessionRow";
+import {
+  ApiError,
+  deleteSession,
+  downloadZip,
+  listPendingPermissions,
+  listSessions,
+  startSession,
+} from "../lib/api";
 import { useAuth, useChat } from "../lib/store";
 import type { ChatMessage } from "../lib/store";
 import { streamSend } from "../lib/sse";
@@ -12,18 +24,21 @@ import { streamSend } from "../lib/sse";
 type Tab = "chat" | "files" | "sessions";
 
 const EMPTY: ChatMessage[] = [];
+const EMPTY_PERMS: PermissionPromptData[] = [];
 
 export default function Workspace() {
   const { pid = "" } = useParams();
   const profile = useAuth((s) => s.current())!;
   const [tab, setTab] = useState<Tab>("chat");
   const [sessions, setSessions] = useState<string[]>([]);
+  const [warmSet, setWarmSet] = useState<Record<string, boolean>>({});
   const [sid, setSid] = useState<string | null>(null);
   const [busySid, setBusySid] = useState(false);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [treeReload, setTreeReload] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [pending, setPending] = useState<PermissionPromptData[]>(EMPTY_PERMS);
 
   const chatKey = sid ? `${pid}::${sid}` : null;
   const chatMessages = useChat((s) => (chatKey ? (s.messages[chatKey] ?? EMPTY) : EMPTY));
@@ -52,6 +67,31 @@ export default function Workspace() {
     }
   }
 
+  // Poll pending permissions for the active session every few seconds.
+  useEffect(() => {
+    if (!sid) {
+      setPending([]);
+      return;
+    }
+    let cancelled = false;
+    async function poll() {
+      try {
+        const list = await listPendingPermissions(profile, pid, sid!);
+        if (cancelled) return;
+        setPending(list.map(pendingToData));
+      } catch {
+        // Ignore — interceptor may not be configured.
+      }
+    }
+    void poll();
+    const id = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid, pid, profile.apiKey]);
+
   useEffect(() => {
     refreshSessions().then((list) => {
       if (list.length > 0 && !sid) setSid(list[0]);
@@ -71,6 +111,7 @@ export default function Workspace() {
     try {
       const out = await startSession(profile, pid, {});
       setSessions((s) => [...s, out.session_id]);
+      setWarmSet((m) => ({ ...m, [out.session_id]: true }));
       setSid(out.session_id);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : (e as Error).message);
@@ -126,6 +167,27 @@ export default function Workspace() {
               break;
             case "tool_result":
               setActivityResult(chatKey!, ev.tool_use_id, ev.content);
+              break;
+            case "permission_request":
+              setPending((p) =>
+                p.some((x) => x.request_id === ev.request_id)
+                  ? p
+                  : [
+                      ...p,
+                      {
+                        request_id: ev.request_id,
+                        tool_name: ev.tool_name,
+                        tool_input: ev.tool_input,
+                        ttl_seconds: ev.ttl_seconds,
+                      },
+                    ],
+              );
+              break;
+            case "permission_resolved":
+              setPending((p) => p.filter((x) => x.request_id !== ev.request_id));
+              break;
+            case "session_warm":
+              setWarmSet((m) => ({ ...m, [ev.session_id]: true }));
               break;
             case "done":
               finishAssistant(chatKey!);
@@ -199,24 +261,16 @@ export default function Workspace() {
               </button>
               <div className="space-y-1">
                 {sessions.map((s) => (
-                  <div
+                  <SessionRow
                     key={s}
-                    className={`text-sm font-mono px-2 py-1 rounded cursor-pointer flex justify-between items-center group ${
-                      sid === s ? "bg-bg-hover text-ink" : "text-ink-dim hover:bg-bg-hover"
-                    }`}
+                    sid={s}
+                    profile={profile}
+                    pid={pid}
+                    active={sid === s}
+                    inMemory={warmSet[s] ?? false}
                     onClick={() => setSid(s)}
-                  >
-                    <span className="truncate flex-1">{s}</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeSession(s);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 text-err/70 hover:text-err text-xs"
-                    >
-                      ×
-                    </button>
-                  </div>
+                    onRemove={() => removeSession(s)}
+                  />
                 ))}
               </div>
             </div>
@@ -249,6 +303,24 @@ export default function Workspace() {
 
           {tab === "chat" && (
             <>
+              {/* Pending permission prompts */}
+              {sid && pending.length > 0 && (
+                <div className="space-y-2 p-3 border-b border-amber-500/30 bg-amber-500/5">
+                  {pending.map((p) => (
+                    <PermissionPrompt
+                      key={p.request_id}
+                      profile={profile}
+                      pid={pid}
+                      sid={sid}
+                      data={p}
+                      onResolved={(reqId) =>
+                        setPending((cur) => cur.filter((x) => x.request_id !== reqId))
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+
               <div ref={scrollRef} className="flex-1 overflow-auto p-6 space-y-4">
                 {!sid ? (
                   <div className="text-sm text-ink-dim">no session — click “new session” to begin</div>
@@ -332,7 +404,13 @@ export default function Workspace() {
                     key={s}
                     className="bg-bg-card border border-border rounded p-3 flex items-center justify-between"
                   >
-                    <div className="font-mono text-sm">{s}</div>
+                    <div className="flex items-center gap-2 font-mono text-sm">
+                      <span
+                        title={warmSet[s] ? "warm" : "cold"}
+                        className={`size-2 rounded-full ${warmSet[s] ? "bg-emerald-500" : "bg-slate-500"}`}
+                      />
+                      {s}
+                    </div>
                     <div className="flex gap-2">
                       <button
                         onClick={() => {

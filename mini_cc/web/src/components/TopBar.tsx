@@ -38,6 +38,12 @@ export default function TopBar({ title }: { title?: string }) {
             >
               manage tenants
             </Link>
+            <Link
+              to="/admin/login"
+              className="px-3 py-1 rounded border border-amber-500/40 text-amber-300 hover:bg-amber-500/10"
+            >
+              admin
+            </Link>
           </>
         )}
       </div>

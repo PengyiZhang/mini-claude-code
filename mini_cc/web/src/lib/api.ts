@@ -1,4 +1,15 @@
-import type { ApiErrorEnvelope, FileContent, ProjectOut, TenantProfile, TreeNode } from "./types";
+import type {
+  ApiErrorEnvelope,
+  FileContent,
+  KeyOut,
+  MetricSnapshot,
+  PermissionRequestOut,
+  ProjectOut,
+  RotateKeyOut,
+  SessionMeta,
+  TenantProfile,
+  TreeNode,
+} from "./types";
 
 const DEFAULT_BASE = "http://127.0.0.1:8002";
 
@@ -94,11 +105,37 @@ export async function listSessions(profile: TenantProfile, pid: string): Promise
   return res.json();
 }
 
+export async function listSessionMetas(
+  profile: TenantProfile,
+  pid: string,
+): Promise<SessionMeta[]> {
+  // Sessions list endpoint accepts a query to return full meta. We use the
+  // bare-id list and then call resume-sessions for cold ones. To keep one
+  // round-trip, prefer /sessions when it returns SessionMeta — but the
+  // current shape is string[]. Reuse string list + warm-up pings only on
+  // demand (handled by the UI).
+  const res = await fetch(tenantPath(profile, `/projects/${pid}/sessions`), {
+    headers: authHeaders(profile),
+  });
+  if (!res.ok) await parseErr(res);
+  const raw = (await res.json()) as unknown;
+  if (Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object") {
+    return raw as SessionMeta[];
+  }
+  return (raw as string[]).map((s) => ({
+    session_id: s,
+    created_at: "",
+    last_active_at: "",
+    message_count: 0,
+    in_memory: false,
+  }));
+}
+
 export async function startSession(
   profile: TenantProfile,
   pid: string,
   body: { session_id?: string; model?: string },
-): Promise<{ project_id: string; session_id: string }> {
+): Promise<{ project_id: string; session_id: string; created: boolean }> {
   const res = await fetch(tenantPath(profile, `/projects/${pid}/sessions`), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders(profile) },
@@ -108,11 +145,58 @@ export async function startSession(
   return res.json();
 }
 
+export async function resumeSession(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+): Promise<SessionMeta> {
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/sessions/${sid}/resume`),
+    { method: "POST", headers: authHeaders(profile) },
+  );
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
 export async function deleteSession(profile: TenantProfile, pid: string, sid: string): Promise<void> {
   const res = await fetch(tenantPath(profile, `/projects/${pid}/sessions/${sid}`), {
     method: "DELETE",
     headers: authHeaders(profile),
   });
+  if (!res.ok && res.status !== 204) await parseErr(res);
+}
+
+// ── Permissions ──────────────────────────────────────────────────────
+
+export async function listPendingPermissions(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+): Promise<PermissionRequestOut[]> {
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/sessions/${sid}/permissions`),
+    { headers: authHeaders(profile) },
+  );
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function decidePermission(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+  reqId: string,
+  decision: "allow" | "deny",
+  message?: string,
+): Promise<void> {
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/sessions/${sid}/permissions/${reqId}/decide`),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders(profile) },
+      body: JSON.stringify({ decision, message: message ?? null }),
+    },
+  );
   if (!res.ok && res.status !== 204) await parseErr(res);
 }
 
@@ -180,6 +264,94 @@ export async function downloadZip(profile: TenantProfile, pid: string): Promise<
   });
   if (!res.ok) await parseErr(res);
   return res.blob();
+}
+
+// ── Admin / keys (Phase F) ───────────────────────────────────────────
+// Admin uses an explicit tenantId (may differ from chat tenant profile).
+
+export interface AdminProfile {
+  baseUrl: string;
+  tenantId: string;
+  apiKey: string;
+}
+
+function adminPath(p: AdminProfile, suffix: string): string {
+  return `${p.baseUrl}/tenants/${p.tenantId}/admin${suffix}`;
+}
+
+function adminHeaders(p: AdminProfile): Record<string, string> {
+  return { Authorization: `Bearer ${p.apiKey}` };
+}
+
+/** Probe by listing keys — 200 means the key has admin:read. */
+export async function verifyAdmin(p: AdminProfile): Promise<KeyOut[]> {
+  const res = await fetch(adminPath(p, "/keys"), { headers: adminHeaders(p) });
+  if (res.status === 401 || res.status === 403) {
+    throw new ApiError(res.status, "forbidden", "key lacks admin:read scope");
+  }
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function adminListKeys(p: AdminProfile): Promise<KeyOut[]> {
+  const res = await fetch(adminPath(p, "/keys"), { headers: adminHeaders(p) });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function adminCreateKey(
+  p: AdminProfile,
+  body: { scopes?: string[]; expires_in?: string; label?: string },
+): Promise<KeyOut> {
+  const res = await fetch(adminPath(p, "/keys"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...adminHeaders(p) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function adminUpdateKey(
+  p: AdminProfile,
+  key: string,
+  body: { scopes?: string[]; expires_in?: string; label?: string },
+): Promise<KeyOut> {
+  const res = await fetch(adminPath(p, `/keys/${encodeURIComponent(key)}`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...adminHeaders(p) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function adminRevokeKey(p: AdminProfile, key: string): Promise<void> {
+  const res = await fetch(adminPath(p, `/keys/${encodeURIComponent(key)}`), {
+    method: "DELETE",
+    headers: adminHeaders(p),
+  });
+  if (!res.ok && res.status !== 204) await parseErr(res);
+}
+
+export async function adminRotateKey(
+  p: AdminProfile,
+  key: string,
+  body: { grace_hours?: number; scopes?: string[]; expires_in?: string; label?: string },
+): Promise<RotateKeyOut> {
+  const res = await fetch(adminPath(p, `/keys/${encodeURIComponent(key)}/rotate`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...adminHeaders(p) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function adminMetrics(p: AdminProfile): Promise<MetricSnapshot> {
+  const res = await fetch(adminPath(p, "/metrics.json"), { headers: adminHeaders(p) });
+  if (!res.ok) await parseErr(res);
+  return res.json();
 }
 
 export { DEFAULT_BASE };

@@ -553,11 +553,33 @@ cd mini_cc/web && npm run dev
 - **项目列表**,支持新建 / 删除 / 打开。
 - **工作区**有三个 tab:
   - **Chat** —— SSE 流式助手回复;可折叠的活动卡片(tool_use /
-    tool_result)默认收起,点击展开。
+    tool_result)默认收起,点击展开。当 agent 触发由 `permissions.toml`
+    保护的工具调用时,会以内联卡片渲染**权限提示**(可选倒计时);
+    侧边栏的 session 列表为每个会话显示**冷/暖点**,悬停可看到
+    "warm" 按钮触发 `/sessions/{sid}/resume` 把磁盘上的 session
+    载入内存。
   - **Files** —— 递归文件树,右键菜单:上传文件、上传文件夹
     (通过 `webkitdirectory` 保留结构)、新建文件夹、预览、删除。
     支持下载项目 ZIP。
   - **Sessions** —— 列表、打开、删除。
+
+### Admin UI(Phase F)
+
+顶栏的 **admin** 入口打开一个独立的登录流程,要求持有 `*` scope 的
+key。路由前缀 `/admin/*`,使用独立的 `localStorage` 槽
+(`mini_cc.admin.v1`),与聊天会话并存。
+
+- **AdminLogin** —— 填租户 + key。探针是
+  `GET /tenants/{tid}/admin/keys`,需要 `admin:read` 权限;权限不足
+  会显示明确错误。
+- **AdminKeys** —— 完整的 key 生命周期:列表、新建、编辑
+  (PATCH scopes / label / 过期)、轮换(可选 `grace_hours`)、吊销。
+  Scope 标签按颜色区分(`*` → 红,`admin:read` → 琥珀,
+  `read:*` → 天蓝…)。
+- **AdminMetrics** —— 每 5 秒拉取 `/tenants/{tid}/admin/metrics.json`
+  并渲染:按路由的 HTTP 请求计数、req/min 的迷你折线图、token
+  分项(input / output / cache_read / cache_create)、Anthropic
+  请求状态表、HTTP 与 Anthropic 延迟直方图的桶分布柱状条。
 
 ### Playwright e2e
 
@@ -567,8 +589,11 @@ MINI_CC_DATA_DIR=$PWD/../mini_cc_data_e2e npm run e2e
 ```
 
 `e2e/globalSetup.ts` 会针对运行中的后端预配置一个全新的 `e2e`
-租户 + key + 项目(`e2e_proj`)。四条用例覆盖鉴权、项目创建、
-文件上传 + 预览 + zip 下载、以及通过 LiteLLM 的流式对话。
+租户、一个默认 scope 的 key、**以及**一个 `*` scope 的 admin
+key,再加上 `e2e_proj` 项目。用例覆盖鉴权、项目创建、文件上传 +
+预览 + zip 下载、通过 LiteLLM 的流式对话,以及 admin 流程
+(非 admin key 登录被拒、key 列表、新建 key、metrics dashboard
+渲染)。
 
 ---
 

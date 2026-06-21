@@ -52,8 +52,33 @@ async function globalSetup() {
     /* ignore */
   }
 
+  // Provision a second key with `*` scope for the admin UI spec.
+  let adminKey = process.env.E2E_ADMIN_KEY;
+  if (!adminKey) {
+    try {
+      const out = execSync(
+        `python -m mini_cc.server keygen e2e --scopes "*" --label e2e-admin`,
+        {
+          env: { ...process.env, MINI_CC_DATA_DIR: DATA_DIR },
+          cwd: REPO_ROOT,
+        },
+      )
+        .toString()
+        .trim();
+      adminKey = out;
+    } catch (e) {
+      throw new Error(
+        `failed to generate e2e admin api key: ${(e as Error).message}`,
+      );
+    }
+    if (!adminKey.startsWith("mck_")) {
+      throw new Error(`unexpected keygen output for admin: ${adminKey}`);
+    }
+  }
+
   void existsSync;
   process.env.E2E_API_KEY = apiKey;
+  process.env.E2E_ADMIN_KEY = adminKey;
   process.env.E2E_API_BASE = BASE;
 }
 

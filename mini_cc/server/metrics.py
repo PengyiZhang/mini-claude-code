@@ -260,6 +260,24 @@ class MetricsRegistry:
             },
         }
 
+    def snapshot_for_tenant(self, tenant: str) -> dict:
+        """Same as snapshot(), but only the series whose ``tenant``
+        label matches. Gauges (no labels) are passed through as-is."""
+        snap = self.snapshot()
+        for family in snap["counters"].values():
+            if "tenant" in family["label_names"]:
+                family["series"] = [
+                    s for s in family["series"]
+                    if s["labels"].get("tenant") == tenant
+                ]
+        for family in snap["histograms"].values():
+            if "tenant" in family["label_names"]:
+                family["series"] = [
+                    s for s in family["series"]
+                    if s["labels"].get("tenant") == tenant
+                ]
+        return snap
+
 
 def default_registry() -> MetricsRegistry:
     """Factory: register the built-in mini_cc metric families."""

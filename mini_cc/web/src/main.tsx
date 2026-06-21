@@ -6,6 +6,9 @@ import Login from "./pages/Login";
 import Tenants from "./pages/Tenants";
 import Projects from "./pages/Projects";
 import Workspace from "./pages/Workspace";
+import AdminLogin from "./pages/AdminLogin";
+import AdminKeys from "./pages/AdminKeys";
+import AdminMetrics from "./pages/AdminMetrics";
 import "./index.css";
 
 const router = createHashRouter([
@@ -17,6 +20,9 @@ const router = createHashRouter([
       { path: "tenants", element: <Tenants /> },
       { path: "projects", element: <Projects /> },
       { path: "projects/:pid", element: <Workspace /> },
+      { path: "admin/login", element: <AdminLogin /> },
+      { path: "admin/keys", element: <AdminKeys /> },
+      { path: "admin/metrics", element: <AdminMetrics /> },
     ],
   },
 ]);
