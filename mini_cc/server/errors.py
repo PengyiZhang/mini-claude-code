@@ -14,10 +14,12 @@ class MiniCCError(Exception):
     status_code: int = 500
     code: str = "internal_error"
 
-    def __init__(self, message: str = "", *, details: dict[str, Any] | None = None):
+    def __init__(self, message: str = "", *, details: dict[str, Any] | None = None,
+                 extra_headers: dict[str, str] | None = None):
         super().__init__(message)
         self.message = message
         self.details = details or {}
+        self.extra_headers = extra_headers or {}
 
 
 class NotFound(MiniCCError):

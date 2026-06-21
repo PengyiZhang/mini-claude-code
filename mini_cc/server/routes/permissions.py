@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path
 
-from ..deps import get_pm, get_sm, require_tenant, validate_id
+from ..deps import get_pm, get_sm, require_scope, validate_id
 from ..errors import Conflict, NotFound
 from ..schemas import DecidePermissionRequest, PermissionRequestOut
 
@@ -41,7 +41,7 @@ def _get_interceptor(pid: str, sid: str, tid: str, pm, sm):
 @router.get("", response_model=list[PermissionRequestOut])
 def list_pending(sid: str = Path(...),
                  pid: str = Path(...),
-                 tid: str = Depends(require_tenant),
+                 tid: str = Depends(require_scope("sessions:read")),
                  pm=Depends(get_pm),
                  sm=Depends(get_sm)) -> list[PermissionRequestOut]:
     validate_id(pid)
@@ -58,7 +58,7 @@ def decide(req_id: str,
            body: DecidePermissionRequest,
            sid: str = Path(...),
            pid: str = Path(...),
-           tid: str = Depends(require_tenant),
+           tid: str = Depends(require_scope("sessions:write")),
            pm=Depends(get_pm),
            sm=Depends(get_sm)) -> None:
     validate_id(pid)

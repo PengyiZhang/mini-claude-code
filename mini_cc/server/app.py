@@ -74,8 +74,11 @@ def build_app(*, data_dir: Path,
     async def _handle_mini_cc(request: Request, exc: MiniCCError):
         headers: dict[str, str] | None = None
         retry_after = getattr(request.state, "rate_limit_retry_after", None)
-        if retry_after:
-            headers = {"Retry-After": str(retry_after)}
+        if retry_after or exc.extra_headers:
+            headers = {}
+            if retry_after:
+                headers["Retry-After"] = str(retry_after)
+            headers.update(exc.extra_headers)
         return JSONResponse(status_code=exc.status_code,
                             content=envelope(exc),
                             headers=headers)

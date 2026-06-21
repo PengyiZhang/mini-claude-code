@@ -1,4 +1,12 @@
-"""FastAPI dependencies: auth, ID validation, registry access, rate limit."""
+"""FastAPI dependencies: auth, ID validation, registry access, rate limit.
+
+Phase D added per-route scope enforcement via ``require_scope`` /
+``check_rate_limit`` factories. Both accept a ``resource:verb`` string
+(e.g. ``"sessions:write"``, ``"files:read"``). The verb may be
+omitted (``"sessions"``) to mean "any method on this resource"; the
+HTTP method of the incoming request is used to compute the effective
+verb (GET → read, everything else → write).
+"""
 from __future__ import annotations
 
 import math
@@ -7,6 +15,7 @@ import re
 from fastapi import Depends, Header, Path, Request
 
 from ..auth import TenantKeyRegistry
+from ..auth.scope import scope_allows
 from .errors import BadRequest, Forbidden, TooManyRequests, Unauthorized
 from .ratelimit import TenantRateLimiter
 
@@ -37,20 +46,49 @@ def require_tenant(
     tid: str = Path(...),
     authorization: str | None = Header(default=None),
 ) -> str:
-    """Resolve the bearer key → tenant_id; enforce it matches {tid}.
+    """Back-compat shim — equivalent to ``require_scope("*")``.
 
-    Raises 401 on missing/unknown key, 403 if the resolved tenant does
-    not match the {tid} path parameter.
+    Kept so any caller that hasn't migrated yet continues to work.
     """
+    return _resolve(request, tid, authorization, required_scope="*")
+
+
+def require_scope(required: str):
+    """Build a dep that resolves the bearer key, enforces tenant match,
+    AND verifies the key holds ``required`` scope for the request's HTTP
+    method. Returns the resolved tenant_id.
+
+    Raises 401 on missing/unknown/expired key, 403 on tenant mismatch
+    or insufficient scope (the latter carries ``WWW-Authenticate`` +
+    ``insufficient_scope`` details so clients can introspect).
+    """
+    def _dep(request: Request,
+             tid: str = Path(...),
+             authorization: str | None = Header(default=None)) -> str:
+        return _resolve(request, tid, authorization, required_scope=required)
+    _dep.__name__ = f"require_scope_{required.replace(':', '_').replace('*', 'all')}"
+    return _dep
+
+
+def _resolve(request: Request, tid: str, authorization: str | None,
+             required_scope: str) -> str:
     key = _parse_bearer(authorization)
     if not key:
         raise Unauthorized("missing bearer token")
     reg = get_registry(request)
-    resolved = reg.lookup(key)
-    if resolved is None:
-        raise Unauthorized("unknown api key")
-    if resolved != tid:
+    rec = reg.lookup(key)
+    if rec is None:
+        raise Unauthorized("unknown or expired api key")
+    if rec.tenant_id != tid:
         raise Forbidden("api key does not match tenant")
+    if not scope_allows(rec.scopes, required_scope, request.method):
+        raise Forbidden(
+            f"key lacks required scope: {required_scope}",
+            details={"code": "insufficient_scope",
+                     "required": required_scope,
+                     "held": list(rec.scopes)},
+            extra_headers={"WWW-Authenticate":
+                           f'Bearer scope="{required_scope}"'})
     return tid
 
 
@@ -79,15 +117,33 @@ def check_rate_limit(
 
     On deny raises 429 with ``Retry-After`` in the response headers via
     the error envelope (mapped in errors.py).
+
+    Phase D note: callers wanting per-route scope enforcement should
+    prefer ``check_rate_limit_scope(required)`` below; this legacy
+    form keeps the ``*`` scope for untouched callers.
     """
+    return _apply_rate_limit(request, tid)
+
+
+def check_rate_limit_scope(required: str):
+    """Factory combining ``require_scope(required)`` + rate limit. Use
+    in place of ``check_rate_limit`` when the route has a specific
+    scope requirement.
+    """
+    def _dep(request: Request,
+             tid: str = Depends(require_scope(required))) -> str:
+        return _apply_rate_limit(request, tid)
+    _dep.__name__ = f"check_rate_limit_scope_{required.replace(':', '_').replace('*', 'all')}"
+    return _dep
+
+
+def _apply_rate_limit(request: Request, tid: str) -> str:
     limiter: TenantRateLimiter | None = getattr(
         request.app.state, "rate_limiter", None)
     if limiter is None:
         return tid
     allowed, retry_after = limiter.allow(tid)
     if not allowed:
-        # Stash retry-after on the request so the error handler can
-        # promote it to a response header.
         retry_after_int = max(1, math.ceil(retry_after)) if math.isfinite(retry_after) else 60
         request.state.rate_limit_retry_after = retry_after_int
         raise TooManyRequests(

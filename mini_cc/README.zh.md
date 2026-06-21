@@ -234,8 +234,44 @@ data: [DONE]\n\n
 403)**,这样不会泄漏其他租户项目是否存在。
 
 **API key:** 每个租户一把或多把 key,存到 `<data_dir>/keys.json`,
-写入采用 rename-on-write 原子操作。生成:`python -m mini_cc.server keygen <tenant_id>`。
-吊销:`python -m mini_cc.server revoke <key>`。
+写入采用 rename-on-write 原子操作。文件结构为 JSON 映射
+`key → {tenant_id, scopes, created_at, expires_at, label,
+rotated_from}`。每把 key 三个正交维度:
+
+- **Scopes** —— 最小权限。详见下面「鉴权(Phase D)」。
+- **Expiry** —— 短时 key(CI、分享链接等)。
+- **Rotation** —— 优雅轮换被泄漏的 key,可选 `--grace-hours`。
+
+生成 / 列举 / 轮换:
+
+```bash
+python -m mini_cc.server keygen <tenant> [--scopes ...] [--expires-in 7d] [--label ...]
+python -m mini_cc.server keys   list <tenant>
+python -m mini_cc.server keys   rotate <key> [--grace-hours N] [--scopes ...] [--label ...]
+python -m mini_cc.server revoke <key>
+```
+
+**鉴权(Phase D):** 每个路由通过 `Depends(require_scope("<resource>:<verb>"))`
+声明所需 scope。held scope 不满足时返回 403,`details.code = "insufficient_scope"`,
+响应头附 `WWW-Authenticate: Bearer scope="..."` 提示。Scope 语法:
+
+| Scope          | 允许                                       |
+| -------------- | ------------------------------------------ |
+| `*`            | 任意操作(迁移过来的老 key 默认值)         |
+| `read:*`       | 任意 GET                                   |
+| `write:*`      | 任意非 GET                                 |
+| `sessions:*`   | `/sessions/*` 上的任意方法                 |
+| `sessions:read`| `/sessions/*` 上的 GET                     |
+| `sessions:write` | `/sessions/*` 上的 POST/DELETE           |
+| `files:read`   | `/files/*` 上的 GET(tree/content/download)|
+| `files:write`  | `/files/*` 上的 POST/DELETE                |
+
+`read` ≡ GET,`write` ≡ 其他。HTTP 层固定映射,路由层无需显式声明 verb。
+
+**迁移:** Phase D 之前的 `keys.json`(裸字符串值)在首次读取时
+自动升级为 `KeyRecord`,带 `scopes=["*"]`、`expires_at=None`、
+`label="migrated"`。在下次 mutation 之前,文件不会被重写,所以老
+fixture 字节保持不变。
 
 **软沙箱,非容器化:** sandbox 是 defense-in-depth 一层,不是硬安全
 边界。对不受信代码,请把 mini_cc 跑在容器或 VM 内(P5 工作,尚未交付)。

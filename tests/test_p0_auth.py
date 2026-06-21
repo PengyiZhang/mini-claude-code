@@ -2,6 +2,10 @@
 
 The registry backs the HTTP server's per-tenant auth and is
 transport-agnostic: any future transport (WebSocket, gRPC) reuses it.
+
+Phase D promoted keys from ``str → tenant_id`` to
+``str → KeyRecord``. ``generate()`` returns a KeyRecord and
+``lookup()`` returns ``KeyRecord | None`` (None on unknown OR expired).
 """
 from __future__ import annotations
 
@@ -14,15 +18,19 @@ from mini_cc.auth import TenantKeyRegistry
 
 def test_generate_returns_mck_prefixed_key(tmp_path):
     reg = TenantKeyRegistry(tmp_path / "keys.json")
-    key = reg.generate("tenant1")
-    assert key.startswith("mck_")
-    assert len(key) > len("mck_")
+    rec = reg.generate("tenant1")
+    assert rec.key.startswith("mck_")
+    assert len(rec.key) > len("mck_")
+    assert rec.tenant_id == "tenant1"
+    assert rec.scopes == ["*"]
 
 
 def test_lookup_returns_tenant_for_valid_key(tmp_path):
     reg = TenantKeyRegistry(tmp_path / "keys.json")
-    key = reg.generate("tenant1")
-    assert reg.lookup(key) == "tenant1"
+    rec = reg.generate("tenant1")
+    found = reg.lookup(rec.key)
+    assert found is not None
+    assert found.tenant_id == "tenant1"
 
 
 def test_lookup_returns_none_for_unknown_key(tmp_path):
@@ -33,30 +41,32 @@ def test_lookup_returns_none_for_unknown_key(tmp_path):
 
 def test_revoke_makes_lookup_fail(tmp_path):
     reg = TenantKeyRegistry(tmp_path / "keys.json")
-    key = reg.generate("tenant1")
-    assert reg.revoke(key) is True
-    assert reg.lookup(key) is None
+    rec = reg.generate("tenant1")
+    assert reg.revoke(rec.key) is True
+    assert reg.lookup(rec.key) is None
     # Revoking again returns False
-    assert reg.revoke(key) is False
+    assert reg.revoke(rec.key) is False
 
 
 def test_list_for_returns_all_keys_for_tenant(tmp_path):
     reg = TenantKeyRegistry(tmp_path / "keys.json")
-    k1 = reg.generate("tenant1")
-    k2 = reg.generate("tenant1")
-    k3 = reg.generate("tenant2")
-    keys = reg.list_for("tenant1")
-    assert k1 in keys and k2 in keys
-    assert k3 not in keys
+    r1 = reg.generate("tenant1")
+    r2 = reg.generate("tenant1")
+    r3 = reg.generate("tenant2")
+    keys = [r.key for r in reg.list_for("tenant1")]
+    assert r1.key in keys and r2.key in keys
+    assert r3.key not in keys
 
 
 def test_registry_persists_across_instances(tmp_path):
     path = tmp_path / "keys.json"
     reg1 = TenantKeyRegistry(path)
-    key = reg1.generate("tenant1")
+    rec = reg1.generate("tenant1")
     # New instance pointing at the same file must see the same key
     reg2 = TenantKeyRegistry(path)
-    assert reg2.lookup(key) == "tenant1"
+    found = reg2.lookup(rec.key)
+    assert found is not None
+    assert found.tenant_id == "tenant1"
 
 
 def test_concurrent_generate_no_lost_keys(tmp_path):

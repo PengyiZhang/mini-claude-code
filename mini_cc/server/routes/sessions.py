@@ -4,7 +4,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Path, Response
 from fastapi.responses import StreamingResponse
 
-from ..deps import check_rate_limit, get_pm, get_sm, require_tenant, validate_id
+from ..deps import (check_rate_limit_scope, get_pm, get_sm, require_scope,
+                    validate_id)
 from ..errors import Conflict, NotFound, map_sdk_exception
 from ..schemas import (CreateSessionRequest, SendMessageRequest, SessionMeta,
                        SessionOut)
@@ -31,7 +32,7 @@ def _check_project_tenant(pid: str, tid: str, pm) -> None:
 def start_session(body: CreateSessionRequest,
                   response: Response,
                   pid: str = Path(...),
-                  tid: str = Depends(require_tenant),
+                  tid: str = Depends(require_scope("sessions:write")),
                   pm=Depends(get_pm),
                   sm=Depends(get_sm)) -> SessionOut:
     """Idempotent: 201 if a new session was created, 200 if an existing
@@ -57,7 +58,7 @@ def start_session(body: CreateSessionRequest,
 
 @router.get("", response_model=list[SessionMeta])
 def list_sessions(pid: str = Path(...),
-                  tid: str = Depends(require_tenant),
+                  tid: str = Depends(require_scope("sessions:read")),
                   pm=Depends(get_pm),
                   sm=Depends(get_sm)) -> list[SessionMeta]:
     validate_id(pid)
@@ -68,7 +69,7 @@ def list_sessions(pid: str = Path(...),
 @router.post("/{sid}/resume", response_model=SessionMeta)
 def resume_session(sid: str = Path(...),
                    pid: str = Path(...),
-                   tid: str = Depends(require_tenant),
+                   tid: str = Depends(require_scope("sessions:write")),
                    pm=Depends(get_pm),
                    sm=Depends(get_sm)) -> SessionMeta:
     """Explicit warm-load of an on-disk session. 200 if warmed (idempotent
@@ -91,7 +92,7 @@ def resume_session(sid: str = Path(...),
 @router.delete("/{sid}", status_code=204)
 def remove_session(sid: str = Path(...),
                    pid: str = Path(...),
-                   tid: str = Depends(require_tenant),
+                   tid: str = Depends(require_scope("sessions:write")),
                    pm=Depends(get_pm),
                    sm=Depends(get_sm)) -> None:
     validate_id(pid)
@@ -105,7 +106,7 @@ def remove_session(sid: str = Path(...),
 def send_message(body: SendMessageRequest,
                  sid: str = Path(...),
                  pid: str = Path(...),
-                 tid: str = Depends(check_rate_limit),
+                 tid: str = Depends(check_rate_limit_scope("sessions:write")),
                  pm=Depends(get_pm),
                  sm=Depends(get_sm)) -> StreamingResponse:
     validate_id(pid)

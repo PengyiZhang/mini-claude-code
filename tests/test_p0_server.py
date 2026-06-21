@@ -228,10 +228,12 @@ def app_and_client(tmp_path, monkeypatch):
     from mini_cc.config import set_default_config
 
     reg = TenantKeyRegistry(tmp_path / "keys.json")
-    key = reg.generate("tenant1")
+    rec = reg.generate("tenant1")
     # Force a known key for test predictability
-    reg.revoke(key)
-    # Patch the registry file directly
+    reg.revoke(rec.key)
+    # Patch the registry file directly with a bare-string value — the
+    # registry auto-promotes it to KeyRecord(scopes=["*"], label="migrated")
+    # on read.
     import json as _json
     (tmp_path / "keys.json").write_text(
         _json.dumps({"mck_testkey": "tenant1"}))
@@ -344,9 +346,9 @@ def test_project_cross_tenant_404(app_and_client):
                 headers=AUTH, json={"project_id": "private"})
     # Stand up a second tenant key
     reg = app_and_client[2]
-    other_key = reg.generate("tenant2")
+    other_rec = reg.generate("tenant2")
     r = client.get("/tenants/tenant2/projects/private",
-                   headers={"Authorization": f"Bearer {other_key}"})
+                   headers={"Authorization": f"Bearer {other_rec.key}"})
     # project 'private' exists but belongs to tenant1 → 404 from
     # tenant2's perspective (no information leak)
     assert r.status_code == 404

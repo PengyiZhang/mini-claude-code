@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path
 
-from ..deps import check_rate_limit, get_pm, require_tenant, validate_id
+from ..deps import (check_rate_limit_scope, get_pm, require_scope,
+                    validate_id)
 from ..errors import Conflict, NotFound, map_sdk_exception
 from ..schemas import CreateProjectRequest, ProjectOut
 
@@ -22,7 +23,7 @@ def _to_out(p) -> ProjectOut:
 
 @router.post("", status_code=201, response_model=ProjectOut)
 def create_project(body: CreateProjectRequest,
-                   tid: str = Depends(check_rate_limit),
+                   tid: str = Depends(check_rate_limit_scope("projects:write")),
                    pm=Depends(get_pm)) -> ProjectOut:
     try:
         if body.project_id is not None:
@@ -37,14 +38,14 @@ def create_project(body: CreateProjectRequest,
 
 
 @router.get("", response_model=list[ProjectOut])
-def list_projects(tid: str = Depends(require_tenant),
+def list_projects(tid: str = Depends(require_scope("projects:read")),
                   pm=Depends(get_pm)) -> list[ProjectOut]:
     return [_to_out(p) for p in pm.list(tenant_id=tid)]
 
 
 @router.get("/{pid}", response_model=ProjectOut)
 def get_project(pid: str = Path(...),
-                tid: str = Depends(require_tenant),
+                tid: str = Depends(require_scope("projects:read")),
                 pm=Depends(get_pm)) -> ProjectOut:
     validate_id(pid)
     try:
@@ -59,7 +60,7 @@ def get_project(pid: str = Path(...),
 
 @router.delete("/{pid}", status_code=204)
 def delete_project(pid: str = Path(...),
-                   tid: str = Depends(require_tenant),
+                   tid: str = Depends(require_scope("projects:write")),
                    pm=Depends(get_pm)) -> None:
     validate_id(pid)
     try:

@@ -239,9 +239,50 @@ via the API key). Cross-tenant access returns 404 (not 403) so the
 existence of another tenant's project is not leaked.
 
 **API keys:** one key per tenant. Keys are stored in
-`<data_dir>/keys.json` with atomic rename-on-write. Generate via
-`python -m mini_cc.server keygen <tenant_id>`. Revoke via
-`python -m mini_cc.server revoke <key>`.
+`<data_dir>/keys.json` (atomic rename-on-write) as a JSON map of
+`key → {tenant_id, scopes, created_at, expires_at, label,
+rotated_from}`. Each key supports three independent axes:
+
+- **Scopes** — least-privilege access control. See "Authentication"
+  section below for the grammar.
+- **Expiry** — short-lived keys for CI / share-links.
+- **Rotation** — replace a compromised key without hard-cutting
+  clients via optional `--grace-hours`.
+
+Generate, list, and rotate via the CLI:
+
+```bash
+python -m mini_cc.server keygen <tenant> [--scopes ...] [--expires-in 7d] [--label ...]
+python -m mini_cc.server keys   list <tenant>
+python -m mini_cc.server keys   rotate <key> [--grace-hours N] [--scopes ...] [--label ...]
+python -m mini_cc.server revoke <key>
+```
+
+**Authentication (Phase D):** every route declares a required scope
+via `Depends(require_scope("<resource>:<verb>"))`. Held scopes are
+checked against the required; a miss returns 403 with
+`details.code = "insufficient_scope"` and a
+`WWW-Authenticate: Bearer scope="..."` hint. Scope grammar:
+
+| Scope           | Allows                                   |
+| --------------- | ---------------------------------------- |
+| `*`             | Anything (default for migrated keys)     |
+| `read:*`        | Any GET                                  |
+| `write:*`       | Any non-GET                              |
+| `sessions:*`    | Any method on `/sessions/*`              |
+| `sessions:read` | GET on `/sessions/*`                     |
+| `sessions:write`| POST/DELETE on `/sessions/*`             |
+| `files:read`    | GET on `/files/*` (tree/content/download)|
+| `files:write`   | POST/DELETE on `/files/*`                |
+
+`read` ≡ GET, `write` ≡ everything else. The verb is fixed at the
+HTTP layer so routes don't have to specify it explicitly.
+
+**Migration:** pre-Phase-D `keys.json` files (bare-string values)
+are auto-promoted to `KeyRecord` on first read with
+`scopes=["*"]`, `expires_at=None`, `label="migrated"`. The file is
+not rewritten until the next mutation, so existing fixtures stay
+byte-identical.
 
 **Soft sandbox, not containerized:** the sandbox is a defense-in-depth
 layer, not a hard security boundary. For untrusted code, run mini_cc

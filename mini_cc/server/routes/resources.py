@@ -15,7 +15,7 @@ from fastapi import (APIRouter, Depends, File, Form, Path as FPath, Query,
                      Request, UploadFile)
 from fastapi.responses import StreamingResponse
 
-from ..deps import get_pm, require_tenant, validate_id
+from ..deps import get_pm, require_scope, validate_id
 from ..errors import BadRequest, NotFound
 
 router = APIRouter(
@@ -75,7 +75,7 @@ def _check(project, pid: str, tid: str):
 
 @router.get("/tree")
 def list_tree(pid: str = FPath(...),
-              tid: str = Depends(require_tenant),
+              tid: str = Depends(require_scope("files:read")),
               pm=Depends(get_pm),
               path: str = Query(default="")) -> List[dict]:
     """List immediate children of ``path`` (relative to workspace root).
@@ -117,7 +117,7 @@ def list_tree(pid: str = FPath(...),
 
 @router.get("/content")
 def read_content(pid: str = FPath(...),
-                 tid: str = Depends(require_tenant),
+                 tid: str = Depends(require_scope("files:read")),
                  pm=Depends(get_pm),
                  path: str = Query(...)) -> dict:
     """Read up to 256 KB of a file's content. Binary or oversized files
@@ -163,7 +163,7 @@ def read_content(pid: str = FPath(...),
 
 @router.post("/mkdir")
 def make_dir(pid: str = FPath(...),
-             tid: str = Depends(require_tenant),
+             tid: str = Depends(require_scope("files:write")),
              pm=Depends(get_pm),
              path: str = Query(...)) -> dict:
     validate_id(pid)
@@ -180,7 +180,7 @@ def make_dir(pid: str = FPath(...),
 
 @router.post("/upload")
 async def upload_files(pid: str = FPath(...),
-                       tid: str = Depends(require_tenant),
+                       tid: str = Depends(require_scope("files:write")),
                        pm=Depends(get_pm),
                        path: str = Query(default=""),
                        files: List[UploadFile] = File(...),
@@ -220,7 +220,7 @@ async def upload_files(pid: str = FPath(...),
 
 @router.delete("")
 def delete_path(pid: str = FPath(...),
-                tid: str = Depends(require_tenant),
+                tid: str = Depends(require_scope("files:write")),
                 pm=Depends(get_pm),
                 path: str = Query(...)) -> dict:
     validate_id(pid)
@@ -250,7 +250,7 @@ download_router = APIRouter(
 
 @download_router.get("/{pid}/download")
 def download_zip(pid: str = FPath(...),
-                 tid: str = Depends(require_tenant),
+                 tid: str = Depends(require_scope("files:read")),
                  pm=Depends(get_pm)) -> StreamingResponse:
     validate_id(pid)
     try:
