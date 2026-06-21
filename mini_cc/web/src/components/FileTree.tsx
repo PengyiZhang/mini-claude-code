@@ -12,12 +12,11 @@ interface NodeProps {
   onChildChanged: () => void;
 }
 
-function DirChildren({ pid, path, onPickFile, onChildChanged, depth }: NodeProps) {
+function DirChildren({ pid, path, onPickFile, onChildChanged, depth, onRefreshKey }: NodeProps) {
   const profile = useAuth((s) => s.current())!;
   const [items, setItems] = useState<TreeNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
 
   async function load() {
     setLoading(true);
@@ -44,10 +43,15 @@ function DirChildren({ pid, path, onPickFile, onChildChanged, depth }: NodeProps
     }
   }
 
+  // Watch onRefreshKey (sourced from the parent's reloadKey) so the tree
+  // re-fetches when an external action (sidebar upload, mkdir via API,
+  // etc.) bumps it. Previously this component declared its own local
+  // reloadKey state that nothing ever changed, so the prop was silently
+  // ignored — root-level uploads didn't appear without a manual refresh.
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reloadKey]);
+  }, [onRefreshKey]);
 
   function childChanged() {
     reload();
