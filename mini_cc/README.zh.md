@@ -534,9 +534,13 @@ cd mini_cc/web && npm install
 
 # 终端 1 —— 后端(端口 8002)
 python -m mini_cc.server keygen my_tenant    # 输出 mck_<hex>
+# mck_REDACTED  tenant=my_tenant  scopes=*  expires=never
+# deepseek: https://api.deepseek.com/anthropic
+# sk-REDACTED 
+
 MINI_CC_DATA_DIR=$PWD/mini_cc_data \
-MINI_CC_ANTHROPIC_BASE_URL=http://127.0.0.1:8000 \
-MINI_CC_ANTHROPIC_API_KEY=any-fake-key \
+ANTHROPIC_BASE_URL=http://127.0.0.1:8000 \
+ANTHROPIC_API_KEY=any-fake-key \
 python -m mini_cc.server
 
 # 终端 2 —— 前端(端口 5173)

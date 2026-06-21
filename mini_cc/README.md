@@ -583,8 +583,8 @@ cd mini_cc/web && npm install
 # terminal 1 — backend (port 8002)
 python -m mini_cc.server keygen my_tenant    # prints mck_<hex>
 MINI_CC_DATA_DIR=$PWD/mini_cc_data \
-MINI_CC_ANTHROPIC_BASE_URL=http://127.0.0.1:8000 \
-MINI_CC_ANTHROPIC_API_KEY=any-fake-key \
+ANTHROPIC_BASE_URL=http://127.0.0.1:8000 \
+ANTHROPIC_API_KEY=any-fake-key \
 python -m mini_cc.server
 
 # terminal 2 — frontend (port 5173)

@@ -18,6 +18,15 @@ KEEP_RECENT_TOOL_RESULTS = 3
 PERSIST_THRESHOLD = 30000
 
 
+def _env_first(*names: str) -> Optional[str]:
+    """Return the first non-empty env var from ``names``, or None."""
+    for n in names:
+        v = os.getenv(n)
+        if v:
+            return v
+    return None
+
+
 @dataclass
 class AnthropicConfig:
     api_key: Optional[str] = None
@@ -27,11 +36,16 @@ class AnthropicConfig:
 
     @classmethod
     def from_env(cls) -> "AnthropicConfig":
+        # ANTHROPIC_* is the canonical name used by the SDK and most docs.
+        # MINI_CC_ANTHROPIC_* is accepted as a fallback because earlier
+        # README versions (Web UI section) documented that prefix; supporting
+        # both avoids a confusing "Could not resolve authentication method"
+        # failure on the first chat turn when users copy-paste the README.
         return cls(
-            api_key=os.getenv("ANTHROPIC_API_KEY"),
-            base_url=os.getenv("ANTHROPIC_BASE_URL") or None,
-            primary_model=os.getenv("MODEL_ID", "claude-sonnet-4-6"),
-            fallback_model=os.getenv("FALLBACK_MODEL_ID") or None,
+            api_key=_env_first("ANTHROPIC_API_KEY", "MINI_CC_ANTHROPIC_API_KEY"),
+            base_url=_env_first("ANTHROPIC_BASE_URL", "MINI_CC_ANTHROPIC_BASE_URL"),
+            primary_model=_env_first("MODEL_ID") or "claude-sonnet-4-6",
+            fallback_model=_env_first("FALLBACK_MODEL_ID"),
         )
 
     def build_client(self) -> Anthropic:
