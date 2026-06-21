@@ -154,7 +154,12 @@ export default function Workspace() {
     // the send button stays disabled forever.
     abortRef.current?.abort();
     abortRef.current = null;
-    if (chatKey) finishAssistant(chatKey);
+    // Leave a breadcrumb so the bubble isn't an empty avatar — without
+    // this, aborting before any text arrives gives the user no feedback.
+    if (chatKey) {
+      addNotice(chatKey, "⏹ stopped by user");
+      finishAssistant(chatKey);
+    }
   }
 
   async function send() {

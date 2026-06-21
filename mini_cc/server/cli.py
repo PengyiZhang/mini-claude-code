@@ -78,7 +78,7 @@ def cmd_serve(args) -> int:
     default_rpm, overrides = _parse_rate_limit_env()
     limiter = TenantRateLimiter(default_rpm=default_rpm, overrides=overrides)
 
-    cors_raw = _env("MINI_CC_CORS_ORIGINS", "")
+    cors_raw = _env("MINI_CC_CORS_ORIGINS", "*")
     cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()]
 
     app = build_app(data_dir=data_dir, key_registry=reg, pm=pm, sm=sm,
