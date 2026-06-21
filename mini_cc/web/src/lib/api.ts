@@ -97,27 +97,6 @@ export async function deleteProject(profile: TenantProfile, pid: string): Promis
   if (!res.ok && res.status !== 204) await parseErr(res);
 }
 
-export async function listSessions(profile: TenantProfile, pid: string): Promise<string[]> {
-  const res = await fetch(tenantPath(profile, `/projects/${pid}/sessions`), {
-    headers: authHeaders(profile),
-  });
-  if (!res.ok) await parseErr(res);
-  // Backend returns SessionMeta[]. The declared contract is string[] — extract
-  // session_id to honor it. Otherwise the consumer renders the SessionMeta
-  // object directly as a React child, which throws:
-  //   "Objects are not valid as a React child (found: object with keys
-  //    {session_id, created_at, last_active_at, message_count, in_memory})"
-  const raw = (await res.json()) as unknown;
-  if (!Array.isArray(raw)) return [];
-  if (raw.length === 0) return [];
-  const first = raw[0];
-  if (typeof first === "string") return raw as string[];
-  if (first && typeof first === "object" && "session_id" in first) {
-    return (raw as SessionMeta[]).map((m) => m.session_id);
-  }
-  return [];
-}
-
 export async function listSessionMetas(
   profile: TenantProfile,
   pid: string,

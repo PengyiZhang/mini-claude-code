@@ -14,7 +14,7 @@ import {
   deleteSession,
   downloadZip,
   listPendingPermissions,
-  listSessions,
+  listSessionMetas,
   startSession,
   uploadFiles,
 } from "../lib/api";
@@ -59,9 +59,24 @@ export default function Workspace() {
 
   async function refreshSessions() {
     try {
-      const list = await listSessions(profile, pid);
-      setSessions(list);
-      return list;
+      // Fetch full SessionMeta[] (not just string[]) so we can populate
+      // warmSet from the backend's in_memory flag. Without this, every
+      // page reload shows all sessions as "cold" even though the server
+      // still has them warm — confusing the user about which session
+      // they can resume instantly vs. which needs a cold-start.
+      const metas = await listSessionMetas(profile, pid);
+      const ids = metas.map((m) => m.session_id);
+      setSessions(ids);
+      setWarmSet((prev) => {
+        const next: Record<string, boolean> = {};
+        for (const m of metas) {
+          // Server-truth wins, but preserve any locally-warmed session
+          // that the backend hasn't caught up to yet (race window).
+          next[m.session_id] = m.in_memory || Boolean(prev[m.session_id]);
+        }
+        return next;
+      });
+      return ids;
     } catch (e) {
       setError(e instanceof ApiError ? e.message : (e as Error).message);
       return [];
