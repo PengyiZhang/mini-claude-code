@@ -138,7 +138,15 @@ class ProjectManager:
     def delete(self, project_id: str) -> None:
         if read_meta(self.root, project_id) is None:
             raise KeyError(f"project not found: {project_id}")
+        # Wipe the on-disk project dir (workspace + meta.json). Also wipe
+        # the per-project storage subdir under <root>/.storage — the default
+        # FSStorage layout keeps sessions/messages/todos/memory/cron there,
+        # and leaving it behind leaks the previous tenant's data into any
+        # future project that happens to reuse the same id.
         shutil.rmtree(project_dir_safe(self.root, project_id), ignore_errors=True)
+        storage_dir = self._state_root() / project_id
+        if storage_dir.exists():
+            shutil.rmtree(storage_dir, ignore_errors=True)
 
     def _assemble(self, project_id: str, meta: ProjectMeta) -> Project:
         ws = workspace_path(self.root, project_id)

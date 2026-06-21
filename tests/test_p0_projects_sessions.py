@@ -43,6 +43,42 @@ def test_delete_project(tmp_path):
         pm.get("x")
 
 
+def test_delete_project_cleans_up_storage_subdir(tmp_path):
+    """Regression: delete() used to only rmtree <root>/<pid>/ and left
+    <root>/.storage/<pid>/ behind — leaking session messages, todos, cron
+    jobs and memory into any future project that reused the same id."""
+    pm = ProjectManager(tmp_path / "projects")
+    p = pm.create(tenant_id="t1", project_id="x")
+    # Simulate a session that wrote something to storage.
+    p.storage.save_messages("x", "s1", [{"role": "user", "content": "hi"}])
+    storage_dir = tmp_path / "projects" / ".storage" / "x"
+    assert storage_dir.exists(), "sanity: storage subdir should exist"
+
+    pm.delete("x")
+
+    assert not storage_dir.exists(), (
+        "storage subdir must be cleaned up on delete to avoid cross-tenant "
+        "data leak when the project_id is reused")
+
+
+def test_delete_project_then_recreate_starts_clean(tmp_path):
+    """A fresh project with the same id must not inherit the deleted
+    project's sessions, messages, or memory."""
+    pm = ProjectManager(tmp_path / "projects")
+    p1 = pm.create(tenant_id="t1", project_id="x")
+    p1.storage.save_messages("x", "s1", [{"role": "user", "content": "secret"}])
+    p1.storage.append_memory("x", "leaked memory line")
+    pm.delete("x")
+
+    p2 = pm.create(tenant_id="t2", project_id="x")  # different tenant
+    assert p2.storage.load_messages("x", "s1") == [], (
+        "messages from the previous tenant must not leak into a re-created project")
+    assert p2.storage.load_memory("x").strip() == "", (
+        "memory from the previous tenant must not leak into a re-created project")
+    assert p2.storage.list_sessions("x") == [], (
+        "session index from the previous tenant must not leak")
+
+
 def test_project_workspaces_are_isolated(tmp_path):
     pm = ProjectManager(tmp_path / "projects")
     pa = pm.create(tenant_id="t1", project_id="a")
