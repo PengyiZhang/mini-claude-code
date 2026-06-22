@@ -102,6 +102,41 @@ def remove_session(sid: str = Path(...),
         raise NotFound(f"session {sid} not found")
 
 
+@router.get("/{sid}/messages")
+def get_messages(sid: str = Path(...),
+                 pid: str = Path(...),
+                 tid: str = Depends(require_scope("sessions:read")),
+                 pm=Depends(get_pm),
+                 sm=Depends(get_sm)) -> list[dict]:
+    """Return the persisted transcript for hydration after page reload.
+
+    Returns the raw Anthropic-format message list. The frontend converts
+    these into its ChatMessage shape (merging text + tool_use blocks into
+    a single assistant bubble and pairing tool_use_ids with the tool_result
+    that follows in the next user turn).
+    """
+    validate_id(pid)
+    validate_id(sid)
+    _check_project_tenant(pid, tid, pm)
+    project = pm.get(pid)
+    if sid not in {m.session_id for m in project.storage.list_sessions(pid)}:
+        raise NotFound(f"session {sid} not found")
+    msgs = project.storage.load_messages(pid, sid)
+    # Drop non-serializable bits (shouldn't happen with JSON-on-disk, but
+    # be defensive — pydantic models, datetimes, etc. would blow up json).
+    return [_to_jsonable(m) for m in msgs]
+
+
+def _to_jsonable(obj):
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [_to_jsonable(v) for v in obj]
+    return obj
+
+
 @router.post("/{sid}/send")
 def send_message(body: SendMessageRequest,
                  sid: str = Path(...),

@@ -1,0 +1,244 @@
+"""Slash command registry + built-in commands.
+
+Built-ins:
+
+- ``/help``      — list available commands (server)
+- ``/clear``     — wipe the in-memory transcript for the active session (server)
+- ``/sessions``  — list sessions in this project (server)
+- ``/model``     — show current model + provider (server)
+- ``/compact``   — manually trigger history compaction (server)
+
+All server-scoped handlers return an iterator of SSE-shaped dicts (same
+shape as ``AgentLoop.run`` yields) so the frontend can render them in
+the chat pane uniformly.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterator, Literal, Optional
+
+from ..config import default_config
+from ..core.llm import looks_like_litellm
+
+
+@dataclass
+class CommandContext:
+    """Context passed to a server-side command handler.
+
+    Holds everything a built-in like ``/sessions`` needs to produce its
+    output without reaching into the FastAPI app state directly.
+    """
+    project_id: str
+    session_id: str
+    tenant_id: str
+    args: str = ""                       # raw text after the command name
+    project: Any = None                  # Project (from ProjectManager)
+    session_manager: Any = None          # SessionManager
+    storage: Any = None                  # Storage
+
+
+@dataclass
+class SlashCommand:
+    """A single command definition.
+
+    - ``scope="client"``  → frontend handles it; ``handler`` is None.
+    - ``scope="server"``  → backend runs ``handler(ctx) -> Iterator[dict]``
+      yielding SSE events ({type:"text"|"done"|...}).
+    """
+    name: str
+    description: str
+    scope: Literal["client", "server"] = "server"
+    aliases: tuple[str, ...] = ()
+    handler: Optional[Callable[[CommandContext], Iterator[dict]]] = None
+    visible: bool = True                 # set False for hidden aliases
+
+
+class CommandRegistry:
+    """In-memory registry. Add commands with :meth:`register`, look up
+    with :meth:`resolve`, enumerate visible ones with :meth:`all_visible`."""
+
+    def __init__(self) -> None:
+        self._commands: dict[str, SlashCommand] = {}
+
+    def register(self, cmd: SlashCommand) -> None:
+        if cmd.name in self._commands:
+            raise ValueError(f"command already registered: {cmd.name}")
+        self._commands[cmd.name] = cmd
+        for alias in cmd.aliases:
+            # Alias is registered as a hidden pointer back to the same
+            # SlashCommand so resolve() can find it transparently.
+            self._commands[alias] = SlashCommand(
+                name=alias,
+                description=cmd.description,
+                scope=cmd.scope,
+                handler=cmd.handler,
+                visible=False,
+            )
+
+    def resolve(self, name: str) -> Optional[SlashCommand]:
+        # Strip a leading slash so callers can pass either "/help" or "help".
+        if name.startswith("/"):
+            name = name[1:]
+        return self._commands.get(name)
+
+    def all_visible(self) -> list[SlashCommand]:
+        return sorted(
+            (c for c in self._commands.values() if c.visible),
+            key=lambda c: c.name,
+        )
+
+
+# ── Built-in handlers ──────────────────────────────────────────────────────
+
+def _cmd_help(ctx: CommandContext) -> Iterator[dict]:
+    """Yield a markdown table of available commands as a single text event."""
+    reg = default_registry()
+    lines = ["**Available commands:**", ""]
+    for c in reg.all_visible():
+        aliases = f" (aliases: {', '.join('/' + a for a in c.aliases)})"
+        lines.append(f"- `/{c.name}` — {c.description}{aliases if c.aliases else ''}")
+    lines.append("")
+    lines.append("Tip: type `/` in the input box to see the menu.")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
+def _cmd_clear(ctx: CommandContext) -> Iterator[dict]:
+    """Drop the in-memory transcript for this session and persist the
+    empty state. On-disk history is replaced too so a refresh doesn't
+    bring the cleared messages back."""
+    sm = ctx.session_manager
+    if sm is None:
+        yield {"type": "error", "message": "session manager unavailable"}
+        return
+    try:
+        sess = sm._sessions.get((ctx.project_id, ctx.session_id))
+        if sess is not None and hasattr(sess, "loop"):
+            sess.loop.messages.clear()
+            sess.loop.todos.clear()
+            # Persist the empty state so a reload doesn't restore the
+            # history we just cleared on the client.
+            try:
+                ctx.project.storage.save_messages(
+                    ctx.project_id, ctx.session_id, sess.loop.messages)
+                ctx.project.storage.save_todos(
+                    ctx.project_id, ctx.session_id, sess.loop.todos)
+            except Exception:
+                pass
+    except Exception as e:
+        yield {"type": "error", "message": f"clear failed: {e}"}
+        return
+    yield {"type": "text", "text": "🧹 session cleared."}
+    yield {"type": "done"}
+
+
+def _cmd_sessions(ctx: CommandContext) -> Iterator[dict]:
+    """List sessions in this project, marking the active one."""
+    sm = ctx.session_manager
+    if sm is None or ctx.project is None:
+        yield {"type": "error", "message": "project context unavailable"}
+        return
+    metas = sm.list(ctx.project_id)
+    if not metas:
+        yield {"type": "text", "text": "_no sessions in this project_"}
+        yield {"type": "done"}
+        return
+    lines = [f"**Sessions in `{ctx.project_id}`:**", ""]
+    for m in metas:
+        marker = " ← active" if m.session_id == ctx.session_id else ""
+        warm = "🟢" if m.in_memory else "⚪"
+        lines.append(f"- {warm} `{m.session_id}`{marker}")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
+def _cmd_model(ctx: CommandContext) -> Iterator[dict]:
+    """Report the current model + which provider backend will handle it."""
+    cfg = default_config()
+    model = cfg.primary_model
+    backend = "litellm" if looks_like_litellm(model) else "anthropic"
+    fallback = cfg.fallback_model or "—"
+    yield {"type": "text", "text": (
+        f"**Current model**\n"
+        f"- model: `{model}`\n"
+        f"- backend: `{backend}`\n"
+        f"- fallback: `{fallback}`\n"
+        f"- session model override: "
+        f"`{getattr(getattr(_loop_of(ctx), 'state', None), 'current_model', '—')}`"
+    )}
+    yield {"type": "done"}
+
+
+def _cmd_compact(ctx: CommandContext) -> Iterator[dict]:
+    """Force a history compaction right now. The compacted transcript
+    is snapshotted first so the user can still recover the full
+    conversation if needed."""
+    from ..core.compaction import compact_history
+    sess_loop = _loop_of(ctx)
+    if sess_loop is None:
+        yield {"type": "error", "message": "session not warm"}
+        return
+    try:
+        sess_loop._save_transcript(sess_loop.messages[:])
+        sess_loop.messages[:] = compact_history(
+            sess_loop.messages,
+            before_compact=sess_loop._save_transcript)
+        sess_loop._persist()
+    except Exception as e:
+        yield {"type": "error", "message": f"compact failed: {e}"}
+        return
+    yield {"type": "text",
+           "text": f"🗜 history compacted ({len(sess_loop.messages)} messages)."}
+    yield {"type": "done"}
+
+
+def _loop_of(ctx: CommandContext):
+    sm = ctx.session_manager
+    if sm is None:
+        return None
+    sess = sm._sessions.get((ctx.project_id, ctx.session_id))
+    if sess is None:
+        return None
+    return getattr(sess, "loop", None)
+
+
+# ── Default registry ───────────────────────────────────────────────────────
+
+_DEFAULT: Optional[CommandRegistry] = None
+
+
+def default_registry() -> CommandRegistry:
+    """Return the process-wide registry, populating built-ins on first call."""
+    global _DEFAULT
+    if _DEFAULT is not None:
+        return _DEFAULT
+    reg = CommandRegistry()
+    reg.register(SlashCommand(
+        name="help",
+        description="Show this list of commands.",
+        aliases=("?",),
+        handler=_cmd_help,
+    ))
+    reg.register(SlashCommand(
+        name="clear",
+        description="Clear the active session's chat history (in-memory + on-disk).",
+        aliases=("cls",),
+        handler=_cmd_clear,
+    ))
+    reg.register(SlashCommand(
+        name="sessions",
+        description="List all sessions in the current project.",
+        handler=_cmd_sessions,
+    ))
+    reg.register(SlashCommand(
+        name="model",
+        description="Show the current model + provider backend.",
+        handler=_cmd_model,
+    ))
+    reg.register(SlashCommand(
+        name="compact",
+        description="Manually trigger history compaction.",
+        handler=_cmd_compact,
+    ))
+    _DEFAULT = reg
+    return reg

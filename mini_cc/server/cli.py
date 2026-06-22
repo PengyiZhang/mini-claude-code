@@ -217,6 +217,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Load .env *before* any subcommand reads os.environ. Without this,
+    # users had to remember to `export $(cat .env | xargs)` (or worse,
+    # paste every var inline) — even though python-dotenv was already
+    # declared as a dependency. We search the standard chain: cwd,
+    # then the directory containing this file (repo root).
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        # dotenv is in our deps, but don't let a missing optional dep
+        # brick the whole CLI.
+        pass
+
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):

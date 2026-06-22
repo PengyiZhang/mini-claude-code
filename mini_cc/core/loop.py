@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterator
 
@@ -30,7 +31,7 @@ from ..tools.background import BackgroundScheduler, should_run_background
 from .compaction import prepare_context, compact_history
 from .hooks import Hooks
 from .permissions import PermissionInterceptor
-from .recovery import RecoveryState, is_prompt_too_long_error, with_retry
+from .recovery import RecoveryState, is_prompt_too_long_error, retry_delay
 from .system_prompt import assemble_system_prompt
 
 CONTINUATION_PROMPT = ("Continue from the previous response. "
@@ -39,10 +40,42 @@ CONTINUATION_PROMPT = ("Continue from the previous response. "
 INTERRUPTED_TOOL_RESULT = "[interrupted by server restart]"
 
 
+def _chain_one(first, rest):
+    """Yield ``first`` then every item from ``rest``. Used to replay the
+    peeked-first event from a provider's stream back into the iteration."""
+    yield first
+    yield from rest
+
+
 def _block_type(b) -> str | None:
     if isinstance(b, dict):
         return b.get("type")
     return getattr(b, "type", None)
+
+
+def _dump_content(content):
+    """Convert Anthropic SDK pydantic blocks to plain dicts so they
+    survive JSON serialization. Without this, save_messages() falls
+    back to default=str and we end up with "ThinkingBlock(signature=...')"
+    stringified blobs on disk — destroying the structure we need to
+    rehydrate the transcript after a page reload."""
+    if not isinstance(content, list):
+        return content
+    out = []
+    for b in content:
+        if isinstance(b, dict):
+            out.append(b)
+            continue
+        # pydantic v2 block (TextBlock / ToolUseBlock / ThinkingBlock / ...)
+        if hasattr(b, "model_dump"):
+            out.append(b.model_dump())
+            continue
+        # legacy pydantic v1 fallback
+        if hasattr(b, "dict"):
+            out.append(b.dict())
+            continue
+        out.append(b)
+    return out
 
 
 def _has_tool_use(content) -> bool:
@@ -206,6 +239,28 @@ class AgentLoop:
             # Metrics are best-effort — never break a turn because of them.
             pass
 
+    def _record_usage_dict(self, usage: dict) -> None:
+        """Same as :meth:`_record_usage` but takes a plain dict.
+
+        Litellm's usage shape is normalized to a dict at the provider
+        boundary, so we need a dict-shaped path here.
+        """
+        reg = self.project.metrics
+        if reg is None or not isinstance(usage, dict):
+            return
+        try:
+            from ..server.metrics import record_tokens
+            record_tokens(
+                reg,
+                self.project.tenant_id or "unknown",
+                input=usage.get("input_tokens", 0) or 0,
+                output=usage.get("output_tokens", 0) or 0,
+                cache_read=usage.get("cache_read_input_tokens", 0) or 0,
+                cache_create=usage.get("cache_creation_input_tokens", 0) or 0,
+            )
+        except Exception:
+            pass
+
     def _record_request_status(self, status: str) -> None:
         """Increment anthropic_request_total{status=...}."""
         reg = self.project.metrics
@@ -218,11 +273,22 @@ class AgentLoop:
             pass
 
     @property
-    def client(self):
+    def provider(self):
+        """LLM provider for the current model.
+
+        Picks anthropic vs litellm based on the model name's prefix.
+        Callers can override the whole provider via ``client_factory``
+        (legacy name kept for test compatibility) — useful for unit
+        tests that want to swap in a stub without touching env vars.
+        """
         if self._client is None:
-            factory = self.project.client_factory or default_config().build_client
+            factory = (self.project.client_factory
+                       or default_config().build_provider)
             self._client = factory()
         return self._client
+
+    # Legacy alias — old tests reach for ``loop.client`` directly.
+    client = provider
 
     # ── Main loop ───────────────────────────────────────────────────────
     def stop(self):
@@ -276,38 +342,120 @@ class AgentLoop:
                 )
 
             try:
-                def _call_model():
-                    # Use streaming form so we can poll self._stop between
-                    # events and abort the in-flight HTTP request mid-turn.
-                    # Returns the final Message on normal completion, or
-                    # None if cancelled (signals the caller to exit run()).
-                    from ..server.tracing import log_span
-                    with log_span("anthropic.request",
-                                  tenant=self.project.tenant_id or "unknown",
-                                  model=self.state.current_model,
-                                  session_id=self.session_id):
-                        with self.client.messages.stream(
-                            model=self.state.current_model,
-                            system=system,
-                            messages=self.messages,
-                            tools=to_anthropic(self.tools),
-                            max_tokens=max_tokens,
-                        ) as stream:
-                            for _ in stream:
-                                if self._stop.is_set():
-                                    stream.close()
-                                    self._record_request_status("cancelled")
-                                    return None
-                            response = stream.get_final_message()
-                            self._record_usage(response)
+                # Stream normalized events from whichever provider is
+                # active (Anthropic SDK or litellm). The provider yields
+                # text_delta, tool_use, and a terminal message_stop
+                # carrying the final assistant content + usage. Loop
+                # responsibilities here are: forward text deltas in real
+                # time, retry 429/529 on connection setup, react to
+                # prompt-too-long errors, and extract tool blocks for
+                # the tool dispatcher below.
+                from ..server.tracing import log_span
+                from ..config import MAX_RETRIES
+
+                def _open_stream():
+                    return self.provider.stream(
+                        model=self.state.current_model,
+                        system=system,
+                        messages=self.messages,
+                        tools=to_anthropic(self.tools),
+                        max_tokens=max_tokens,
+                    )
+
+                def _is_rate_limit(e: Exception) -> bool:
+                    status = getattr(e, "status_code", None) or 0
+                    msg = str(e).lower()
+                    return (status == 429 or "ratelimit" in msg
+                            or "rate_limit" in msg)
+
+                def _is_overloaded(e: Exception) -> bool:
+                    status = getattr(e, "status_code", None) or 0
+                    msg = str(e).lower()
+                    return status == 529 or "overloaded" in msg
+
+                # Retry connection setup on 429 / 529 (the SDK already
+                # retries twice, this adds our backoff on top). Once the
+                # stream is open, mid-stream errors propagate. The
+                # iterator is lazy — opening just validates creds/rate.
+                stream_iter = None
+                first = None
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        stream_iter = _open_stream()
+                        # Pull the first event eagerly so provider-side
+                        # connection errors surface here (before we
+                        # commit to streaming the whole turn).
+                        first = next(stream_iter)
+                        break
+                    except StopIteration:
+                        # Provider yielded nothing (e.g. empty completion).
+                        # Keep stream_iter so we can still close it; we
+                        # just have no events to forward.
+                        first = None
+                        break
+                    except Exception as e:
+                        if _is_rate_limit(e):
+                            self._emit({"type": "retry", "reason": "429",
+                                        "attempt": attempt + 1})
+                            time.sleep(retry_delay(attempt))
+                            continue
+                        if _is_overloaded(e):
+                            self.state.consecutive_529 += 1
+                            self._emit({"type": "retry", "reason": "529",
+                                        "attempt": attempt + 1})
+                            time.sleep(retry_delay(attempt))
+                            continue
+                        raise
+                else:
+                    raise RuntimeError("Max retries exceeded opening stream")
+
+                response = None  # becomes the message_stop StreamEvent
+                cancelled = False
+                with log_span("anthropic.request",
+                              tenant=self.project.tenant_id or "unknown",
+                              model=self.state.current_model,
+                              session_id=self.session_id):
+                    try:
+                        if first is not None:
+                            events = _chain_one(first, stream_iter)
+                        else:
+                            events = stream_iter
+                        for ev in events:
+                            if self._stop.is_set():
+                                self._record_request_status("cancelled")
+                                cancelled = True
+                                break
+                            if ev.kind == "text_delta" and ev.text:
+                                yield {"type": "text", "text": ev.text}
+                            elif ev.kind == "message_stop":
+                                response = ev
+                            # tool_use events are emitted by the litellm
+                            # provider; we don't yield them here — the
+                            # tool dispatcher runs after message_stop,
+                            # reading from response.content_blocks.
+                        if not cancelled and response is not None:
+                            if response.usage:
+                                self._record_usage_dict(response.usage)
                             self._record_request_status("success")
-                            return response
+                    except Exception:
+                        if cancelled:
+                            pass
+                        else:
+                            raise
+                    finally:
+                        if cancelled and stream_iter is not None:
+                            # Closing the generator forces any open
+                            # context manager (anthropic stream / litellm
+                            # HTTP response) to unwind cleanly.
+                            close = getattr(stream_iter, "close", None)
+                            if callable(close):
+                                try:
+                                    close()
+                                except Exception:
+                                    pass
 
-                response = with_retry(_call_model, self.state, on_event=self._emit)
-
-                if response is None:
-                    # Cancelled mid-stream — exit cleanly without persisting
-                    # a half-built assistant turn.
+                if cancelled:
+                    # Exit cleanly without persisting a half-built turn.
                     yield {"type": "done"}
                     self._persist()
                     return
@@ -325,6 +473,11 @@ class AgentLoop:
                 self._persist()
                 return
 
+            # response.content_blocks is already JSON-safe (providers
+            # dump pydantic blocks to dicts before emitting message_stop)
+            # so we can append it directly — no _dump_content needed.
+            final_blocks = response.content_blocks or []
+
             if response.stop_reason == "max_tokens":
                 if not self.state.has_escalated:
                     max_tokens = ESCALATED_MAX_TOKENS
@@ -332,7 +485,7 @@ class AgentLoop:
                     self._emit({"type": "max_tokens_escalation",
                                 "max_tokens": max_tokens})
                     continue
-                self.messages.append({"role": "assistant", "content": response.content})
+                self.messages.append({"role": "assistant", "content": final_blocks})
                 if self.state.recovery_count < MAX_RECOVERY_RETRIES:
                     self.messages.append({"role": "user", "content": CONTINUATION_PROMPT})
                     self.state.recovery_count += 1
@@ -344,14 +497,12 @@ class AgentLoop:
             # Normal stop_reason (end_turn / tool_use)
             max_tokens = DEFAULT_MAX_TOKENS
             self.state.has_escalated = False
-            self.messages.append({"role": "assistant", "content": response.content})
+            self.messages.append({"role": "assistant", "content": final_blocks})
 
-            # Stream text blocks
-            for block in response.content:
-                if getattr(block, "type", None) == "text":
-                    yield {"type": "text", "text": block.text}
+            # Text deltas were already streamed during the provider
+            # request. Fall through to tool execution if any.
 
-            if not _has_tool_use(response.content):
+            if not _has_tool_use(final_blocks):
                 if self.hooks is not None:
                     self.hooks.trigger(Hooks.Stop)
                 yield {"type": "done"}
@@ -422,14 +573,27 @@ class AgentLoop:
         )
 
     def _execute_tool_calls(self, content):
-        """Yields tool_use + tool_result events for each tool call in content."""
+        """Yields tool_use + tool_result events for each tool call in content.
+
+        ``content`` is a list of plain dicts (both providers dump to
+        dicts before yielding message_stop) — use ``.get()`` rather
+        than attribute access so the same code path works regardless
+        of which provider produced the blocks.
+        """
         ctx = self._make_ctx()
         for block in content:
-            if getattr(block, "type", None) != "tool_use":
+            btype = block.get("type") if isinstance(block, dict) \
+                else getattr(block, "type", None)
+            if btype != "tool_use":
                 continue
-            name = block.name
-            tool_input = block.input or {}
-            tool_use_id = block.id
+            if isinstance(block, dict):
+                name = block.get("name")
+                tool_input = block.get("input") or {}
+                tool_use_id = block.get("id")
+            else:
+                name = block.name
+                tool_input = block.input or {}
+                tool_use_id = block.id
             yield {"type": "tool_use", "name": name,
                    "input": tool_input, "id": tool_use_id}
             self._emit({"type": "tool_use", "name": name,

@@ -25,7 +25,7 @@ export class ApiError extends Error {
   }
 }
 
-async function parseErr(res: Response): Promise<never> {
+export async function parseErr(res: Response): Promise<never> {
   let body: ApiErrorEnvelope | null = null;
   try {
     body = (await res.json()) as ApiErrorEnvelope;
@@ -38,13 +38,13 @@ async function parseErr(res: Response): Promise<never> {
   throw new ApiError(res.status, code, msg, details);
 }
 
-function authHeaders(profile: TenantProfile): Record<string, string> {
+export function authHeaders(profile: TenantProfile): Record<string, string> {
   return {
     Authorization: `Bearer ${profile.apiKey}`,
   };
 }
 
-function tenantPath(profile: TenantProfile, suffix = ""): string {
+export function tenantPath(profile: TenantProfile, suffix = ""): string {
   return `${profile.baseUrl}/tenants/${profile.tenantId}${suffix}`;
 }
 
@@ -156,6 +156,37 @@ export async function deleteSession(profile: TenantProfile, pid: string, sid: st
     headers: authHeaders(profile),
   });
   if (!res.ok && res.status !== 204) await parseErr(res);
+}
+
+export interface RawMessage {
+  role: "user" | "assistant";
+  content: string | Array<{
+    type: string;
+    text?: string;
+    id?: string;
+    name?: string;
+    input?: Record<string, unknown>;
+    tool_use_id?: string;
+    content?: string | unknown;
+    is_error?: boolean;
+  }>;
+}
+
+// Fetch the persisted transcript for a session. Used to rehydrate the
+// in-memory chat state after a page reload. Without this, the chat
+// history is lost on refresh even though the backend still has it on
+// disk — confusing the user into thinking sessions aren't persisted.
+export async function getSessionMessages(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+): Promise<RawMessage[]> {
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/sessions/${sid}/messages`),
+    { headers: authHeaders(profile) },
+  );
+  if (!res.ok) await parseErr(res);
+  return res.json();
 }
 
 // ── Permissions ──────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import FileTree from "../components/FileTree";
@@ -9,18 +9,21 @@ import PermissionPrompt, {
   pendingToData,
 } from "../components/PermissionPrompt";
 import SessionRow from "../components/SessionRow";
+import SlashMenu from "../components/SlashMenu";
 import {
   ApiError,
   deleteSession,
   downloadZip,
+  getSessionMessages,
   listPendingPermissions,
   listSessionMetas,
   startSession,
-  uploadFiles,
 } from "../lib/api";
-import { useAuth, useChat } from "../lib/store";
+import { useAuth, useChat, rawToChatMessages } from "../lib/store";
 import type { ChatMessage } from "../lib/store";
 import { streamSend } from "../lib/sse";
+import { fetchCommands, streamRunCommand } from "../lib/commands";
+import type { CommandDef } from "../lib/commands";
 
 type Tab = "chat" | "files" | "sessions";
 
@@ -40,6 +43,7 @@ export default function Workspace() {
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState<PermissionPromptData[]>(EMPTY_PERMS);
+  const [commands, setCommands] = useState<CommandDef[]>([]);
 
   const chatKey = sid ? `${pid}::${sid}` : null;
   const chatMessages = useChat((s) => (chatKey ? (s.messages[chatKey] ?? EMPTY) : EMPTY));
@@ -53,9 +57,36 @@ export default function Workspace() {
   const finishAssistant = useChat((s) => s.finishAssistant);
   const failAssistant = useChat((s) => s.failAssistant);
   const setStreaming = useChat((s) => s.setStreaming);
+  const hydrate = useChat((s) => s.hydrate);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // ── Slash menu state ─────────────────────────────────────────────
+  // Menu shows whenever input looks like "/something" and the user is
+  // still typing the command name (no space yet). Once they add a
+  // space we treat the command name as fixed and stop filtering.
+  const slashOpen = useMemo(() => {
+    if (!input.startsWith("/")) return false;
+    if (input.includes(" ")) return false;
+    return true;
+  }, [input]);
+  const slashQuery = input.slice(1);  // strip leading "/"
+  const slashFiltered = useMemo(() => {
+    if (!slashOpen) return [];
+    const q = slashQuery.toLowerCase();
+    const ranked = commands.filter((c) => {
+      if (!q) return true;
+      if (c.name.toLowerCase().includes(q)) return true;
+      if (c.aliases.some((a) => a.toLowerCase().includes(q))) return true;
+      return false;
+    });
+    return ranked.slice(0, 8);
+  }, [commands, slashOpen, slashQuery]);
+  const [slashActive, setSlashActive] = useState(0);
+  useEffect(() => {
+    setSlashActive(0);
+  }, [slashQuery]);
 
   async function refreshSessions() {
     try {
@@ -115,11 +146,61 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, profile.apiKey]);
 
+  // Hydrate chat history from backend on session activation. Without
+  // this, every page reload wipes the conversation even though the
+  // backend persists every turn to disk. We only fetch when the local
+  // store is empty (hydrate() also re-checks to avoid clobbering an
+  // in-flight stream with stale disk state).
+  useEffect(() => {
+    if (!chatKey || !sid) return;
+    const existing = useChat.getState().messages[chatKey];
+    if (existing && existing.length > 0) return;
+    let cancelled = false;
+    getSessionMessages(profile, pid, sid)
+      .then((raw) => {
+        if (cancelled) return;
+        const msgs = rawToChatMessages(raw);
+        if (msgs.length > 0) hydrate(chatKey, msgs);
+      })
+      .catch(() => {
+        // Hydration is best-effort — a stale session id or transient
+        // 404 shouldn't block the user from starting a fresh chat.
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatKey, sid, pid, profile.apiKey]);
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [chatMessages]);
+
+  // Fetch slash command menu for the active session. The list is the
+  // same for every session of the same tenant, but fetching on sid
+  // change gives the user a fresh view (e.g. after a new command is
+  // registered) and keeps the network path warm. Best-effort —
+  // failures just hide the autocomplete menu.
+  useEffect(() => {
+    if (!sid) {
+      setCommands([]);
+      return;
+    }
+    let cancelled = false;
+    fetchCommands(profile, pid, sid)
+      .then((list) => {
+        if (!cancelled) setCommands(list);
+      })
+      .catch(() => {
+        /* ignore — autocomplete just won't show */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid, pid, profile.apiKey]);
 
   async function newSession() {
     setBusySid(true);
@@ -260,46 +341,64 @@ export default function Workspace() {
     }
   }
 
-  // Root-level upload: lets the user populate an empty workspace without
-  // first right-clicking an existing folder (which is impossible when the
-  // tree has no entries yet). Mirrors TreeRow.triggerUpload so behavior is
-  // consistent regardless of entry point.
-  async function uploadToRoot(kind: "file" | "folder") {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.style.display = "none";
-    if (kind === "folder") {
-      (input as HTMLInputElement & { webkitdirectory: boolean }).webkitdirectory = true;
-    }
-    input.onchange = async () => {
-      if (!input.files || input.files.length === 0) {
-        input.remove();
-        return;
-      }
-      setError(null);
-      const files: File[] = [];
-      const rels: string[] = [];
-      for (const f of Array.from(input.files)) {
-        files.push(f);
-        const rel: string =
-          (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
-        // For folder uploads, strip the top-level folder name (matches
-        // TreeRow behavior): we want the *contents*, not a redundant parent.
-        const cleaned = kind === "folder" ? rel.split("/").slice(1).join("/") || rel : rel;
-        rels.push(cleaned);
-      }
-      try {
-        await uploadFiles(profile, pid, "", files, rels);
-        setTreeReload((n) => n + 1);
-      } catch (e) {
-        setError(e instanceof ApiError ? e.message : (e as Error).message);
-      } finally {
-        input.remove();
-      }
-    };
-    document.body.appendChild(input);
-    input.click();
+  // Run a server-scoped slash command. Output flows through the same
+  // chat store as a normal turn so the user sees the result inline.
+  async function runServerCommand(name: string, args: string) {
+    if (!sid || !chatKey || streaming) return;
+    appendUser(chatKey, `/${name}${args ? ` ${args}` : ""}`);
+    startAssistant(chatKey);
+    setStreaming(chatKey, true);
+    setError(null);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    await streamRunCommand(
+      profile,
+      pid,
+      sid,
+      name,
+      {
+        onEvent: (ev) => {
+          switch (ev.type) {
+            case "text":
+              appendText(chatKey!, ev.text);
+              break;
+            case "done":
+              finishAssistant(chatKey!);
+              break;
+            case "error":
+              failAssistant(chatKey!, ev.message);
+              break;
+            default:
+              // tool_use / tool_result / permission_* etc. aren't
+              // produced by built-in commands; keep render path simple.
+              break;
+          }
+        },
+        onError: (e) => {
+          failAssistant(chatKey!, e.message);
+          setError(e.message);
+        },
+      },
+      args,
+      controller.signal,
+    );
+    abortRef.current = null;
+  }
+
+  // Dispatch a slash command picked from the menu. Server-scoped →
+  // POST to /commands/{name}. Client-scoped commands are not yet
+  // wired (registry only has server commands today); route anything
+  // unknown through the server path and let it 404 if it doesn't
+  // exist.
+  function pickCommand(cmd: CommandDef) {
+    setInput("");
+    void runServerCommand(cmd.name, "");
+  }
+
+  function autocompleteCommand(cmd: CommandDef) {
+    setInput(`/${cmd.name} `);
   }
 
   return (
@@ -351,25 +450,9 @@ export default function Workspace() {
 
           {tab === "files" && (
             <div className="space-y-2">
-              <button
-                onClick={() => uploadToRoot("file")}
-                className="w-full text-sm px-3 py-1.5 rounded border border-border hover:border-accent"
-              >
-                ⬆ Upload files…
-              </button>
-              <button
-                onClick={() => uploadToRoot("folder")}
-                className="w-full text-sm px-3 py-1.5 rounded border border-border hover:border-accent"
-              >
-                ⬆ Upload folder…
-              </button>
-              <button
-                onClick={download}
-                className="w-full text-sm px-3 py-1.5 rounded border border-border hover:border-accent"
-              >
-                ⬇ Download ZIP
-              </button>
-              <div className="text-xs text-ink-dim uppercase tracking-wide">workspace</div>
+              <div className="text-xs text-ink-dim">
+                Workspace files live in the tree. Use the <span className="font-mono">＋</span> button at the top of the tree to upload, and the <span className="font-mono">⬇</span> button to download. Right-click any folder for per-folder actions.
+              </div>
             </div>
           )}
 
@@ -420,16 +503,70 @@ export default function Workspace() {
                 )}
               </div>
               <div className="border-t border-border p-4 bg-bg-panel">
-                <div className="flex gap-2">
+                <div className="flex gap-2 relative">
+                  {slashOpen && commands.length > 0 && (
+                    <SlashMenu
+                      commands={slashFiltered}
+                      active={Math.min(slashActive, Math.max(slashFiltered.length - 1, 0))}
+                      onHover={(i) => setSlashActive(i)}
+                      onPick={(c) => pickCommand(c)}
+                    />
+                  )}
                   <textarea
                     rows={2}
-                    placeholder={sid ? "send a message…" : "create a session first"}
+                    placeholder={sid ? "send a message…  (type / for commands)" : "create a session first"}
                     disabled={!sid || streaming}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => {
+                      if (slashOpen) {
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          if (slashFiltered.length > 0) {
+                            setSlashActive((i) => (i + 1) % slashFiltered.length);
+                          }
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          if (slashFiltered.length > 0) {
+                            setSlashActive((i) => (i - 1 + slashFiltered.length) % slashFiltered.length);
+                          }
+                          return;
+                        }
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          const pick = slashFiltered[Math.min(slashActive, slashFiltered.length - 1)];
+                          if (pick) pickCommand(pick);
+                          return;
+                        }
+                        if (e.key === "Tab") {
+                          e.preventDefault();
+                          const pick = slashFiltered[Math.min(slashActive, slashFiltered.length - 1)];
+                          if (pick) autocompleteCommand(pick);
+                          return;
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setInput("");
+                          return;
+                        }
+                      }
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
+                        const trimmed = input.trim();
+                        if (trimmed.startsWith("/")) {
+                          // /command [args] — dispatch even after the
+                          // menu closes (when args are typed in).
+                          const parts = trimmed.slice(1).split(/\s+/);
+                          const name = parts[0];
+                          const args = parts.slice(1).join(" ");
+                          if (name) {
+                            setInput("");
+                            void runServerCommand(name, args);
+                            return;
+                          }
+                        }
                         send();
                       }
                     }}
@@ -458,6 +595,7 @@ export default function Workspace() {
                   pid={pid}
                   onPickFile={(p) => setPreviewPath(p)}
                   reloadKey={treeReload}
+                  onDownloadZip={download}
                 />
               </div>
               <div className="overflow-auto p-4">
@@ -465,7 +603,7 @@ export default function Workspace() {
                   <FilePreview pid={pid} path={previewPath} />
                 ) : (
                   <div className="text-sm text-ink-dim">
-                    select a file to preview, use the upload buttons in the sidebar, or right-click any folder in the tree.
+                    select a file to preview, or use the ＋ button above the tree to add files.
                   </div>
                 )}
               </div>

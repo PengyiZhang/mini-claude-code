@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "mini_cc contributors" }]
 dependencies = [
     "anthropic>=0.25.0",
+    "litellm>=1.50.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
     "fastapi>=0.110",

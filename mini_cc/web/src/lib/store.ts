@@ -113,6 +113,7 @@ interface ChatState {
   failAssistant: (key: string, msg: string) => void;
   setStreaming: (key: string, on: boolean) => void;
   clear: (key: string) => void;
+  hydrate: (key: string, msgs: ChatMessage[]) => void;
 }
 
 function lastAssistant(list: ChatMessage[]): ChatMessage | undefined {
@@ -208,4 +209,107 @@ export const useChat = create<ChatState>((set) => ({
       delete m[key];
       return { messages: m };
     }),
+  hydrate: (key, msgs) =>
+    set((s) => {
+      // Only hydrate if we don't already have content for this key —
+      // avoids clobbering an in-flight stream with stale disk state.
+      if (s.messages[key] && s.messages[key]!.length > 0) return s;
+      return { messages: { ...s.messages, [key]: msgs } };
+    }),
 }));
+
+// ── Transcript hydration ────────────────────────────────────────────
+// Convert raw Anthropic-format messages (what the backend persists on
+// disk) back into the ChatMessage[] shape the UI renders. This lets us
+// rehydrate a session after a page reload without losing history.
+//
+// Raw shape (Anthropic):
+//   {"role":"user","content":"text"}                    ← visible user msg
+//   {"role":"assistant","content":[{"type":"text",...},
+//                                  {"type":"tool_use",...}]}
+//   {"role":"user","content":[{"type":"tool_result",...}]}  ← internal, skipped
+//
+// We merge each assistant message's text + tool_use blocks into ONE
+// ChatMessage, then pair tool_use ids with their tool_result in the
+// following user message.
+
+export interface RawBlock {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
+}
+
+export interface RawMessage {
+  role: "user" | "assistant";
+  content: string | RawBlock[];
+}
+
+export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const m = raw[i];
+    if (m.role === "user") {
+      // String content is a visible user turn. Array content holds
+      // tool_results that we pair into the preceding assistant's
+      // activities below — skip here.
+      if (typeof m.content === "string") {
+        out.push({ role: "user", text: m.content });
+      }
+      continue;
+    }
+    if (m.role !== "assistant") continue;
+    const blocks: RawBlock[] = Array.isArray(m.content) ? m.content : [];
+    const text = blocks
+      .filter((b) => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text!)
+      .join("");
+    const toolUses = blocks.filter((b) => b.type === "tool_use");
+
+    // Look ahead for tool_result blocks in the next message.
+    const next = raw[i + 1];
+    const results: Record<string, string> = {};
+    if (next && next.role === "user" && Array.isArray(next.content)) {
+      for (const b of next.content) {
+        if (b.type === "tool_result" && b.tool_use_id) {
+          results[b.tool_use_id] =
+            typeof b.content === "string"
+              ? b.content
+              : Array.isArray(b.content)
+                ? b.content
+                    .map((x) =>
+                      typeof x === "string"
+                        ? x
+                        : (x as { text?: string })?.text ?? JSON.stringify(x),
+                    )
+                    .join("")
+                : b.content == null
+                  ? ""
+                  : JSON.stringify(b.content);
+        }
+      }
+    }
+
+    const activities: ChatActivity[] = toolUses.map((b) => ({
+      kind: "tool_use",
+      id: b.id ?? "",
+      name: b.name ?? "",
+      input: b.input ?? {},
+      result: results[b.id ?? ""],
+      expanded: false,
+    }));
+
+    out.push({
+      role: "assistant",
+      text,
+      streaming: false,
+      notices: [],
+      activities,
+    });
+  }
+  return out;
+}

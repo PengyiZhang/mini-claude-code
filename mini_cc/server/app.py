@@ -1,6 +1,7 @@
 """FastAPI app factory + lifespan management."""
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -8,6 +9,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from ..auth import TenantKeyRegistry
 from ..projects import ProjectManager
@@ -21,6 +23,7 @@ from .routes import resources as resources_routes
 from .routes import sessions as sessions_routes
 from .routes import permissions as permissions_routes
 from .routes import admin as admin_routes
+from .routes import commands as commands_routes
 
 
 @asynccontextmanager
@@ -104,6 +107,7 @@ def build_app(*, data_dir: Path,
     app.include_router(resources_routes.download_router)
     app.include_router(permissions_routes.router)
     app.include_router(admin_routes.router)
+    app.include_router(commands_routes.router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:
@@ -122,5 +126,57 @@ def build_app(*, data_dir: Path,
         """JSON snapshot for ad-hoc introspection. Trusted-network only."""
         reg: MetricsRegistry = app.state.metrics
         return reg.snapshot()
+
+    # ── Static frontend mount (optional) ───────────────────────────────
+    # When the React UI has been built (mini_cc/web/dist), serve it from
+    # the same FastAPI app so production deployments need only one origin
+    # (no CORS). Detection order:
+    #   1. MINI_CC_WEB_DIST env (absolute or relative path)
+    #   2. <cwd>/mini_cc/web/dist       (running from repo root)
+    #   3. <package>/web/dist           (running from installed package)
+    # We mount /assets (etc.) at /assets for direct access, then add a
+    # catch-all GET handler that serves index.html for unknown paths so
+    # client-side routing (e.g. /projects/xyz) works. API routes are
+    # registered above, so they take precedence over the catch-all.
+    web_dist_env = os.getenv("MINI_CC_WEB_DIST")
+    dist_candidates: list[Path] = []
+    if web_dist_env:
+        dist_candidates.append(Path(web_dist_env))
+    dist_candidates.extend([
+        Path.cwd() / "mini_cc" / "web" / "dist",
+        Path(__file__).resolve().parent.parent / "web" / "dist",
+    ])
+    web_dist_path: Path | None = None
+    for cand in dist_candidates:
+        try:
+            cand = cand.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if (cand / "index.html").exists():
+            web_dist_path = cand
+            break
+    if web_dist_path is not None:
+        from fastapi.responses import FileResponse
+
+        app.state.web_dist = str(web_dist_path)
+
+        # Direct static files (JS bundles, CSS, images). 404s here fall
+        # through to the catch-all below.
+        app.mount("/assets", StaticFiles(directory=str(web_dist_path / "assets")),
+                  name="web-assets")
+
+        async def _spa_fallback(_request: Request) -> FileResponse:
+            """Serve index.html for any unknown path.
+
+            Client-side routing (HashRouter here, but kept generic)
+            needs this to support direct-loads of deep links. API
+            routes and /assets/* are registered before this handler
+            and take precedence."""
+            return FileResponse(str(web_dist_path / "index.html"))
+
+        # Catch-all GET — must come after all real routes.
+        app.add_route("/{path:path}", _spa_fallback, methods=["GET"])
+    else:
+        app.state.web_dist = None
 
     return app
