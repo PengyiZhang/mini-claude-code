@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { TenantProfile } from "./types";
+import type { TenantProfile, TodoItem } from "./types";
 
 const LS_KEY = "mini_cc.tenants.v1";
 const LS_ACTIVE = "mini_cc.tenants.active";
@@ -313,3 +313,40 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
   }
   return out;
 }
+
+// ── Todos store ──────────────────────────────────────────────────────
+// Separate from useChat so message streaming doesn't re-render the task
+// board on every text delta. Keyed by `${pid}/${sid}` so switching
+// sessions doesn't leak state across them.
+
+interface TodosState {
+  byKey: Record<string, TodoItem[]>;
+  collapsed: Record<string, boolean>;
+  setTodos: (key: string, todos: TodoItem[]) => void;
+  hydrate: (key: string, todos: TodoItem[]) => void;
+  toggleCollapsed: (key: string) => void;
+  clear: (key: string) => void;
+}
+
+export const useTodos = create<TodosState>((set) => ({
+  byKey: {},
+  collapsed: {},
+  setTodos: (key, todos) =>
+    set((s) => ({ byKey: { ...s.byKey, [key]: todos } })),
+  hydrate: (key, todos) =>
+    set((s) => ({
+      // Don't overwrite if we already have data (live SSE beat the cold
+      // GET to the punch) — live data is always at least as fresh.
+      byKey: key in s.byKey ? s.byKey : { ...s.byKey, [key]: todos },
+    })),
+  toggleCollapsed: (key) =>
+    set((s) => ({
+      collapsed: { ...s.collapsed, [key]: !s.collapsed[key] },
+    })),
+  clear: (key) =>
+    set((s) => {
+      const next = { ...s.byKey };
+      delete next[key];
+      return { byKey: next };
+    }),
+}));

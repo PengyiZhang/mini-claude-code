@@ -137,6 +137,23 @@ def _to_jsonable(obj):
     return obj
 
 
+@router.get("/{sid}/todos")
+def get_todos(sid: str = Path(...),
+              pid: str = Path(...),
+              tid: str = Depends(require_scope("sessions:read")),
+              pm=Depends(get_pm),
+              sm=Depends(get_sm)) -> list[dict]:
+    """Return persisted todos for the session — hydrates the task board
+    on page reload. Same shape the loop emits via ``todos_updated`` events."""
+    validate_id(pid)
+    validate_id(sid)
+    _check_project_tenant(pid, tid, pm)
+    project = pm.get(pid)
+    if sid not in {m.session_id for m in project.storage.list_sessions(pid)}:
+        raise NotFound(f"session {sid} not found")
+    return project.storage.load_todos(pid, sid)
+
+
 @router.post("/{sid}/send")
 def send_message(body: SendMessageRequest,
                  sid: str = Path(...),

@@ -10,16 +10,18 @@ import PermissionPrompt, {
 } from "../components/PermissionPrompt";
 import SessionRow from "../components/SessionRow";
 import SlashMenu from "../components/SlashMenu";
+import TodoPanel from "../components/TodoPanel";
 import {
   ApiError,
   deleteSession,
   downloadZip,
   getSessionMessages,
+  getSessionTodos,
   listPendingPermissions,
   listSessionMetas,
   startSession,
 } from "../lib/api";
-import { useAuth, useChat, rawToChatMessages } from "../lib/store";
+import { useAuth, useChat, useTodos, rawToChatMessages } from "../lib/store";
 import type { ChatMessage } from "../lib/store";
 import { streamSend } from "../lib/sse";
 import { fetchCommands, streamRunCommand } from "../lib/commands";
@@ -172,6 +174,21 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatKey, sid, pid, profile.apiKey]);
 
+  // Hydrate the task board from backend on session activation. Live
+  // SSE events will take over once a todo_write fires; this just primes
+  // the panel so a refresh doesn't show an empty board.
+  useEffect(() => {
+    if (!chatKey || !sid) return;
+    getSessionTodos(profile, pid, sid)
+      .then((todos) => {
+        if (todos.length > 0) useTodos.getState().hydrate(chatKey, todos);
+      })
+      .catch(() => {
+        // Best-effort — stale session id shouldn't block the chat.
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatKey, sid, pid, profile.apiKey]);
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -300,6 +317,9 @@ export default function Workspace() {
               break;
             case "session_warm":
               setWarmSet((m) => ({ ...m, [ev.session_id]: true }));
+              break;
+            case "todos_updated":
+              if (chatKey) useTodos.getState().setTodos(chatKey, ev.todos);
               break;
             case "done":
               finishAssistant(chatKey!);
@@ -488,6 +508,8 @@ export default function Workspace() {
                   ))}
                 </div>
               )}
+
+              {chatKey && <TodoPanel chatKey={chatKey} />}
 
               <div ref={scrollRef} className="flex-1 overflow-auto p-6 space-y-4">
                 {!sid ? (

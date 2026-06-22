@@ -8,6 +8,7 @@ import type {
   RotateKeyOut,
   SessionMeta,
   TenantProfile,
+  TodoItem,
   TreeNode,
 } from "./types";
 
@@ -183,6 +184,22 @@ export async function getSessionMessages(
 ): Promise<RawMessage[]> {
   const res = await fetch(
     tenantPath(profile, `/projects/${pid}/sessions/${sid}/messages`),
+    { headers: authHeaders(profile) },
+  );
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+// Fetch persisted todos for the task board. Hydrates the panel after a
+// page reload so the user sees the last known state without waiting for
+// the model to call todo_write again.
+export async function getSessionTodos(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+): Promise<TodoItem[]> {
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/sessions/${sid}/todos`),
     { headers: authHeaders(profile) },
   );
   if (!res.ok) await parseErr(res);

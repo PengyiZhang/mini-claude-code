@@ -510,7 +510,7 @@ class AgentLoop:
                 return
 
             results: list[dict] = []
-            for ev in self._execute_tool_calls(response.content):
+            for ev in self._execute_tool_calls(response.content_blocks):
                 yield ev
                 if ev["type"] == "tool_result":
                     results.append({"type": "tool_result",
@@ -558,6 +558,7 @@ class AgentLoop:
         def _mark():
             self.project.storage.save_todos(
                 self.project.project_id, self.session_id, self.todos)
+            self._emit({"type": "todos_updated", "todos": self.todos})
         return ToolContext(
             project_id=self.project.project_id,
             session_id=self.session_id,
@@ -672,3 +673,10 @@ class AgentLoop:
             self._emit({"type": "tool_result",
                         "tool_use_id": tool_use_id,
                         "content": output})
+
+            # todo_write ran — yield the new list so HTTP/SSE clients can
+            # update the task board live. _emit also fires for SDK callers
+            # who wired on_event, but yield is what reaches the SSE stream
+            # (SessionManager.send doesn't propagate on_event).
+            if name == "todo_write":
+                yield {"type": "todos_updated", "todos": self.todos}

@@ -112,6 +112,11 @@ export interface MetricSnapshot {
 
 // ── SSE ──────────────────────────────────────────────────────────────
 
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export type SendEvent =
   | { type: "text"; text: string }
   | { type: "tool_use"; name: string; input: Record<string, unknown>; id: string }
@@ -119,6 +124,7 @@ export type SendEvent =
   | { type: "permission_request"; request_id: string; tool_name: string; tool_input: Record<string, unknown>; ttl_seconds?: number }
   | { type: "permission_resolved"; request_id: string; decision: "allow" | "deny" }
   | { type: "session_warm"; session_id: string }
+  | { type: "todos_updated"; todos: TodoItem[] }
   | { type: "done" }
   | { type: "error"; message: string }
   | { type: "max_tokens_escalation"; max_tokens: number }
