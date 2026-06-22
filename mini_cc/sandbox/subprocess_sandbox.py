@@ -12,12 +12,36 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from .base import CommandBlockedError, PathEscapeError
 from .policy import Policy, Violation
+
+# Cached POSIX shell probe. ``None`` until probed; the resolved path (or
+# ``""`` sentinel meaning "probed, none found") afterwards.
+_POSIX_SHELL: str | None = None
+
+
+def _find_posix_shell() -> str | None:
+    """Locate a real bash/sh on PATH (cached).
+
+    ``subprocess.run(..., shell=True)`` routes through ``cmd.exe`` on
+    Windows, which rejects Unix flags (``mkdir -p`` creates a directory
+    literally named ``-p``) and doesn't expand ``$VAR``/``&&``/pipes the
+    way the bash tool's callers expect. The tool is named "bash" and most
+    Windows dev boxes ship Git Bash, so we prefer a real bash whenever one
+    is on PATH and only fall back to the platform default shell otherwise.
+    """
+    global _POSIX_SHELL
+    if _POSIX_SHELL is not None:
+        # "" is our "probed but not found" sentinel — turn it back into None.
+        return _POSIX_SHELL or None
+    found = shutil.which("bash") or shutil.which("sh")
+    _POSIX_SHELL = found if found else ""
+    return found
 
 
 class SubprocessSandbox:
@@ -142,6 +166,15 @@ class SubprocessSandbox:
         if violations:
             raise CommandBlockedError(violations)
         run_env = self._filtered_env(env)
+        # Prefer a real bash so Unix flags (mkdir -p), pipes, &&, and
+        # $VAR expansion behave the same on every platform. Only fall
+        # back to shell=True (cmd.exe on Windows) when no bash is found.
+        shell_path = _find_posix_shell()
+        if shell_path:
+            return subprocess.run(
+                [shell_path, "-c", command],
+                cwd=str(self.project_root), env=run_env,
+                capture_output=True, text=True, timeout=timeout)
         return subprocess.run(
             command, shell=True, cwd=str(self.project_root),
             env=run_env, capture_output=True, text=True, timeout=timeout)

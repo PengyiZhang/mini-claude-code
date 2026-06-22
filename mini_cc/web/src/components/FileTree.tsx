@@ -351,8 +351,6 @@ export default function FileTree({
   const [creatingRootDir, setCreatingRootDir] = useState(false);
   const [newDirName, setNewDirName] = useState("");
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   // Close the "+" dropdown on outside click. Without this the menu hangs
   // around after picking a file, hiding the tree behind it.
@@ -398,6 +396,31 @@ export default function FileTree({
     } finally {
       setBusy(false);
     }
+  }
+
+  // Open the native file picker by creating a FRESH <input> per click and
+  // appending it to <body>. The previous design kept two persistent hidden
+  // inputs and called .click() on them right after setMenuOpen(false) —
+  // that setState-then-click race silently failed to open the picker in
+  // several real browsers (the picker opened in headless Chromium but not
+  // for users), and the webkitdirectory callback-ref was flaky. A fresh
+  // element per invocation is the reliable cross-browser pattern (matches
+  // the per-folder right-click menu's triggerUpload).
+  function triggerRootUpload(kind: "file" | "folder") {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.style.display = "none";
+    if (kind === "folder") {
+      (input as HTMLInputElement & { webkitdirectory: boolean }).webkitdirectory = true;
+    }
+    input.onchange = () => {
+      void doUpload(kind, input.files);
+      // Clean up after the change fires; doUpload reads files synchronously.
+      input.remove();
+    };
+    document.body.appendChild(input);
+    input.click();
   }
 
   // Trigger reload by bumping a local state that we pass down as
@@ -462,7 +485,7 @@ export default function FileTree({
               <div
                 onClick={() => {
                   setMenuOpen(false);
-                  fileInputRef.current?.click();
+                  triggerRootUpload("file");
                 }}
                 className="px-3 py-1.5 cursor-pointer hover:bg-bg-hover text-ink"
               >
@@ -471,7 +494,7 @@ export default function FileTree({
               <div
                 onClick={() => {
                   setMenuOpen(false);
-                  folderInputRef.current?.click();
+                  triggerRootUpload("folder");
                 }}
                 className="px-3 py-1.5 cursor-pointer hover:bg-bg-hover text-ink"
               >
@@ -508,36 +531,6 @@ export default function FileTree({
       )}
 
       {err && <div className="text-xs text-err pl-3 mb-2">{err}</div>}
-
-      {/* Hidden inputs for the + menu. Kept outside the menu so the menu
-          can close before the picker opens (otherwise the picker would
-          close the menu on Firefox). */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          void doUpload("file", e.target.files);
-          e.target.value = "";
-        }}
-      />
-      <input
-        ref={(el) => {
-          folderInputRef.current = el;
-          if (el) {
-            // webkitdirectory isn't in React's TS types; assign via DOM.
-            (el as HTMLInputElement & { webkitdirectory: boolean }).webkitdirectory = true;
-          }
-        }}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          void doUpload("folder", e.target.files);
-          e.target.value = "";
-        }}
-      />
 
       <DirChildren
         pid={pid}

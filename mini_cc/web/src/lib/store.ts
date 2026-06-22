@@ -168,10 +168,18 @@ export const useChat = create<ChatState>((set) => ({
   toggleActivity: (key, toolUseId) =>
     set((s) => {
       const list = [...(s.messages[key] ?? [])];
-      const last = lastAssistant(list);
-      if (last?.activities) {
-        const act = last.activities.find((a) => a.id === toolUseId);
-        if (act) act.expanded = !act.expanded;
+      // Search EVERY message's activities, not just the last assistant
+      // turn. The user can expand/collapse tool calls in any historical
+      // message; the old lastAssistant() lookup only ever matched the
+      // current tail, so every tool call outside the last assistant
+      // bubble silently refused to toggle (looked broken after refresh,
+      // when the last message is often a text summary with no tools).
+      for (const m of list) {
+        const act = m.activities?.find((a) => a.id === toolUseId);
+        if (act) {
+          act.expanded = !act.expanded;
+          break;
+        }
       }
       return { messages: { ...s.messages, [key]: list } };
     }),

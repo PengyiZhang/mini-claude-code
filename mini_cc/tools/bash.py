@@ -27,7 +27,10 @@ def _bash(ctx: ToolContext, args: dict) -> str:
 
 BASH_TOOL = FunctionTool(
     name="bash",
-    description="Run a shell command in the project sandbox.",
+    description=(
+        "Run a shell command in the project sandbox. Commands execute in a "
+        "POSIX bash shell, so use Unix syntax: mkdir -p, ls -la, pipes, &&, "
+        "$VAR, rm -rf all work regardless of the host OS."),
     input_schema={
         "type": "object",
         "properties": {

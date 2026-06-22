@@ -509,8 +509,6 @@ export default function Workspace() {
                 </div>
               )}
 
-              {chatKey && <TodoPanel chatKey={chatKey} />}
-
               <div ref={scrollRef} className="flex-1 overflow-auto p-6 space-y-4">
                 {!sid ? (
                   <div className="text-sm text-ink-dim">no session — click “new session” to begin</div>
@@ -524,6 +522,12 @@ export default function Workspace() {
                   ))
                 )}
               </div>
+
+              {/* Task board pinned just above the input so it stays visible
+                  while scrolling and survives refresh (hydrated from disk).
+                  Returns null when empty, so it costs no vertical space. */}
+              {chatKey && <TodoPanel chatKey={chatKey} />}
+
               <div className="border-t border-border p-4 bg-bg-panel">
                 <div className="flex gap-2 relative">
                   {slashOpen && commands.length > 0 && (
