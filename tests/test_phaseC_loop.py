@@ -59,10 +59,13 @@ def _build_loop(tmp_path, script, prompt_tools=None, timeout=10):
     sandbox = SubprocessSandbox("proj-x", tmp_path / "ws")
     storage = FSStorage(tmp_path / "state")
     interceptor = PermissionInterceptor(timeout_seconds=timeout)
+    # client_factory must return a provider (.stream), not a raw SDK client.
+    from mini_cc.core.llm import AnthropicProvider
+    client = _MockClient(script)
     ref = ProjectRef(
         project_id="proj-x", project_root=str(tmp_path / "ws"),
         sandbox=sandbox, storage=storage,
-        client_factory=lambda: _MockClient(script),
+        client_factory=lambda: AnthropicProvider(lambda: client),
         permissions=interceptor,
         prompt_tools=set(prompt_tools or []),
     )
@@ -186,10 +189,12 @@ def test_no_interceptor_no_prompts(tmp_path):
                               input={"command": "echo hi > out.txt"})]),
         _MockResponse([_Block(type="text", text="done")], stop_reason="end_turn"),
     ]
+    from mini_cc.core.llm import AnthropicProvider
+    client = _MockClient(script)
     ref = ProjectRef(
         project_id="proj-y", project_root=str(tmp_path / "ws"),
         sandbox=sandbox, storage=storage,
-        client_factory=lambda: _MockClient(script),
+        client_factory=lambda: AnthropicProvider(lambda: client),
         permissions=None,
         prompt_tools={"bash"},
     )

@@ -77,6 +77,16 @@ class _MockConfig:
     def build_client(self):
         return self._client
 
+    def build_provider(self):
+        # Loop calls default_config().build_provider(), which must return a
+        # provider-shaped object (.stream(...)). The mock client itself is
+        # anthropic-SDK-shaped (.messages.stream() context manager), so we
+        # wrap it in the real AnthropicProvider — its stream() already
+        # knows how to drive the SDK-style mock via messages.stream() +
+        # get_final_message().
+        from mini_cc.core.llm import AnthropicProvider
+        return AnthropicProvider(self.build_client)
+
     api_key = None
     base_url = None
     primary_model = "claude-test"

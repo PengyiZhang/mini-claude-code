@@ -76,13 +76,28 @@ class LLMProvider(Protocol):
 # ── Anthropic backend ──────────────────────────────────────────────────────
 
 def _dump_block(b: Any) -> dict:
-    """Convert an Anthropic SDK content block to a JSON-safe dict."""
+    """Convert an Anthropic SDK content block to a JSON-safe dict.
+
+    Handles three shapes: plain dicts (passthrough), pydantic models
+    (model_dump/dict), and plain dataclass / attribute-bag objects
+    (dataclasses.asdict + attribute fallback for test mocks).
+    """
     if isinstance(b, dict):
         return b
     if hasattr(b, "model_dump"):
         return b.model_dump()
-    if hasattr(b, "dict"):
+    if hasattr(b, "dict") and callable(getattr(b, "dict")):
         return b.dict()
+    import dataclasses
+    if dataclasses.is_dataclass(b) and not isinstance(b, type):
+        return dataclasses.asdict(b)
+    # Last-resort attribute reflection for objects that quack like a
+    # content block (type/name/id/text/input fields).
+    attrs = {k: getattr(b, k) for k in ("type", "name", "id", "text",
+                                        "input", "tool_use_id")
+             if hasattr(b, k)}
+    if attrs:
+        return attrs
     return {"type": "unknown", "repr": repr(b)}
 
 

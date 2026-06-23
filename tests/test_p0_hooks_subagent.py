@@ -85,9 +85,12 @@ def _build_ref(tmp_path, script=None, *, client=None) -> tuple[ProjectRef, _Mock
     sandbox = SubprocessSandbox("proj-a", tmp_path / "ws")
     storage = FSStorage(tmp_path / "state")
     cl = client or _MockClient(script or [])
+    # Loop expects client_factory to return a provider (with .stream),
+    # not a raw SDK client. Wrap the SDK-shape mock in AnthropicProvider.
+    from mini_cc.core.llm import AnthropicProvider
     ref = ProjectRef(project_id="proj-a", project_root=str(tmp_path / "ws"),
                      sandbox=sandbox, storage=storage,
-                     client_factory=lambda: cl)
+                     client_factory=lambda: AnthropicProvider(lambda: cl))
     return ref, cl
 
 
@@ -233,7 +236,11 @@ def test_spawn_subagent_restricted_tools_and_returns_text(tmp_path):
     sub_client = _MockClient(script)
 
     def factory():
-        return sub_client
+        # spawn_subagent stores loop._client = factory() and then calls
+        # .stream(...) on it — so the factory must return a provider, not
+        # a raw SDK client.
+        from mini_cc.core.llm import AnthropicProvider
+        return AnthropicProvider(lambda: sub_client)
 
     summary = spawn_subagent(ref, "do thing", client_factory=factory)
     assert summary == "subagent summary"
@@ -259,8 +266,9 @@ def test_spawn_subagent_no_summary_fallback(tmp_path):
     ]
     ref, _ = _build_ref(tmp_path, script)
     sub_client = _MockClient(script)
+    from mini_cc.core.llm import AnthropicProvider
     summary = spawn_subagent(ref, "do thing",
-                             client_factory=lambda: sub_client)
+                             client_factory=lambda: AnthropicProvider(lambda: sub_client))
     # Empty final text -> fallback message
     assert "summary" in summary.lower() or "without" in summary.lower()
 
@@ -282,8 +290,9 @@ def test_spawn_subagent_tool_call_cap(tmp_path):
     ]
     ref, _ = _build_ref(tmp_path, script)
     sub_client = _MockClient(script)
+    from mini_cc.core.llm import AnthropicProvider
     summary = spawn_subagent(ref, "loop", max_tool_calls=2,
-                             client_factory=lambda: sub_client)
+                             client_factory=lambda: AnthropicProvider(lambda: sub_client))
     # Cap reached; no text was produced before stop -> fallback mentions cap
     assert "tool-call cap" in summary or "all done" in summary
 
@@ -304,13 +313,14 @@ def test_task_tool_dispatches_subagent(tmp_path):
                             stop_reason="end_turn")]
     ref, _ = _build_ref(tmp_path, script)
     sub_client = _MockClient(script)
+    from mini_cc.core.llm import AnthropicProvider
     ctx = ToolContext(
         project_id="p", session_id="s",
         sandbox=SubprocessSandbox("p", tmp_path),
         storage=FSStorage(tmp_path / "st"),
         todos=[],
         project_ref=ref,
-        subagent_client_factory=lambda: sub_client,
+        subagent_client_factory=lambda: AnthropicProvider(lambda: sub_client),
     )
     out = TASK_TOOL.handle(ctx, {"description": "do thing"})
     assert out == "via tool"

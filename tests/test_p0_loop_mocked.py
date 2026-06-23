@@ -11,8 +11,21 @@ from dataclasses import dataclass
 import pytest
 
 from mini_cc.core.loop import AgentLoop, ProjectRef
+from mini_cc.core.llm import AnthropicProvider
 from mini_cc.sandbox import SubprocessSandbox
 from mini_cc.storage import FSStorage
+
+
+def _provider_factory(script):
+    """Wrap a scripted SDK-shape mock client in a real AnthropicProvider.
+
+    AgentLoop's provider property expects client_factory() to return a
+    provider (with .stream(...)), not a raw SDK client (with
+    .messages.stream(...)). AnthropicProvider drives the SDK-shape mock
+    correctly via messages.stream() + get_final_message().
+    """
+    client = _MockClient(script)
+    return lambda: AnthropicProvider(lambda: client)
 
 
 @dataclass
@@ -77,7 +90,7 @@ def _build_loop(tmp_path, script):
     storage = FSStorage(tmp_path / "state")
     ref = ProjectRef(project_id="proj-a", project_root=str(tmp_path / "ws"),
                      sandbox=sandbox, storage=storage,
-                     client_factory=lambda: _MockClient(script))
+                     client_factory=_provider_factory(script))
     return AgentLoop(ref, "sess1"), sandbox, storage
 
 
@@ -140,7 +153,7 @@ def test_loop_persists_and_resumes(tmp_path):
     sandbox2 = SubprocessSandbox("proj-a", tmp_path / "ws")
     ref2 = ProjectRef(project_id="proj-a", project_root=str(tmp_path / "ws"),
                       sandbox=sandbox2, storage=storage,
-                      client_factory=lambda: _MockClient(script2))
+                      client_factory=_provider_factory(script2))
     loop2 = AgentLoop(ref2, "sess1")
     assert len(loop2.messages) > 0  # resumed
     list(loop2.run("bye"))

@@ -62,6 +62,9 @@ class _ScriptClient:
 class _MockConfig:
     def __init__(self, client): self._client = client
     def build_client(self): return self._client
+    def build_provider(self):
+        from mini_cc.core.llm import AnthropicProvider
+        return AnthropicProvider(self.build_client)
     @property
     def primary_model(self): return "mock-model"
     @property

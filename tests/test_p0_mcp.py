@@ -224,19 +224,21 @@ def test_loop_picks_up_mcp_tool_after_connect(tmp_path):
     sandbox = SubprocessSandbox("p", tmp_path / "ws")
     storage = FSStorage(tmp_path / "state")
     pool = MCPPool("p")
+    from mini_cc.core.llm import AnthropicProvider
+    mock_client = _MockClient([
+        # First: agent calls connect_mcp
+        _MockResponse([_Block(type="tool_use", name="connect_mcp",
+                              id="tu1", input={"name": "docs"})]),
+        # Second: agent invokes the newly-available MCP tool
+        _MockResponse([_Block(type="tool_use", name="mcp__docs__search",
+                              id="tu2", input={"query": "x"})]),
+        # Third: agent is done
+        _MockResponse([_Block(type="text", text="ok")], stop_reason="end_turn"),
+    ])
     ref = ProjectRef(
         project_id="p", project_root=str(tmp_path / "ws"),
         sandbox=sandbox, storage=storage, mcp_pool=pool,
-        client_factory=lambda: _MockClient([
-            # First: agent calls connect_mcp
-            _MockResponse([_Block(type="tool_use", name="connect_mcp",
-                                  id="tu1", input={"name": "docs"})]),
-            # Second: agent invokes the newly-available MCP tool
-            _MockResponse([_Block(type="tool_use", name="mcp__docs__search",
-                                  id="tu2", input={"query": "x"})]),
-            # Third: agent is done
-            _MockResponse([_Block(type="text", text="ok")], stop_reason="end_turn"),
-        ]),
+        client_factory=lambda: AnthropicProvider(lambda: mock_client),
     )
     loop = AgentLoop(ref, "sess1")
     events = list(loop.run("connect then search"))

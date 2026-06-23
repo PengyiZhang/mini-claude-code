@@ -411,6 +411,7 @@ class AgentLoop:
 
                 response = None  # becomes the message_stop StreamEvent
                 cancelled = False
+                streamed_text = False
                 with log_span("anthropic.request",
                               tenant=self.project.tenant_id or "unknown",
                               model=self.state.current_model,
@@ -426,6 +427,7 @@ class AgentLoop:
                                 cancelled = True
                                 break
                             if ev.kind == "text_delta" and ev.text:
+                                streamed_text = True
                                 yield {"type": "text", "text": ev.text}
                             elif ev.kind == "message_stop":
                                 response = ev
@@ -477,6 +479,16 @@ class AgentLoop:
             # dump pydantic blocks to dicts before emitting message_stop)
             # so we can append it directly — no _dump_content needed.
             final_blocks = response.content_blocks or []
+
+            # Fallback for providers/mocks that don't stream text deltas:
+            # emit the assistant text from the final blocks so consumers
+            # (UI, subagent summary) see coherent output even when the
+            # underlying transport buffered the whole response.
+            if not streamed_text:
+                for b in final_blocks:
+                    if isinstance(b, dict) and b.get("type") == "text" \
+                            and b.get("text"):
+                        yield {"type": "text", "text": b["text"]}
 
             if response.stop_reason == "max_tokens":
                 if not self.state.has_escalated:

@@ -95,12 +95,13 @@ def _build_loop(tmp_path):
     sandbox = SubprocessSandbox("proj-cancel", tmp_path / "ws")
     storage = FSStorage(tmp_path / "state")
     client = _SlowClient()
+    from mini_cc.core.llm import AnthropicProvider
     ref = ProjectRef(
         project_id="proj-cancel",
         project_root=str(tmp_path / "ws"),
         sandbox=sandbox,
         storage=storage,
-        client_factory=lambda: client,
+        client_factory=lambda: AnthropicProvider(lambda: client),
     )
     return AgentLoop(ref, "sess-cancel"), client
 

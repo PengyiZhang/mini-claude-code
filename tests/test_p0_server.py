@@ -214,6 +214,12 @@ class _MockConfig:
     def build_client(self):
         return self._client
 
+    def build_provider(self):
+        # Loop consumes default_config().build_provider(); the mock client
+        # is SDK-shaped, so wrap in the real AnthropicProvider.
+        from mini_cc.core.llm import AnthropicProvider
+        return AnthropicProvider(self.build_client)
+
     # Used by recovery/retry code paths
     api_key = None
     base_url = None
