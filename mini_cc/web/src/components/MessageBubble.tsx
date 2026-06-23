@@ -1,4 +1,5 @@
 import type { ChatActivity, ChatMessage } from "../lib/store";
+import { MarkdownRenderer } from './MarkdownRenderer'
 
 export default function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "user") {
@@ -20,7 +21,8 @@ export default function MessageBubble({ msg }: { msg: ChatMessage }) {
         ))}
         {(msg.text || msg.streaming) && (
           <div className={`whitespace-pre-wrap break-words text-ink ${msg.streaming ? "streaming-cursor" : ""}`}>
-            {msg.text}
+            {/* {msg.text} */}
+            <MarkdownRenderer content={msg.text} />
           </div>
         )}
         {msg.notices?.map((n, i) => (

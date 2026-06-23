@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, readContent } from "../lib/api";
 import { useAuth } from "../lib/store";
 import type { FileContent } from "../lib/types";
-
+import { MarkdownRenderer } from "./MarkdownRenderer"
 export default function FilePreview({ pid, path }: { pid: string; path: string }) {
   const profile = useAuth((s) => s.current())!;
   const [data, setData] = useState<FileContent | null>(null);
@@ -41,8 +41,9 @@ export default function FilePreview({ pid, path }: { pid: string; path: string }
         </div>
       </div>
       {data.is_text && data.content !== null ? (
-        <pre className="bg-bg border border-border rounded p-3 overflow-auto text-xs max-h-[60vh] font-mono whitespace-pre-wrap break-all">
-          {data.content}
+        <pre className="bg-gray text-white border border-border rounded p-3 overflow-auto text-xs max-h-[80vh] font-mono whitespace-pre-wrap break-all">
+          {/* {data.content} */}
+          <MarkdownRenderer content={data.content} />
         </pre>
       ) : (
         <div className="bg-bg border border-border rounded p-4 text-sm text-ink-dim">
