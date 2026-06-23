@@ -114,7 +114,12 @@ manifest.json
 
 ```
 
-- [ ] 4. 请丰富对应的 slash 命令
+- [ ] 4. 请丰富对应的 slash 命令，比如 /skills，/mcp 等常规管理功能
+
+
+- [ ] 5. 请优化一下 markdown render 时对应的字体大小，目前看上去偏大，code 与 table 等与常规文字没有颜色上的区分
+
+
 
 
 
