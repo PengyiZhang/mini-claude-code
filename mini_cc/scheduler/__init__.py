@@ -1,7 +1,8 @@
-"""Cron scheduler — per-project job registry.
+"""Cron + wakeup schedulers — per-project job registries."""
+from .cron import CronScheduler, cron_matches, validate_cron
+from .wakeup import Wakeup, WakeupScheduler
 
-Ports s20 lines 1330-1528 from s20_comprehensive/code.py.
-"""
-from .cron import (CronScheduler, cron_matches, validate_cron)
-
-__all__ = ["CronScheduler", "cron_matches", "validate_cron"]
+__all__ = [
+    "CronScheduler", "cron_matches", "validate_cron",
+    "Wakeup", "WakeupScheduler",
+]

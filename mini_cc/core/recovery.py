@@ -18,6 +18,9 @@ class RecoveryState:
     consecutive_529: int = 0
     has_attempted_reactive_compact: bool = False
     current_model: str = ""
+    # Output-style hint set by /output-style. The system-prompt builder
+    # reads this to shape verbosity. "" means "no override" (model default).
+    output_style: str = ""
 
     def __post_init__(self):
         if not self.current_model:

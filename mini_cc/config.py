@@ -59,6 +59,10 @@ class AnthropicConfig:
     # OpenAI-compatible drop-ins "just work" without renaming env vars.
     litellm_api_key: Optional[str] = None
     litellm_base_url: Optional[str] = None
+    # Tavily API key — when set, the web_search tool calls Tavily's
+    # /search endpoint; otherwise the tool returns a clear "not
+    # configured" error so the agent can fall back to web_fetch.
+    tavily_api_key: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> "AnthropicConfig":
@@ -71,6 +75,8 @@ class AnthropicConfig:
                 "LITELLM_API_KEY", "OPENAI_API_KEY", "MINI_CC_LITELLM_API_KEY"),
             litellm_base_url=_env_first(
                 "LITELLM_BASE_URL", "OPENAI_BASE_URL", "MINI_CC_LITELLM_BASE_URL"),
+            tavily_api_key=_env_first(
+                "TAVILY_API_KEY", "MINI_CC_TAVILY_API_KEY"),
         )
 
     def build_client(self) -> Anthropic:

@@ -22,7 +22,7 @@ from ..config import (DEFAULT_MAX_TOKENS, ESCALATED_MAX_TOKENS, MAX_RECOVERY_RET
                       default_config)
 from ..mcp import MCPPool
 from ..sandbox import Sandbox
-from ..scheduler import CronScheduler
+from ..scheduler import CronScheduler, WakeupScheduler
 from ..skills import SkillLoader
 from ..storage import Storage
 from ..teams import TeammateSpawner
@@ -140,9 +140,11 @@ class ProjectRef:
     skills_catalog: str = ""
     skills_loader: SkillLoader | None = None
     scheduler: CronScheduler | None = None
+    wakeups: "WakeupScheduler | None" = None
     mcp_pool: MCPPool | None = None
     background: BackgroundScheduler | None = None
     teams: TeammateSpawner | None = None
+    lsp_manager: Any = None  # mini_cc.lsp.LSPManager
     mcp_servers: list[str] = field(default_factory=list)
     client_factory: Callable | None = None  # override for tests
     permissions: PermissionInterceptor | None = None
@@ -571,7 +573,18 @@ class AgentLoop:
             self.project.storage.save_todos(
                 self.project.project_id, self.session_id, self.todos)
             self._emit({"type": "todos_updated", "todos": self.todos})
-        return ToolContext(
+
+        # workflow_dispatch: run a prompt as a focused sub-agent against
+        # the same project. Workflow tools use this to step through a
+        # declared plan without the parent loop recursing into itself.
+        def _workflow_dispatch(prompt: str) -> str:
+            from ..core.subagent import spawn_subagent
+            return spawn_subagent(
+                self.project, prompt,
+                on_event=self._emit,
+            )
+
+        ctx = ToolContext(
             project_id=self.project.project_id,
             session_id=self.session_id,
             sandbox=self.project.sandbox,
@@ -586,6 +599,9 @@ class AgentLoop:
             background_scheduler=self.project.background,
             background_tools=self._handlers,
         )
+        # ToolContext is a dataclass without slots — safe to attach.
+        ctx.workflow_dispatch = _workflow_dispatch  # type: ignore[attr-defined]
+        return ctx
 
     def _execute_tool_calls(self, content):
         """Yields tool_use + tool_result events for each tool call in content.

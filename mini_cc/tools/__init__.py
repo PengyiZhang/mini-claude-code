@@ -15,16 +15,21 @@ from . import subagent as _subagent
 from . import task as _task
 from . import teams as _teams
 from . import todo as _todo
+from . import wakeup as _wakeup
 from . import web as _web
+from . import websearch as _websearch
+from . import workflow as _workflow
 from . import worktree as _worktree
 
 
 def builtin_tools() -> list[Tool]:
     """Return the default built-in tools. Teams are layered on later."""
+    from ..lsp import LSP_TOOL
     return [*_fs.ALL, *_bash.ALL, *_todo.ALL, *_skills.ALL,
             *_cron.ALL, *_mcp.ALL, *_task.ALL, *_worktree.ALL,
             *_teams.ALL, *_subagent.ALL,
-            *_web.ALL, *_bgtask.ALL]
+            *_web.ALL, *_bgtask.ALL, *_websearch.ALL, *_wakeup.ALL,
+            *_workflow.ALL, LSP_TOOL]
 
 
 def to_anthropic(tools: Iterable[Tool]) -> list[dict]:
