@@ -257,6 +257,11 @@ export interface RawMessage {
   content: string | RawBlock[];
 }
 
+// Synthetic system-injected reminders (e.g. "<reminder>Update your todos.</reminder>")
+// are persisted as user-role messages by the loop's _maybe_remind_todos. They're meant
+// for the model, not the user, so we strip them on display to keep the chat pane clean.
+const REMINDER_RE = /^\s*<reminder>[\s\S]*<\/reminder>\s*$/;
+
 export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (let i = 0; i < raw.length; i++) {
@@ -266,6 +271,9 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
       // tool_results that we pair into the preceding assistant's
       // activities below — skip here.
       if (typeof m.content === "string") {
+        // Skip synthetic reminder injections — they would otherwise render
+        // as if the user typed them, which is confusing after a refresh.
+        if (REMINDER_RE.test(m.content)) continue;
         out.push({ role: "user", text: m.content });
       }
       continue;

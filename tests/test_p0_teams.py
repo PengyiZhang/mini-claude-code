@@ -283,7 +283,7 @@ def test_submit_plan_tool_registers_and_notifies_lead(tmp_path):
     spawner = TeammateSpawner(
         tmp_path / "ws", loop_factory=lambda sid: None)
     ctx = _ctx_with_session(tmp_path, spawner,
-                            session_id="teammate:alice")
+                            session_id="teammate-alice")
     tools = dispatch(builtin_tools())
     out = tools["submit_plan"].handle(ctx, {"plan": "my plan"})
     assert "Plan submitted" in out

@@ -169,6 +169,100 @@ def _cmd_model(ctx: CommandContext) -> Iterator[dict]:
     yield {"type": "done"}
 
 
+def _cmd_skills(ctx: CommandContext) -> Iterator[dict]:
+    """List skills available in this project.
+
+    Skills are discovered from <workspace>/skills/*/SKILL.md by the
+    project's SkillLoader. The model loads one on demand via the
+    ``load_skill`` tool; this command just shows the catalog.
+    """
+    project = ctx.project
+    if project is None or project.skills_loader is None:
+        yield {"type": "error", "message": "skills not configured for this project"}
+        return
+    # Re-scan so newly added skills appear without a server restart.
+    try:
+        project.skills_loader.scan()
+    except Exception:
+        pass
+    reg = project.skills_loader.registry
+    if not reg:
+        yield {"type": "text",
+               "text": "_no skills found in this project. Drop a skill into "
+                       "`<workspace>/skills/<name>/SKILL.md` and run `/skills` again._"}
+        yield {"type": "done"}
+        return
+    lines = [f"**Skills in `{ctx.project_id}`:**", ""]
+    for s in reg.values():
+        desc = (s.description or "").strip().splitlines()[0] if s.description else ""
+        lines.append(f"- `{s.name}` — {desc}" if desc else f"- `{s.name}`")
+    lines.append("")
+    lines.append("Tip: ask the agent to `load_skill <name>` to use one.")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
+def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
+    """List MCP servers registered for this project.
+
+    Reports both the servers the project is currently connected to
+    (their tools are live in the loop's tool pool) and the servers
+    that could be connected (registered factories not yet attached).
+    """
+    project = ctx.project
+    if project is None or project.mcp_pool is None:
+        yield {"type": "error", "message": "MCP not configured for this project"}
+        return
+    pool = project.mcp_pool
+    connected = list(pool.list_connected())
+    try:
+        available = list(type(pool).available_servers())
+    except Exception:
+        available = []
+    connectable = sorted(s for s in available if s not in connected)
+    if not connected and not connectable:
+        yield {"type": "text",
+               "text": "_no MCP servers registered. Register a factory at app "
+                       "startup via `MCPPool.register_factory(name, fn)`._"}
+        yield {"type": "done"}
+        return
+    lines = [f"**MCP servers for `{ctx.project_id}`:**", ""]
+    if connected:
+        lines.append("**connected:**")
+        for name in connected:
+            client = pool._clients.get(name)
+            tool_count = len(getattr(client, "tools", []) or [])
+            lines.append(f"- 🟢 `{name}` ({tool_count} tools live)")
+    if connectable:
+        if connected:
+            lines.append("")
+        lines.append("**available (not connected):**")
+        for name in connectable:
+            lines.append(f"- ⚪ `{name}` — ask the agent to "
+                         f"`connect_mcp {name}`")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
+def _cmd_tasks(ctx: CommandContext) -> Iterator[dict]:
+    """List durable tasks created via create_task."""
+    if ctx.project is None or ctx.storage is None:
+        yield {"type": "error", "message": "project context unavailable"}
+        return
+    tasks = ctx.storage.load_tasks(ctx.project_id)
+    if not tasks:
+        yield {"type": "text", "text": "_no tasks in this project_"}
+        yield {"type": "done"}
+        return
+    lines = [f"**Tasks in `{ctx.project_id}`:**", ""]
+    for t in tasks:
+        owner = f" (owner:{t.owner})" if t.owner else ""
+        wt = f" (wt:{t.worktree})" if t.worktree else ""
+        lines.append(f"- `{t.id}` [{t.status}] {t.subject}{owner}{wt}")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
 def _cmd_compact(ctx: CommandContext) -> Iterator[dict]:
     """Force a history compaction right now. The compacted transcript
     is snapshotted first so the user can still recover the full
@@ -239,6 +333,21 @@ def default_registry() -> CommandRegistry:
         name="compact",
         description="Manually trigger history compaction.",
         handler=_cmd_compact,
+    ))
+    reg.register(SlashCommand(
+        name="skills",
+        description="List skills available in this project.",
+        handler=_cmd_skills,
+    ))
+    reg.register(SlashCommand(
+        name="mcp",
+        description="List MCP servers (connected + available to connect).",
+        handler=_cmd_mcp,
+    ))
+    reg.register(SlashCommand(
+        name="tasks",
+        description="List durable tasks in this project.",
+        handler=_cmd_tasks,
     ))
     _DEFAULT = reg
     return reg

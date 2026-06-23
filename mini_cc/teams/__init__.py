@@ -249,7 +249,8 @@ class TeammateSpawner:
 
     # ── Runner (worker thread body) ────────────────────────────────────
     def _runner(self, info: TeammateInfo, prompt: str, on_event):
-        loop = self._loop_factory(f"teammate:{info.name}")
+        # Hyphen not colon: see core/subagent.py for the validate_id rationale.
+        loop = self._loop_factory(f"teammate-{info.name}")
         identity = (f"<identity>You are '{info.name}', a {info.role}. "
                     f"Use tools to complete the requested work. "
                     f"Send your final summary to 'lead' via send_message "

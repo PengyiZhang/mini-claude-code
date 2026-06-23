@@ -166,18 +166,27 @@ class SubprocessSandbox:
         if violations:
             raise CommandBlockedError(violations)
         run_env = self._filtered_env(env)
+        # Force UTF-8 I/O regardless of the host codepage. On Windows the
+        # default locale encoding is often GBK; subprocess.Popen(text=True)
+        # uses the locale encoding for its reader threads, which raises
+        # UnicodeDecodeError when a child emits a byte sequence that
+        # isn't valid GBK (very common with UTF-8-emitting tools, e.g.
+        # git log on a repo with non-ASCII commit messages, or any
+        # Python child that prints unicode to stdout). errors="replace"
+        # keeps the stream decodable even if the child mixes encodings.
+        run_kwargs = dict(
+            cwd=str(self.project_root), env=run_env,
+            capture_output=True,
+            encoding="utf-8", errors="replace",
+            timeout=timeout,
+        )
         # Prefer a real bash so Unix flags (mkdir -p), pipes, &&, and
         # $VAR expansion behave the same on every platform. Only fall
         # back to shell=True (cmd.exe on Windows) when no bash is found.
         shell_path = _find_posix_shell()
         if shell_path:
-            return subprocess.run(
-                [shell_path, "-c", command],
-                cwd=str(self.project_root), env=run_env,
-                capture_output=True, text=True, timeout=timeout)
-        return subprocess.run(
-            command, shell=True, cwd=str(self.project_root),
-            env=run_env, capture_output=True, text=True, timeout=timeout)
+            return subprocess.run([shell_path, "-c", command], **run_kwargs)
+        return subprocess.run(command, shell=True, **run_kwargs)
 
     def git(self, args, *, timeout=60):
         v = self.policy.check_git_args(args)
@@ -187,4 +196,6 @@ class SubprocessSandbox:
         return subprocess.run(
             ["git"] + [str(a) for a in args],
             cwd=str(self.project_root), env=run_env,
-            capture_output=True, text=True, timeout=timeout)
+            capture_output=True,
+            encoding="utf-8", errors="replace",
+            timeout=timeout)

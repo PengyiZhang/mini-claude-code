@@ -580,6 +580,13 @@ class AgentLoop:
         dicts before yielding message_stop) — use ``.get()`` rather
         than attribute access so the same code path works regardless
         of which provider produced the blocks.
+
+        For delegating tools (currently ``task``), events emitted by the
+        nested sub-AgentLoop during the tool call are collected on
+        ``ctx.on_subagent_event`` and re-yielded into the parent stream
+        after the tool returns, so users see subagent tool_use /
+        tool_result activities land live under the parent's current
+        assistant bubble rather than vanishing into a hidden transcript.
         """
         ctx = self._make_ctx()
         for block in content:
@@ -599,6 +606,12 @@ class AgentLoop:
                    "input": tool_input, "id": tool_use_id}
             self._emit({"type": "tool_use", "name": name,
                         "input": tool_input, "id": tool_use_id})
+
+            # Per-call sink for nested-loop events. Re-bound every
+            # iteration so each tool call gets a fresh buffer; the
+            # closure captures the current list by reference.
+            subagent_events: list[dict] = []
+            ctx.on_subagent_event = lambda ev, sink=subagent_events: sink.append(ev)
 
             # Interactive permission prompt: if the project opted in to
             # per-tool prompts (via .mini_cc/permissions.toml), ask the
@@ -666,6 +679,19 @@ class AgentLoop:
                 self._rounds_since_todo = 0
             else:
                 self._rounds_since_todo += 1
+
+            # Drain any events the nested sub-AgentLoop emitted during
+            # tool.handle() (e.g. the `task` tool). We yield them BEFORE
+            # the wrapping tool_result so the frontend renders the
+            # subagent's tool_use / tool_result activities as siblings
+            # of the parent's `task` activity within the same assistant
+            # bubble. Ordering within subagent_events is preserved
+            # because _emit fires synchronously inside tool.handle().
+            for sub_ev in subagent_events:
+                yield sub_ev
+                self._emit(sub_ev)
+            subagent_events.clear()
+            ctx.on_subagent_event = None
 
             yield {"type": "tool_result",
                    "tool_use_id": tool_use_id,

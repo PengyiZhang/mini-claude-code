@@ -12,7 +12,7 @@ import json
 from .base import FunctionTool, ToolContext
 
 
-_TEAMMATE_PREFIX = "teammate:"
+_TEAMMATE_PREFIX = "teammate-"
 
 
 def _name_from_session(ctx: ToolContext) -> str | None:
@@ -68,8 +68,17 @@ def _spawn(ctx: ToolContext, args: dict) -> str:
     spawner = ctx.teams
     if spawner is None:
         return "Teams subsystem not configured for this project"
+    # Pass the parent loop's event sink through so the lead's UI sees the
+    # teammate's tool_use / tool_result activities stream in as they run.
+    # TeammateSpawner.spawn already accepts on_event; the previous lead
+    # tool simply wasn't wiring it up. (Note: teammates run in a separate
+    # daemon thread, so events are delivered concurrently — the sink must
+    # be thread-safe. ctx.on_subagent_event is set up per-call by
+    # AgentLoop._execute_tool_calls; if a teammate outlives the parent
+    # tool's call, late events are dropped once the sink is cleared.)
+    on_event = ctx.on_subagent_event
     err = spawner.spawn(args["name"], args.get("role", "agent"),
-                        args["prompt"])
+                        args["prompt"], on_event=on_event)
     if err is not None:
         return err
     return f"Teammate '{args['name']}' spawned"

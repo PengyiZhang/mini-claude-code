@@ -28,9 +28,13 @@ def _bash(ctx: ToolContext, args: dict) -> str:
 BASH_TOOL = FunctionTool(
     name="bash",
     description=(
-        "Run a shell command in the project sandbox. Commands execute in a "
-        "POSIX bash shell, so use Unix syntax: mkdir -p, ls -la, pipes, &&, "
-        "$VAR, rm -rf all work regardless of the host OS."),
+        "Run a shell command in the project sandbox. Prefers a real bash on "
+        "PATH (Git Bash on Windows) so Unix syntax works everywhere: "
+        "mkdir -p, ls -la, pipes, &&, $VAR, rm -rf, curl, jq, grep, find. "
+        "If no bash is found, falls back to the host shell (cmd.exe on "
+        "Windows) — in that case prefer cross-platform flags. Output is "
+        "decoded as UTF-8 with errors replaced, so commands emitting non-"
+        "ASCII bytes won't crash the sandbox."),
     input_schema={
         "type": "object",
         "properties": {

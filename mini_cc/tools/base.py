@@ -33,6 +33,14 @@ class ToolContext:
     # tool can spawn a focused sub-agent against the same project.
     project_ref: Optional["ProjectRef"] = None
     subagent_client_factory: Optional[Callable] = None
+    # Sink for events emitted by a nested sub-AgentLoop running inside a
+    # tool call (currently the `task` tool). AgentLoop._execute_tool_calls
+    # sets this per-call to a list-append closure, runs the tool, then
+    # drains the list and yields the events into the parent's SSE stream
+    # so the user sees subagent tool_use / tool_result activities appear
+    # live under the parent's current assistant turn. None on contexts
+    # that don't originate from AgentLoop (tests, SDK direct-use).
+    on_subagent_event: Optional[Callable[[dict], None]] = None
 
 
 class Tool(Protocol):

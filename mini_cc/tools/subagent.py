@@ -16,6 +16,7 @@ def _task(ctx: ToolContext, args: dict) -> str:
         ctx.project_ref,
         args["description"],
         client_factory=ctx.subagent_client_factory,
+        on_event=ctx.on_subagent_event,
     )
 
 
