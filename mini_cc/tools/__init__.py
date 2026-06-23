@@ -6,6 +6,7 @@ from typing import Iterable
 from .base import FunctionTool, Tool, ToolContext
 from . import bash as _bash
 from . import background as _background
+from . import bgtask as _bgtask
 from . import cron as _cron
 from . import fs as _fs
 from . import mcp as _mcp
@@ -14,6 +15,7 @@ from . import subagent as _subagent
 from . import task as _task
 from . import teams as _teams
 from . import todo as _todo
+from . import web as _web
 from . import worktree as _worktree
 
 
@@ -21,7 +23,8 @@ def builtin_tools() -> list[Tool]:
     """Return the default built-in tools. Teams are layered on later."""
     return [*_fs.ALL, *_bash.ALL, *_todo.ALL, *_skills.ALL,
             *_cron.ALL, *_mcp.ALL, *_task.ALL, *_worktree.ALL,
-            *_teams.ALL, *_subagent.ALL]
+            *_teams.ALL, *_subagent.ALL,
+            *_web.ALL, *_bgtask.ALL]
 
 
 def to_anthropic(tools: Iterable[Tool]) -> list[dict]:

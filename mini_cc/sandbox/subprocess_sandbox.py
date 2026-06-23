@@ -161,10 +161,15 @@ class SubprocessSandbox:
             env.update(extra)
         return env
 
-    def execute(self, command, *, timeout=120, env=None):
+    def execute(self, command, *, timeout=120, env=None, cwd=None):
         violations = self.policy.scan_command(command)
         if violations:
             raise CommandBlockedError(violations)
+        # cwd may be a relative subpath of project_root (validated) or
+        # None (default = project_root). We never honor absolute paths
+        # here — agents that want to escape must do so explicitly via
+        # a tool that surfaces the risk to the user.
+        run_cwd = self._resolve_run_cwd(cwd)
         run_env = self._filtered_env(env)
         # Force UTF-8 I/O regardless of the host codepage. On Windows the
         # default locale encoding is often GBK; subprocess.Popen(text=True)
@@ -175,7 +180,7 @@ class SubprocessSandbox:
         # Python child that prints unicode to stdout). errors="replace"
         # keeps the stream decodable even if the child mixes encodings.
         run_kwargs = dict(
-            cwd=str(self.project_root), env=run_env,
+            cwd=str(run_cwd), env=run_env,
             capture_output=True,
             encoding="utf-8", errors="replace",
             timeout=timeout,
@@ -187,6 +192,26 @@ class SubprocessSandbox:
         if shell_path:
             return subprocess.run([shell_path, "-c", command], **run_kwargs)
         return subprocess.run(command, shell=True, **run_kwargs)
+
+    def _resolve_run_cwd(self, cwd):
+        """Resolve a caller-supplied cwd against project_root.
+
+        None → project_root. Relative paths are joined under root and
+        validated to stay inside. Absolute paths must already be inside
+        root or they're rejected — same rule as read/write.
+        """
+        if cwd is None:
+            return self.project_root
+        p = Path(cwd)
+        if not p.is_absolute():
+            p = self.project_root / p
+        p = p.resolve()
+        try:
+            p.relative_to(self.project_root)
+        except ValueError:
+            raise PathEscapeError(
+                f"cwd escapes project root: {p} (root={self.project_root})")
+        return p
 
     def git(self, args, *, timeout=60):
         v = self.policy.check_git_args(args)

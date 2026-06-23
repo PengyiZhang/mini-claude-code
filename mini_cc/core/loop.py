@@ -583,6 +583,8 @@ class AgentLoop:
             mcp_pool=self.project.mcp_pool,
             teams=self.project.teams,
             project_ref=self.project,
+            background_scheduler=self.project.background,
+            background_tools=self._handlers,
         )
 
     def _execute_tool_calls(self, content):

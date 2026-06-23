@@ -286,6 +286,156 @@ def _cmd_compact(ctx: CommandContext) -> Iterator[dict]:
     yield {"type": "done"}
 
 
+def _cmd_cost(ctx: CommandContext) -> Iterator[dict]:
+    """Show token usage for the current tenant across the project.
+
+    Pulls from MetricsRegistry (attached to Project.metrics). When no
+    registry is wired in we surface a friendly "—" rather than 0 so
+    users can tell "no usage yet" from "metrics disabled".
+    """
+    project = ctx.project
+    if project is None or project.metrics is None:
+        yield {"type": "text", "text": "_metrics not configured for this project_"}
+        yield {"type": "done"}
+        return
+    tenant = project.tenant_id or ctx.tenant_id or "unknown"
+    snap = project.metrics.snapshot_for_tenant(tenant)
+    # anthropic_tokens_total is registered as a (tenant, kind) counter.
+    tokens_family = snap.get("counters", {}).get("anthropic_tokens_total", {})
+    by_kind = {s["labels"].get("kind", "?"): s["value"]
+               for s in tokens_family.get("series", [])}
+    inp = by_kind.get("input", 0)
+    out = by_kind.get("output", 0)
+    cache_read = by_kind.get("cache_read", 0)
+    cache_create = by_kind.get("cache_create", 0)
+    total = inp + out + cache_read + cache_create
+
+    # Request counter → outcomes (success / error / cancelled).
+    req_family = snap.get("counters", {}).get("anthropic_request_total", {})
+    by_status = {s["labels"].get("status", "?"): s["value"]
+                 for s in req_family.get("series", [])}
+
+    lines = [f"**Cost snapshot** (`{tenant}`)", "",
+             f"- input tokens: **{inp:,}**",
+             f"- output tokens: **{out:,}**",
+             f"- cache read: `{cache_read:,}`",
+             f"- cache create: `{cache_create:,}`",
+             f"- **total: {total:,}**",
+             ""]
+    if by_status:
+        outcome_bits = [f"{k}={v}" for k, v in sorted(by_status.items())]
+        lines.append(f"- requests: {', '.join(outcome_bits)}")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
+def _cmd_permissions(ctx: CommandContext) -> Iterator[dict]:
+    """Show the sandbox policy: blocked command patterns, allowed git
+    subcommands, and the env var whitelist. Useful for understanding
+    why a command was denied without digging into source files."""
+    project = ctx.project
+    sandbox = getattr(project, "sandbox", None) if project else None
+    if sandbox is None or not hasattr(sandbox, "policy"):
+        yield {"type": "text",
+               "text": "_sandbox policy not available for this project_"}
+        yield {"type": "done"}
+        return
+    policy = sandbox.policy
+    lines = [f"**Sandbox policy** (`{ctx.project_id}`)", ""]
+
+    lines.append("**Blocked command patterns:**")
+    if policy.blocked:
+        for name, rx in policy.blocked:
+            lines.append(f"- `{name}` — `{rx}`")
+    else:
+        lines.append("_none_")
+    lines.append("")
+
+    lines.append("**Allowed git subcommands:**")
+    lines.append(", ".join(f"`{s}`" for s in sorted(policy.allowed_git)))
+    lines.append("")
+
+    lines.append("**Forwarded env vars:**")
+    lines.append(", ".join(f"`{v}`" for v in sorted(policy.allowed_env)))
+
+    # Surface the hook-level permission gate too (DENY_LIST / DESTRUCTIVE)
+    # if the project has one wired.
+    from ..core.hooks import DENY_LIST, DESTRUCTIVE
+    lines.append("")
+    lines.append("**Permission hook deny-lists:**")
+    lines.append(f"- DENY_LIST: {', '.join(repr(s) for s in DENY_LIST)}")
+    lines.append(f"- DESTRUCTIVE: {', '.join(repr(s) for s in DESTRUCTIVE)}")
+
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
+def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
+    """List active teammates spawned via the teams subsystem."""
+    project = ctx.project
+    spawner = getattr(project, "teams", None) if project else None
+    if spawner is None:
+        yield {"type": "text",
+               "text": "_teams subsystem not configured for this project_"}
+        yield {"type": "done"}
+        return
+    alive = spawner.list_alive()
+    # Also surface recently-stopped teammates the spawner still remembers
+    # so the user can see what just exited, not just what's running.
+    all_known = list(getattr(spawner, "_teammates", {}).values())
+    if not all_known:
+        yield {"type": "text", "text": "_no teammates spawned in this project_"}
+        yield {"type": "done"}
+        return
+    lines = [f"**Teammates in `{ctx.project_id}`:**", ""]
+    for info in all_known:
+        role = getattr(info, "role", "") or ""
+        marker = "🟢" if getattr(info, "alive", False) else "⚫"
+        wt = getattr(info, "worktree", None)
+        wt_tag = f" (wt:{wt})" if wt else ""
+        lines.append(f"- {marker} `{info.name}` — {role}{wt_tag}")
+    if alive:
+        lines.append("")
+        lines.append(f"_{len(alive)} alive_")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
+def _cmd_logs(ctx: CommandContext) -> Iterator[dict]:
+    """List recent log files written to ``mini_cc/logs/``.
+
+    The log directory is a sibling of the package, so resolve it
+    relative to the package root rather than the project workspace.
+    Each file's mtime determines recency.
+    """
+    from pathlib import Path
+    import os
+    logs_dir = Path(__file__).resolve().parent.parent / "logs"
+    if not logs_dir.is_dir():
+        yield {"type": "text", "text": f"_logs directory not found: {logs_dir}_"}
+        yield {"type": "done"}
+        return
+    candidates = [p for p in logs_dir.iterdir()
+                  if p.is_file() and p.suffix in (".md", ".log", ".txt",
+                                                   ".json", ".jsonl")]
+    if not candidates:
+        yield {"type": "text", "text": f"_no log files in {logs_dir}_"}
+        yield {"type": "done"}
+        return
+    # Sort by mtime desc; cap at 20 so the listing stays useful.
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    candidates = candidates[:20]
+    lines = [f"**Recent log files** (`{logs_dir}`)", ""]
+    import time as _time
+    for p in candidates:
+        size = p.stat().st_size
+        mtime = _time.strftime("%Y-%m-%d %H:%M",
+                               _time.localtime(p.stat().st_mtime))
+        lines.append(f"- `{p.name}` — {size:,} bytes — {mtime}")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
 def _loop_of(ctx: CommandContext):
     sm = ctx.session_manager
     if sm is None:
@@ -348,6 +498,26 @@ def default_registry() -> CommandRegistry:
         name="tasks",
         description="List durable tasks in this project.",
         handler=_cmd_tasks,
+    ))
+    reg.register(SlashCommand(
+        name="cost",
+        description="Show token usage and request counts for this tenant.",
+        handler=_cmd_cost,
+    ))
+    reg.register(SlashCommand(
+        name="permissions",
+        description="Show the sandbox policy (blocked commands, allowed git, env).",
+        handler=_cmd_permissions,
+    ))
+    reg.register(SlashCommand(
+        name="agents",
+        description="List teammates spawned in this project (alive + recently stopped).",
+        handler=_cmd_agents,
+    ))
+    reg.register(SlashCommand(
+        name="logs",
+        description="List recent log files under mini_cc/logs/.",
+        handler=_cmd_logs,
     ))
     _DEFAULT = reg
     return reg

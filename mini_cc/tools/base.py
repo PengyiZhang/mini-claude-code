@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from ..skills import SkillLoader
     from ..scheduler import CronScheduler
     from ..teams import TeammateSpawner
+    from .background import BackgroundScheduler
 
 
 @dataclass
@@ -41,6 +42,13 @@ class ToolContext:
     # live under the parent's current assistant turn. None on contexts
     # that don't originate from AgentLoop (tests, SDK direct-use).
     on_subagent_event: Optional[Callable[[dict], None]] = None
+    # Background task handles. The bash tool uses background_scheduler
+    # when the agent asks for run_in_background=true explicitly; the
+    # task_output / task_stop tools read against it on every call.
+    # background_tools is a shared name->Tool map the worker thread uses
+    # to re-enter the handler it was launched from (set by AgentLoop).
+    background_scheduler: Optional["BackgroundScheduler"] = None
+    background_tools: Optional[dict] = None
 
 
 class Tool(Protocol):
