@@ -18,7 +18,7 @@ from ..core.hooks import Hooks
 from ..core.loop import ProjectRef
 from ..core.permissions import PermissionInterceptor
 from ..mcp import MCPPool
-from ..sandbox import Policy, SubprocessSandbox
+from ..sandbox import Policy, Sandbox, SubprocessSandbox
 from ..scheduler import CronScheduler
 from ..skills import SkillLoader
 from ..storage import FSStorage, Storage
@@ -30,6 +30,7 @@ from .permissions_config import load_permissions_config
 
 
 StorageFactory = Callable[[Path], Storage]
+SandboxFactory = Callable[[str, str, Path, Policy], Sandbox]
 
 # Safe ID characters: letters, digits, underscore, hyphen. Used for both
 # project_id (when caller-supplied) and any future URL path component.
@@ -51,6 +52,13 @@ def _fs_factory(root: Path) -> Storage:
     return FSStorage(root)
 
 
+def _default_sandbox_factory(tid: str, pid: str, ws: Path,
+                             policy: Policy) -> Sandbox:
+    """Default: one SubprocessSandbox per project. Server can swap this
+    for a container-aware factory at startup (P5)."""
+    return SubprocessSandbox(pid, ws, policy)
+
+
 @dataclass
 class Project:
     project_id: str
@@ -68,6 +76,7 @@ class Project:
     permissions: PermissionInterceptor | None = None
     prompt_tools: set[str] = None  # type: ignore[assignment]
     _metrics: "object | None" = None  # MetricsRegistry or None
+    _sandbox_factory: object = None  # stashed for teammate reuse
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -97,12 +106,14 @@ class ProjectManager:
     def __init__(self, root: Path,
                  storage_factory: StorageFactory | None = None,
                  policy: Policy | None = None,
-                 metrics: "object | None" = None):
+                 metrics: "object | None" = None,
+                 sandbox_factory: SandboxFactory | None = None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.storage_factory = storage_factory or _fs_factory
         self.policy = policy or Policy()
         self.metrics = metrics
+        self._sandbox_factory = sandbox_factory or _default_sandbox_factory
 
     def _state_root(self) -> Path:
         # All projects share one Storage root for simplicity; FSStorage
@@ -150,7 +161,7 @@ class ProjectManager:
 
     def _assemble(self, project_id: str, meta: ProjectMeta) -> Project:
         ws = workspace_path(self.root, project_id)
-        sandbox = SubprocessSandbox(project_id, ws, policy=self.policy)
+        sandbox = self._sandbox_factory(meta.tenant_id, project_id, ws, self.policy)
         storage = self.storage_factory(self._state_root())
         skills_loader = SkillLoader(ws)
         scheduler = CronScheduler(project_id, storage)
@@ -179,6 +190,7 @@ class ProjectManager:
             permissions=permissions,
             prompt_tools=prompt_tools,
             _metrics=self.metrics,
+            _sandbox_factory=self._sandbox_factory,
         )
         # TeammateSpawner needs a loop_factory that closes over the Project
         # (and hence its as_ref()), so it has to be built after construction.
@@ -229,13 +241,17 @@ def _connect_configured_mcp_servers(pool: MCPPool) -> None:
 def _build_teammate_loop(project: "Project", session_id: str):
     """Build a sub-AgentLoop for a teammate thread.
 
-    The teammate gets its own SubprocessSandbox so the teams subsystem
-    can redirect it (via AgentLoop.set_worktree) into a claimed task's
-    worktree without affecting the lead or other teammates.
+    The teammate gets its own sandbox via the same factory the parent
+    project used, so container-enabled tenants propagate the container
+    sandbox to teammates. The teams subsystem can still redirect it
+    (via AgentLoop.set_worktree) into a claimed task's worktree.
     """
     from ..core.loop import AgentLoop
     ref = project.as_ref()
-    ref.sandbox = SubprocessSandbox(project.project_id, project.workspace)
+    factory = project._sandbox_factory or _default_sandbox_factory
+    ref.sandbox = factory(
+        project.meta.tenant_id, project.project_id, project.workspace,
+        project.sandbox.policy)
     return AgentLoop(ref, session_id)
 
 
