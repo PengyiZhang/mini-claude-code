@@ -31,9 +31,9 @@ C:\ZhangPengYi\BITDeeper\mini-claude-code\mini_cc\web> npm run dev -- --port 111
 mck_REDACTED  tenant=my_tenant  scopes=*  expires=never
 
 # 模型
-deepseek 的 anthropic端点: https://api.deepseek.com/anthropic
+glm 的 anthropic端点: http://localhost:8000
 API Key: sk-REDACTED 
-模型使用 deepseek-v4-flash
+模型使用 glm-4.7
 ```
 
 已知的bugs如下：
