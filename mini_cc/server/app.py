@@ -39,6 +39,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             sess.stop()
         except Exception:
             pass
+    # Stop every per-tenant container the runtime context owns.
+    ctx = getattr(app.state, "server_runtime", None)
+    if ctx is not None:
+        ctx.shutdown()
 
 
 def build_app(*, data_dir: Path,
@@ -47,7 +51,8 @@ def build_app(*, data_dir: Path,
               sm: SessionManager,
               cors_origins: list[str] | None = None,
               rate_limiter: TenantRateLimiter | None = None,
-              metrics_registry: MetricsRegistry | None = None) -> FastAPI:
+              metrics_registry: MetricsRegistry | None = None,
+              server_runtime: "object | None" = None) -> FastAPI:
     """Wire a FastAPI app over the given SDK managers."""
     app = FastAPI(
         title="mini_cc",
@@ -64,6 +69,7 @@ def build_app(*, data_dir: Path,
     app.state.sm = sm
     app.state.rate_limiter = rate_limiter
     app.state.metrics = metrics_registry
+    app.state.server_runtime = server_runtime
 
     # TraceId is the outermost so every downstream log line (including
     # CORS rejections) carries a trace_id. MetricsMiddleware sits

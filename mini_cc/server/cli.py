@@ -55,12 +55,15 @@ def _parse_rate_limit_env() -> tuple[int, dict[str, int]]:
 
 def cmd_serve(args) -> int:
     import uvicorn
+    import logging
     from ..projects import ProjectManager
+    from ..sandbox import probe_docker
     from ..session import SessionManager
     from .app import build_app
     from .logging_config import configure_logging
     from .metrics import default_registry
     from .ratelimit import TenantRateLimiter
+    from .runtime_context import ServerRuntimeContext
 
     configure_logging(
         format=_env("MINI_CC_LOG_FORMAT", "json"),
@@ -71,9 +74,23 @@ def cmd_serve(args) -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     metrics = default_registry()
-    pm = ProjectManager(data_dir / "projects", metrics=metrics)
+
+    avail = probe_docker()
+    if not avail.available:
+        # Don't fail — log and let ServerRuntimeContext auto-degrade per tenant.
+        # Honours user requirement #2: container env unsupported → fall back.
+        logging.getLogger("mini_cc").warning(
+            "docker unavailable (%s); container-enabled tenants will "
+            "auto-degrade to subprocess sandbox", avail.reason)
+
+    ctx = ServerRuntimeContext(
+        data_dir=data_dir,
+        key_registry=_key_registry(),
+        docker_available=avail.available,
+    )
+    pm = ctx.build_project_manager()
     sm = SessionManager(pm)
-    reg = _key_registry()
+    reg = ctx.key_registry
 
     default_rpm, overrides = _parse_rate_limit_env()
     limiter = TenantRateLimiter(default_rpm=default_rpm, overrides=overrides)
@@ -83,18 +100,18 @@ def cmd_serve(args) -> int:
 
     app = build_app(data_dir=data_dir, key_registry=reg, pm=pm, sm=sm,
                     cors_origins=cors_origins, rate_limiter=limiter,
-                    metrics_registry=metrics)
+                    metrics_registry=metrics, server_runtime=ctx)
 
     host = _env("MINI_CC_HOST", "127.0.0.1")
     port = int(_env("MINI_CC_PORT", "8000"))
 
-    import logging
     logging.getLogger("mini_cc").info(
         "starting server",
         extra={"host": host, "port": port,
                "rate_limit_default_rpm": default_rpm,
                "rate_limit_overrides": overrides,
-               "data_dir": str(data_dir)})
+               "data_dir": str(data_dir),
+               "docker_available": avail.available})
     uvicorn.run(app, host=host, port=port)
     return 0
 
