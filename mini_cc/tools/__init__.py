@@ -10,6 +10,7 @@ from . import bgtask as _bgtask
 from . import cron as _cron
 from . import fs as _fs
 from . import mcp as _mcp
+from . import repl as _repl
 from . import skills as _skills
 from . import subagent as _subagent
 from . import task as _task
@@ -29,7 +30,7 @@ def builtin_tools() -> list[Tool]:
             *_cron.ALL, *_mcp.ALL, *_task.ALL, *_worktree.ALL,
             *_teams.ALL, *_subagent.ALL,
             *_web.ALL, *_bgtask.ALL, *_websearch.ALL, *_wakeup.ALL,
-            *_workflow.ALL, LSP_TOOL]
+            *_workflow.ALL, *_repl.ALL, LSP_TOOL]
 
 
 def to_anthropic(tools: Iterable[Tool]) -> list[dict]:
