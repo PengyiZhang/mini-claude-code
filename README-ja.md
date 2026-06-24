@@ -399,6 +399,30 @@ learn-claude-code/
   tests/
 ```
 
+## mini_cc フレームワーク — 機能マトリクス
+
+`mini_cc/` は s01〜s20 の機構を production grade で実装したマルチテナント・
+組込み可能な agent harness(FastAPI バックエンド + React/TS フロントエンド)
+です。**🆕** 印は直近の Phase G/H/I で追加された機能。
+
+| カテゴリ | 機能 |
+|---|---|
+| **コアループ** | AgentLoop / SSE イベントストリーム / Anthropic + LiteLLM デュアルプロバイダ / 自動フォールバック / コンテキスト圧縮 |
+| **ツール** | bash(タイムアウト/cwd/バックグラウンド)、read/write/edit/glob/grep、todo、task、web_fetch、**🆕 web_search(Tavily)**、**🆕 LSP 9 操作**、**🆕 動的 workflow(create/add_step/run_step/run_all/status/set_state)** |
+| **スラッシュコマンド** | `/help` `/clear` `/sessions` `/model` `/compact` `/skills` `/mcp` `/tasks` `/cost` `/permissions` `/logs` `/config` `/output-style` `/loop` **🆕 `/agents stop\|inbox`** **🆕 `/workflow save\|load\|list\|delete`** **🆕 `/bg stop <id>`** **🆕 `/resume <session_id>`** |
+| **永続化** | messages / todos / tasks / memory / cron / sessions インデックス / transcripts / **🆕 workflows(workflow 永続化 + 自動ミラー)** |
+| **スケジューリング** | CronScheduler(分単位・永続化)、**🆕 WakeupScheduler(秒単位・インメモリ)** |
+| **バックグラウンド** | BackgroundScheduler(bash run_in_background + 通知注入) |
+| **セッション** | マルチプロジェクト隔離、warm/cold resume、**🆕 `/resume` セッション間切り替え** |
+| **コラボレーション** | TeammateSpawner + MessageBus、worktree タスク隔離 |
+| **MCP** | MCPPool + ファクトリ登録、**🆕 stdio JSON-RPC consumer(`StdioMCPClient`)**、`MINI_CC_MCP_SERVERS` 自動起動 |
+| **可観測性** | MetricsRegistry(トークン/リクエストカウント)、trace span、permission interceptor、ログ |
+| **セキュリティ** | SubprocessSandbox + Policy(deny_list / destructive / allowed_env / allowed_git)、対話型 permission プロンプト |
+| **Web UI** | React + TS、メッセージストリーム / markdown / ファイルプレビュー / ツール呼び出し表示 |
+
+> 詳細設計: [`docs/plans/2026-06-24-phaseGHI-features-design.zh.md`](./docs/plans/2026-06-24-phaseGHI-features-design.zh.md)
+> (Phase G/H/I のインターフェース署名 + 使用例 + 設定/コマンド早見表、本文は中文)。
+
 ## 次のステップ -- 理解から出荷へ
 
 20 セッションを終えれば、Harness 工学の内部構造を完全に理解している。その知識を活かす 2 つの方法:

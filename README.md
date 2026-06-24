@@ -405,6 +405,32 @@ learn-claude-code/
 
 ---
 
+## mini_cc Framework — Capability Matrix
+
+`mini_cc/` is the production-grade harness implementation of lessons s01–s20 —
+a multi-tenant, embeddable agent runtime (FastAPI backend + React/TS frontend).
+Items marked **🆕** were added in the most recent Phase G/H/I commits.
+
+| Category | Capability |
+|---|---|
+| **Core loop** | AgentLoop / SSE event stream / Anthropic + LiteLLM providers / auto fallback / context compaction |
+| **Tools** | bash (timeout/cwd/bg), read/write/edit/glob/grep, todo, task, web_fetch, **🆕 web_search (Tavily)**, **🆕 LSP 9 operations**, **🆕 dynamic workflow (create/add_step/run_step/run_all/status/set_state)** |
+| **Slash commands** | `/help` `/clear` `/sessions` `/model` `/compact` `/skills` `/mcp` `/tasks` `/cost` `/permissions` `/logs` `/config` `/output-style` `/loop` **🆕 `/agents stop\|inbox`** **🆕 `/workflow save\|load\|list\|delete`** **🆕 `/bg stop <id>`** **🆕 `/resume <session_id>`** |
+| **Persistence** | messages / todos / tasks / memory / cron / sessions index / transcripts / **🆕 workflows (workflow persistence + auto-mirror)** |
+| **Scheduling** | CronScheduler (minute, durable), **🆕 WakeupScheduler (seconds, in-memory)** |
+| **Background** | BackgroundScheduler (bash run_in_background + notification injection) |
+| **Sessions** | multi-project isolation, warm/cold resume, **🆕 `/resume` cross-session switching** |
+| **Collaboration** | TeammateSpawner + MessageBus, worktree task isolation |
+| **MCP** | MCPPool + factory registry, **🆕 stdio JSON-RPC consumer (`StdioMCPClient`)**, `MINI_CC_MCP_SERVERS` auto-launch |
+| **Observability** | MetricsRegistry (token/request counters), trace spans, permission interceptor, logging |
+| **Security** | SubprocessSandbox + Policy (deny_list / destructive / allowed_env / allowed_git), interactive permission prompts |
+| **Web UI** | React + TS, message stream / markdown / file preview / tool-call rendering |
+
+> Design docs: [`docs/plans/2026-06-24-phaseGHI-features-design.zh.md`](./docs/plans/2026-06-24-phaseGHI-features-design.zh.md)
+> (interface signatures + usage examples + config/command cheat sheets for Phase G/H/I).
+
+---
+
 ## What's Next
 
 After 20 lessons, you understand harness engineering from the inside out. Two paths to turn that knowledge into product:

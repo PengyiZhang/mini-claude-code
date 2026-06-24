@@ -400,6 +400,30 @@ learn-claude-code/
   tests/
 ```
 
+## mini_cc 框架能力速览
+
+`mini_cc/` 是本仓库对前 20 章机制的工程化实现 —— 一个多租户、可嵌入、
+生产可用的 agent harness(FastAPI 后端 + React/TS 前端)。下表按类别列
+出当前已实现的能力;最近三次提交(Phase G/H/I)新增项标 **🆕**。
+
+| 类别 | 能力 |
+|---|---|
+| **核心循环** | AgentLoop / SSE 事件流 / Anthropic + LiteLLM 双 provider / 自动 fallback / 上下文压缩 |
+| **工具** | bash(超时/cwd/后台)、read/write/edit/glob/grep、todo、task、web_fetch、**🆕 web_search(Tavily)**、**🆕 LSP 9 操作**、**🆕 动态 workflow(create/add_step/run_step/run_all/status/set_state)** |
+| **斜杠命令** | `/help` `/clear` `/sessions` `/model` `/compact` `/skills` `/mcp` `/tasks` `/cost` `/permissions` `/logs` `/config` `/output-style` `/loop` **🆕 `/agents stop\|inbox`** **🆕 `/workflow save\|load\|list\|delete`** **🆕 `/bg stop <id>`** **🆕 `/resume <session_id>`** |
+| **持久化** | messages / todos / tasks / memory / cron / sessions 索引 / transcripts / **🆕 workflows(workflow 持久化 + 自动镜像)** |
+| **调度** | CronScheduler(分钟级、持久化)、**🆕 WakeupScheduler(秒级、内存)** |
+| **后台** | BackgroundScheduler(bash run_in_background + 通知注入) |
+| **会话** | 多 project 隔离、warm/cold resume、**🆕 `/resume` 跨 session 切换** |
+| **协作** | TeammateSpawner + MessageBus、worktree 任务隔离 |
+| **MCP** | MCPPool + 工厂注册、**🆕 stdio JSON-RPC consumer(`StdioMCPClient`)**、`MINI_CC_MCP_SERVERS` 自动启动 |
+| **可观测** | MetricsRegistry(token / 请求计数)、trace span、permission interceptor、日志 |
+| **安全** | SubprocessSandbox + Policy(deny_list / destructive / allowed_env / allowed_git)、交互式 permission prompt |
+| **Web UI** | React + TS、消息流 / markdown / 文件预览 / 工具调用展示 |
+
+> 详细设计文档见 [`docs/plans/2026-06-24-phaseGHI-features-design.zh.md`](./docs/plans/2026-06-24-phaseGHI-features-design.zh.md)
+> (覆盖 Phase G/H/I 的接口签名 + 使用示例 + 配置/命令速查表)。
+
 ## 学完之后 -- 从理解到落地
 
 20 个课程走完, 你已经从内到外理解了 harness 工程的运作原理。两种方式把知识变成产品:
