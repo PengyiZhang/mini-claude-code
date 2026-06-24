@@ -83,6 +83,12 @@ def cmd_serve(args) -> int:
             "docker unavailable (%s); container-enabled tenants will "
             "auto-degrade to subprocess sandbox", avail.reason)
 
+    # Materialize the system-tier plugin dir so operators can drop global
+    # skills + mcp.toml in <data_dir>/.mini_cc/ without manual setup.
+    # Idempotent; cheap.
+    from ..plugins import PluginTier, ensure_tier_dir
+    ensure_tier_dir(data_dir, PluginTier.SYSTEM)
+
     ctx = ServerRuntimeContext(
         data_dir=data_dir,
         key_registry=_key_registry(),

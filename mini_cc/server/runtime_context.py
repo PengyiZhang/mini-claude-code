@@ -56,7 +56,8 @@ class ServerRuntimeContext:
         from ..projects import ProjectManager
         return ProjectManager(
             self.data_dir,
-            sandbox_factory=self._sandbox_factory)
+            sandbox_factory=self._sandbox_factory,
+            data_dir_for_system=self.data_dir)
 
     def _sandbox_factory(self, tid: str, pid: str, ws: Path,
                          policy: Policy):

@@ -107,13 +107,20 @@ class ProjectManager:
                  storage_factory: StorageFactory | None = None,
                  policy: Policy | None = None,
                  metrics: "object | None" = None,
-                 sandbox_factory: SandboxFactory | None = None):
+                 sandbox_factory: SandboxFactory | None = None,
+                 data_dir_for_system: Path | None = None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.storage_factory = storage_factory or _fs_factory
         self.policy = policy or Policy()
         self.metrics = metrics
         self._sandbox_factory = sandbox_factory or _default_sandbox_factory
+        # System-tier plugin dir. Defaults to ``root`` so the simple
+        # single-ProjectManager case (root == data_dir, as in tests + SDK
+        # direct-use) still discovers <root>/.mini_cc/. Server passes
+        # the real data_dir explicitly so the same ProjectManager finds
+        # <data_dir>/.mini_cc/ even when root != data_dir.
+        self.data_dir = Path(data_dir_for_system or self.root).resolve()
 
     def _state_root(self, tenant_id: str) -> Path:
         # Per-tenant storage root — two tenants using the same project_id
@@ -132,8 +139,15 @@ class ProjectManager:
             created_at=datetime.now().isoformat(timespec="seconds"),
             display_name=display_name or project_id,
         )
+        # Bootstrap plugin tiers: project + tenant. System tier is
+        # expected to be set up by the operator (or the server CLI) and
+        # is created lazily by discovery; we don't touch it here.
+        from ..plugins import ensure_tier_dir, PluginTier
+        ensure_tier_dir(self.data_dir, PluginTier.TENANT, tenant_id=tenant_id)
         ws = workspace_path(self.root, tenant_id, project_id)
         ws.mkdir(parents=True, exist_ok=True)
+        from ..plugins import ensure_tier_dir as _ensure, PluginTier as _T
+        _ensure(ws, _T.PROJECT)
         write_meta(self.root, meta)
         return self._assemble(project_id, meta)
 
@@ -180,7 +194,8 @@ class ProjectManager:
         ws = workspace_path(self.root, meta.tenant_id, project_id)
         sandbox = self._sandbox_factory(meta.tenant_id, project_id, ws, self.policy)
         storage = self.storage_factory(self._state_root(meta.tenant_id))
-        skills_loader = SkillLoader(ws)
+        skills_loader = SkillLoader(
+            ws, data_dir=self.data_dir, tenant_id=meta.tenant_id)
         scheduler = CronScheduler(project_id, storage)
         mcp_pool = MCPPool(project_id)
         background = BackgroundScheduler()
@@ -221,21 +236,41 @@ class ProjectManager:
         # /mcp command (the pool keeps a record of attempted connections
         # through list_connected); we don't let one broken server block
         # project assembly.
-        _connect_configured_mcp_servers(mcp_pool)
+        _connect_configured_mcp_servers(
+            mcp_pool, data_dir=self.data_dir,
+            tenant_id=meta.tenant_id, workspace=ws)
         return project
 
 
-def _connect_configured_mcp_servers(pool: MCPPool) -> None:
-    """Read mcp_servers from default_config() and connect each.
+def _connect_configured_mcp_servers(pool: MCPPool, *,
+                                    data_dir: Path | None = None,
+                                    tenant_id: str | None = None,
+                                    workspace: Path | None = None) -> None:
+    """Read mcp_servers from every available source and connect each.
+
+    Sources merged in priority order (later wins on name clash):
+
+    1. ``<data_dir>/.mini_cc/mcp.toml``           — system tier
+    2. ``<data_dir>/tenants/<tid>/.mini_cc/mcp.toml`` — tenant tier
+    3. ``<workspace>/.mini_cc/mcp.toml``          — project tier
+    4. ``default_config().mcp_servers``            — env (legacy escape hatch)
 
     Best-effort: a server that fails to spawn or handshake is skipped.
     Successful connections show up in ``/mcp`` immediately.
     """
+    from ..plugins import (PluginTier, discover_mcp_servers, project_tier_dirs)
+    tier_dirs: list[Path] = []
+    if data_dir is not None and tenant_id is not None and workspace is not None:
+        tier_dirs = project_tier_dirs(data_dir, tenant_id, workspace)
+    servers: dict[str, dict] = discover_mcp_servers(tier_dirs)
+    # Env / programmatic override last → wins.
     try:
         from ..config import default_config
-        servers = default_config().mcp_servers or {}
+        env_servers = default_config().mcp_servers or {}
+        if env_servers:
+            servers.update(env_servers)
     except Exception:
-        return
+        pass
     if not servers:
         return
     for name, spec in servers.items():

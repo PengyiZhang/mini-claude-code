@@ -1,66 +1,68 @@
 """Per-project skill loader.
 
-Scans <project_root>/skills/*/SKILL.md, parses YAML frontmatter, exposes
-a catalog string for the system prompt and a load_skill(name) accessor.
+Scans the project's plugin tiers (system → tenant → project) and merges
+them with project-tier winning on name conflicts. Each tier contributes
+skills from ``<tier_dir>/.mini_cc/skills/<name>/SKILL.md``.
 
-Ports s20 lines 285-341 with these differences:
-- No module-level SKILL_REGISTRY global — instance state.
-- SKILLS_DIR derived from the project_root passed at construction.
-- scan() is explicit (not run at import time).
+Legacy ``<project_root>/skills/`` layout is still scanned as a final
+fallback so existing deployments don't break; new installs should use
+``<project_root>/.mini_cc/skills/``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
-
-@dataclass
-class Skill:
-    name: str
-    description: str
-    content: str
-
-
-def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    if not text.startswith("---"):
-        return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text
-    try:
-        meta = yaml.safe_load(parts[1]) or {}
-    except yaml.YAMLError:
-        meta = {}
-    return meta, parts[2].strip()
+from ..plugins import (PluginTier, Skill as _PSkill, discover_skills,
+                       ensure_tier_dir, tier_dir)
 
 
 class SkillLoader:
-    def __init__(self, project_root: Path):
+    def __init__(self, project_root: Path,
+                 tier_dirs: list[Path] | None = None,
+                 data_dir: Path | None = None,
+                 tenant_id: str | None = None):
+        """Build a loader.
+
+        - ``tier_dirs`` (preferred): explicit list of ``.mini_cc/`` dirs
+          in priority order (system first, project last).
+        - ``data_dir + tenant_id`` (convenience): builds the standard
+          3-tier list via :func:`project_tier_dirs`.
+        - Neither: legacy single-dir behavior — scan
+          ``<project_root>/skills/`` only.
+        """
         self.project_root = Path(project_root)
-        self.skills_dir = self.project_root / "skills"
-        self._registry: dict[str, Skill] = {}
+        self._tier_dirs: list[Path] | None = tier_dirs
+        self._data_dir = Path(data_dir) if data_dir else None
+        self._tenant_id = tenant_id
+        self._legacy_skills_dir = self.project_root / "skills"
+        self._registry: dict[str, _PSkill] = {}
+
+    def _resolve_tier_dirs(self) -> list[Path]:
+        if self._tier_dirs is not None:
+            return self._tier_dirs
+        if self._data_dir is not None and self._tenant_id is not None:
+            return [
+                tier_dir(self._data_dir, PluginTier.SYSTEM),
+                tier_dir(self._data_dir, PluginTier.TENANT,
+                         tenant_id=self._tenant_id),
+                tier_dir(self.project_root, PluginTier.PROJECT),
+            ]
+        return []  # legacy single-dir mode
 
     def scan(self) -> None:
         """Rebuild the registry from disk."""
         self._registry.clear()
-        if not self.skills_dir.exists():
-            return
-        for directory in sorted(self.skills_dir.iterdir()):
-            if not directory.is_dir():
-                continue
-            manifest = directory / "SKILL.md"
-            if not manifest.exists():
-                continue
-            raw = manifest.read_text(encoding="utf-8")
-            meta, _ = _parse_frontmatter(raw)
-            name = meta.get("name", directory.name)
-            desc = meta.get("description") or raw.split("\n", 1)[0].lstrip("#").strip()
-            self._registry[name] = Skill(name=name, description=desc, content=raw)
+        tier_dirs = self._resolve_tier_dirs()
+        if tier_dirs:
+            self._registry.update(discover_skills(tier_dirs))
+        # Legacy fallback: <project_root>/skills/ (s20-style layout).
+        # Modern installs put skills under .mini_cc/skills/ instead.
+        if self._legacy_skills_dir.exists():
+            self._registry.update(
+                discover_skills([self._legacy_skills_dir.parent]))
 
     @property
-    def registry(self) -> dict[str, Skill]:
+    def registry(self) -> dict[str, _PSkill]:
         if not self._registry:
             self.scan()
         return self._registry
