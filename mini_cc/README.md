@@ -647,15 +647,108 @@ creation, metrics dashboard render).
 
 ---
 
+## Container sandbox (P5)
+
+A second isolation layer on top of the host-side `SubprocessSandbox`. When
+enabled for a tenant, every `execute()` and `git()` tool call runs inside
+a long-running per-tenant Docker container via `docker exec`. File ops
+(`read`/`write`/`edit`/`glob`/`grep`) stay on host — the tenant's projects
+dir is bind-mounted at `/workspaces/` so the container sees the same
+files. Even a successful shell escape only reaches that tenant's
+container, not the host or other tenants.
+
+### Two-layer config
+
+Server default via env var:
+
+```bash
+export MINI_CC_SANDBOX_DEFAULT=container  # default: subprocess (today's behavior)
+```
+
+Per-tenant override via `tenants/{tid}/sandbox.toml` (cold-loaded;
+restart to pick up edits):
+
+```toml
+enabled = true
+image_tag = "my-registry/sandbox:v2"        # default: mini_cc-sandbox:latest
+network = "none"                            # "none" | "bridge"
+dockerfile_path = "./sandbox/Dockerfile.x"  # optional: use this Dockerfile verbatim
+cpu_quota = "1.5"                           # docker --cpus
+memory_limit = "512m"                       # docker --memory
+
+# Declarative extra packages layered on top of the base image at build time
+apt_packages = ["ffmpeg", "imagemagick"]
+pip_packages = ["numpy", "pandas"]
+node_packages = ["typescript"]
+
+# Additional bind-mounts beyond the tenant projects dir
+[[extra_mounts]]
+host = "/host/cache"
+container = "/cache"
+options = "ro"
+```
+
+Resolution order: tenant file → `MINI_CC_SANDBOX_DEFAULT` env → `subprocess`.
+
+### Auto-degrade
+
+At startup the server probes `docker info`. If Docker is unavailable
+(including: not installed, daemon dead, or Windows host without WSL2
+backend), every container-enabled tenant silently falls back to
+`SubprocessSandbox` and a `DegradeEvent` is recorded on
+`ServerRuntimeContext.degrades` for surfacing in metrics. The server
+still boots — no 503s. This is a deliberate change from the original
+Phase G design (which was fail-fast).
+
+### Build the image
+
+```bash
+python -m mini_cc.server sandbox build-image
+# or with a custom tag:
+python -m mini_cc.server sandbox build-image --tag my-registry/sandbox:v2
+# or with a custom Dockerfile:
+python -m mini_cc.server sandbox build-image --dockerfile ./sandbox/Dockerfile.custom
+```
+
+The base image (`mini_cc/sandbox/Dockerfile`) is `python:3.10-slim` +
+git + ripgrep + node 20 + build-essential. Declarative `apt_packages`
+/ `pip_packages` / `node_packages` are layered on top at build time.
+
+### Status / stop
+
+```bash
+python -m mini_cc.server sandbox status                # all mini_cc-* containers
+python -m mini_cc.server sandbox status --tid tenant_x # one tenant
+python -m mini_cc.server sandbox stop tenant_x         # stop + remove
+```
+
+### Windows / WSL2
+
+The probe auto-detects the Docker Desktop WSL2 backend via `docker info`'s
+OperatingSystem field. Linux containers (the only kind the base Dockerfile
+targets) run transparently through WSL2 — no special config needed beyond
+having Docker Desktop installed with WSL2 integration enabled for the
+distro that runs `mini_cc.server`.
+
+### Out of scope
+
+- Per-project sandbox override (stays tenant-level).
+- Hot-reload of `sandbox.toml` (restart server).
+- Auto image build on first request (use the CLI).
+- Podman / gVisor / Firecracker backends (only Docker, but
+  `ContainerRuntime` is abstracted).
+- Multi-arch images.
+- Rootless Docker / userns-remap.
+- Per-container `docker stats` metrics collection.
+
+---
+
 ## Out of scope (deferred by design)
 
 These are **not** bugs — they were deliberately cut. File an issue
 before picking them up so we can align on scope.
 
 - **WebSocket transport.** SSE only for now.
-- **Container-level sandbox isolation (P5).** Today's sandbox is a
-  defense-in-depth soft layer; for untrusted code, run mini_cc inside
-  a container.
 
 ---
 

@@ -601,15 +601,102 @@ key,再加上 `e2e_proj` 项目。用例覆盖鉴权、项目创建、文件上�
 
 ---
 
+## 容器沙箱(P5)
+
+在主机侧 `SubprocessSandbox` 之上的第二层隔离。对某个租户启用后,每次
+`execute()` / `git()` 工具调用都会通过 `docker exec` 跑在该租户的长运行
+Docker 容器里。文件操作(`read`/`write`/`edit`/`glob`/`grep`)留在主机上 ——
+租户的 projects 目录 bind-mount 到容器 `/workspaces/`,容器看到的是同一份
+文件。即便 shell 逃逸成功,也只能触及该租户的容器,碰不到主机或其他租户。
+
+### 两层配置
+
+服务端默认通过环境变量:
+
+```bash
+export MINI_CC_SANDBOX_DEFAULT=container  # 默认: subprocess(保持当前行为)
+```
+
+按租户覆盖:`tenants/{tid}/sandbox.toml`(冷加载,改了要重启):
+
+```toml
+enabled = true
+image_tag = "my-registry/sandbox:v2"        # 默认: mini_cc-sandbox:latest
+network = "none"                            # "none" | "bridge"
+dockerfile_path = "./sandbox/Dockerfile.x"  # 可选:直接用这个 Dockerfile
+cpu_quota = "1.5"                           # docker --cpus
+memory_limit = "512m"                       # docker --memory
+
+# 声明式预装包,构建时在 base image 之上加层
+apt_packages = ["ffmpeg", "imagemagick"]
+pip_packages = ["numpy", "pandas"]
+node_packages = ["typescript"]
+
+# 额外 bind-mount(除租户 projects 目录之外)
+[[extra_mounts]]
+host = "/host/cache"
+container = "/cache"
+options = "ro"
+```
+
+解析顺序:租户文件 → `MINI_CC_SANDBOX_DEFAULT` 环境变量 → `subprocess`。
+
+### 自动降级
+
+服务端启动时探一次 `docker info`。若 Docker 不可用(包括:未安装、daemon
+挂了、Windows 主机没装 WSL2 backend),所有启用容器的租户会**静默回落**
+到 `SubprocessSandbox`,并在 `ServerRuntimeContext.degrades` 上记一条
+`DegradeEvent`(供 /metrics 暴露)。服务仍然能起 —— 不返回 503。这是相对
+原始 Phase G fail-fast 设计的**有意变更**。
+
+### 构建镜像
+
+```bash
+python -m mini_cc.server sandbox build-image
+# 自定义 tag:
+python -m mini_cc.server sandbox build-image --tag my-registry/sandbox:v2
+# 自定义 Dockerfile:
+python -m mini_cc.server sandbox build-image --dockerfile ./sandbox/Dockerfile.custom
+```
+
+base 镜像(`mini_cc/sandbox/Dockerfile`)是 `python:3.10-slim` + git + ripgrep
++ node 20 + build-essential。声明式 `apt_packages` / `pip_packages` /
+`node_packages` 在构建时叠加上去。
+
+### 查看状态 / 停止
+
+```bash
+python -m mini_cc.server sandbox status                # 列出所有 mini_cc-* 容器
+python -m mini_cc.server sandbox status --tid tenant_x # 单个租户
+python -m mini_cc.server sandbox stop tenant_x         # 停止 + 删除
+```
+
+### Windows / WSL2
+
+探测通过 `docker info` 的 OperatingSystem 字段自动识别 Docker Desktop 的
+WSL2 backend。Linux 容器(也是 base Dockerfile 唯一针对的类型)经 WSL2 透明
+运行 —— 不需要特殊配置,只要装了 Docker Desktop 并对运行 `mini_cc.server`
+的发行版开了 WSL2 集成。
+
+### 范围外
+
+- 按 project 覆盖(保持租户级)。
+- `sandbox.toml` 热加载(重启服务)。
+- 首次请求时自动构建镜像(用 CLI 显式构建)。
+- Podman / gVisor / Firecracker backend(只支持 Docker,但 `ContainerRuntime`
+  是抽象接口)。
+- 多架构镜像。
+- Rootless Docker / userns-remap。
+- 每容器的 `docker stats` 指标采集。
+
+---
+
 ## 范围外(有意延后)
 
 下面这些**不是 bug** —— 是有意切掉的。捡起来之前先开个 issue,对齐一下
 范围。
 
 - **WebSocket 传输。** 暂时只有 SSE。
-- **容器级沙箱隔离(P5)。** 目前的 sandbox 只是 defense-in-depth 软层;
-  对不受信代码,请把 mini_cc 跑在容器里。
-  `python -m mini_cc.server`。
 
 ---
 
