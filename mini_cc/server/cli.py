@@ -184,6 +184,57 @@ def cmd_revoke(args) -> int:
     return 1
 
 
+def cmd_sandbox_build_image(args) -> int:
+    """python -m mini_cc.server sandbox build-image [--tag T] [--dockerfile P]"""
+    from ..sandbox.imagebuild import build_image
+    from ..sandbox.config import ContainerConfig
+    cfg = ContainerConfig(
+        image_tag=args.tag,
+        dockerfile_path=args.dockerfile,
+    )
+    try:
+        build_image(args.tag, cfg)
+    except Exception as exc:
+        print(f"build failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"image built: {args.tag}")
+    return 0
+
+
+def cmd_sandbox_status(args) -> int:
+    """python -m mini_cc.server sandbox status [--tid TID]"""
+    from ..sandbox.runtime import DockerRuntime
+    rt = DockerRuntime()
+    if not rt.is_available():
+        print("docker unavailable", file=sys.stderr)
+        return 1
+    names = rt.list_managed()
+    if args.tenant_id:
+        from ..sandbox.manager import _container_name
+        wanted = _container_name(args.tenant_id)
+        names = [n for n in names if n == wanted]
+    for n in names:
+        st = rt.status(n)
+        print(f"{n}\t{st}")
+    return 0
+
+
+def cmd_sandbox_stop(args) -> int:
+    """python -m mini_cc.server sandbox stop TID"""
+    from ..sandbox.runtime import DockerRuntime
+    from ..sandbox.manager import _container_name
+    rt = DockerRuntime()
+    name = _container_name(args.tenant_id)
+    try:
+        rt.stop(name)
+        rt.remove(name)
+    except Exception as exc:
+        print(f"stop failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"stopped: {name}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mini_cc.server")
     sub = p.add_subparsers(dest="cmd")
@@ -229,6 +280,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_revoke = sub.add_parser("revoke", help="Revoke a key")
     p_revoke.add_argument("key")
     p_revoke.set_defaults(func=cmd_revoke)
+
+    p_sandbox = sub.add_parser("sandbox", help="Container sandbox management")
+    sandbox_sub = p_sandbox.add_subparsers(dest="sandbox_cmd", required=True)
+
+    p_sb_build = sandbox_sub.add_parser("build-image",
+        help="Build the mini_cc sandbox Docker image")
+    p_sb_build.add_argument("--tag", default="mini_cc-sandbox:latest",
+        help="Image tag (default: mini_cc-sandbox:latest)")
+    p_sb_build.add_argument("--dockerfile", default=None,
+        help="Custom Dockerfile path. If omitted, uses the package default "
+             "plus any declarative packages from --tid's sandbox.toml.")
+    p_sb_build.set_defaults(func=cmd_sandbox_build_image)
+
+    p_sb_status = sandbox_sub.add_parser("status",
+        help="List managed containers and their status")
+    p_sb_status.add_argument("--tid", dest="tenant_id", default=None,
+        help="Filter to one tenant's container.")
+    p_sb_status.set_defaults(func=cmd_sandbox_status)
+
+    p_sb_stop = sandbox_sub.add_parser("stop",
+        help="Stop and remove a tenant's container")
+    p_sb_stop.add_argument("tenant_id")
+    p_sb_stop.set_defaults(func=cmd_sandbox_stop)
 
     return p
 
