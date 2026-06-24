@@ -24,8 +24,8 @@ from ..skills import SkillLoader
 from ..storage import FSStorage, Storage
 from ..teams import TeammateSpawner
 from ..tools.background import BackgroundScheduler
-from .layout import (ProjectMeta, list_project_ids, read_meta, state_path,
-                     write_meta, workspace_path)
+from .layout import (ProjectMeta, find_metas, find_meta, list_project_ids,
+                     read_meta, tenant_storage_dir, write_meta, workspace_path)
 from .permissions_config import load_permissions_config
 
 
@@ -115,16 +115,16 @@ class ProjectManager:
         self.metrics = metrics
         self._sandbox_factory = sandbox_factory or _default_sandbox_factory
 
-    def _state_root(self) -> Path:
-        # All projects share one Storage root for simplicity; FSStorage
-        # isolates per-project_id under that root.
-        return self.root / ".storage"
+    def _state_root(self, tenant_id: str) -> Path:
+        # Per-tenant storage root — two tenants using the same project_id
+        # must not share sessions/messages/memory on disk.
+        return tenant_storage_dir(self.root, tenant_id)
 
     def create(self, tenant_id: str, project_id: str | None = None,
                display_name: str = "") -> Project:
         project_id = project_id or f"proj_{uuid.uuid4().hex[:12]}"
         _validate_project_id(project_id)
-        if read_meta(self.root, project_id) is not None:
+        if read_meta(self.root, tenant_id, project_id) is not None:
             raise ValueError(f"project_id already exists: {project_id}")
         meta = ProjectMeta(
             project_id=project_id,
@@ -132,37 +132,54 @@ class ProjectManager:
             created_at=datetime.now().isoformat(timespec="seconds"),
             display_name=display_name or project_id,
         )
-        ws = workspace_path(self.root, project_id)
+        ws = workspace_path(self.root, tenant_id, project_id)
         ws.mkdir(parents=True, exist_ok=True)
         write_meta(self.root, meta)
         return self._assemble(project_id, meta)
 
-    def get(self, project_id: str) -> Project:
-        meta = read_meta(self.root, project_id)
+    def get(self, project_id: str,
+            tenant_id: str | None = None) -> Project:
+        if tenant_id is not None:
+            meta = read_meta(self.root, tenant_id, project_id)
+        else:
+            meta = find_meta(self.root, project_id)
         if meta is None:
             raise KeyError(f"project not found: {project_id}")
         return self._assemble(project_id, meta)
 
     def list(self, tenant_id: str | None = None) -> list[Project]:
-        return [self.get(pid) for pid in list_project_ids(self.root, tenant_id)]
+        return [self.get(pid, tenant_id=tenant_id)
+                for pid in list_project_ids(self.root, tenant_id)]
 
-    def delete(self, project_id: str) -> None:
-        if read_meta(self.root, project_id) is None:
-            raise KeyError(f"project not found: {project_id}")
-        # Wipe the on-disk project dir (workspace + meta.json). Also wipe
-        # the per-project storage subdir under <root>/.storage — the default
-        # FSStorage layout keeps sessions/messages/todos/memory/cron there,
-        # and leaving it behind leaks the previous tenant's data into any
-        # future project that happens to reuse the same id.
-        shutil.rmtree(project_dir_safe(self.root, project_id), ignore_errors=True)
-        storage_dir = self._state_root() / project_id
+    def delete(self, project_id: str,
+               tenant_id: str | None = None) -> None:
+        if tenant_id is not None:
+            meta = read_meta(self.root, tenant_id, project_id)
+            if meta is None:
+                raise KeyError(f"project not found: {project_id}")
+        else:
+            metas = find_metas(self.root, project_id)
+            if not metas:
+                raise KeyError(f"project not found: {project_id}")
+            if len(metas) > 1:
+                raise ValueError(
+                    f"project_id ambiguous across tenants: {project_id} "
+                    f"—— pass tenant_id to disambiguate")
+            meta = metas[0]
+        # Wipe the on-disk project dir (workspace + meta.json) and the
+        # tenant-scoped storage subdir. Both are scoped under
+        # <root>/tenants/<tid>/ so the rmtree cannot touch another tenant.
+        from .layout import project_dir as _project_dir
+        shutil.rmtree(_project_dir(self.root, meta.tenant_id, project_id),
+                      ignore_errors=True)
+        storage_dir = self._state_root(meta.tenant_id) / project_id
         if storage_dir.exists():
             shutil.rmtree(storage_dir, ignore_errors=True)
 
     def _assemble(self, project_id: str, meta: ProjectMeta) -> Project:
-        ws = workspace_path(self.root, project_id)
+        ws = workspace_path(self.root, meta.tenant_id, project_id)
         sandbox = self._sandbox_factory(meta.tenant_id, project_id, ws, self.policy)
-        storage = self.storage_factory(self._state_root())
+        storage = self.storage_factory(self._state_root(meta.tenant_id))
         skills_loader = SkillLoader(ws)
         scheduler = CronScheduler(project_id, storage)
         mcp_pool = MCPPool(project_id)
@@ -256,4 +273,13 @@ def _build_teammate_loop(project: "Project", session_id: str):
 
 
 def project_dir_safe(root: Path, project_id: str) -> Path:
+    """Legacy helper retained for callers that haven't been updated to
+    pass tenant_id. Returns the first tenant's project_dir if one exists,
+    else falls back to a (single-tenant) path under root.
+
+    Deprecated: prefer ProjectManager.delete(pid, tenant_id=tid)."""
+    from .layout import find_meta, project_dir as _project_dir
+    meta = find_meta(root, project_id)
+    if meta is not None:
+        return _project_dir(root, meta.tenant_id, project_id)
     return Path(root) / project_id

@@ -46,12 +46,15 @@ def test_delete_project(tmp_path):
 def test_delete_project_cleans_up_storage_subdir(tmp_path):
     """Regression: delete() used to only rmtree <root>/<pid>/ and left
     <root>/.storage/<pid>/ behind — leaking session messages, todos, cron
-    jobs and memory into any future project that reused the same id."""
+    jobs and memory into any future project that reused the same id.
+
+    Tenant-scoped layout: storage now lives at
+    <root>/tenants/<tid>/.storage/<pid>/, still per-project isolated."""
     pm = ProjectManager(tmp_path / "projects")
     p = pm.create(tenant_id="t1", project_id="x")
-    # Simulate a session that wrote something to storage.
     p.storage.save_messages("x", "s1", [{"role": "user", "content": "hi"}])
-    storage_dir = tmp_path / "projects" / ".storage" / "x"
+    storage_dir = (
+        tmp_path / "projects" / "tenants" / "t1" / ".storage" / "x")
     assert storage_dir.exists(), "sanity: storage subdir should exist"
 
     pm.delete("x")

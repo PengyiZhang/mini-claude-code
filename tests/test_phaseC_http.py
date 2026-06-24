@@ -86,7 +86,7 @@ def app_with_permissions(tmp_path):
     # Create a project + write permissions.toml into its workspace.
     client.post("/tenants/tenant1/projects",
                 headers=AUTH, json={"project_id": "p1"})
-    ws = tmp_path / "projects" / "p1" / "workspace"
+    ws = tmp_path / "projects" / "tenants" / "tenant1" / "projects" / "p1" / "workspace"
     (ws / ".mini_cc").mkdir(parents=True, exist_ok=True)
     (ws / ".mini_cc" / "permissions.toml").write_text(
         'prompt_tools = ["bash"]\ntimeout_seconds = 30\n')

@@ -55,7 +55,7 @@ class ServerRuntimeContext:
     def build_project_manager(self):
         from ..projects import ProjectManager
         return ProjectManager(
-            self.data_dir / "projects",
+            self.data_dir,
             sandbox_factory=self._sandbox_factory)
 
     def _sandbox_factory(self, tid: str, pid: str, ws: Path,
@@ -70,7 +70,7 @@ class ServerRuntimeContext:
             return SubprocessSandbox(pid, ws, policy)
         mgr = self._container_mgrs.get(tid)
         if mgr is None:
-            host_projects_dir = self.data_dir / "projects"
+            host_projects_dir = self.data_dir / "tenants" / tid / "projects"
             mgr = TenantContainerManager(
                 tid=tid,
                 host_projects_dir=host_projects_dir,
