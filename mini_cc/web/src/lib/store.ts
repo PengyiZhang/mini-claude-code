@@ -263,22 +263,72 @@ export interface RawMessage {
 const REMINDER_RE = /^\s*<reminder>[\s\S]*<\/reminder>\s*$/;
 
 export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
+  // One user query triggers an agent *run*: the model may emit several
+  // assistant messages (text → tool_use → … → final text), each followed
+  // by a synthetic user message holding tool_results. Persisted raw shape:
+  //   user "query"
+  //   assistant [text, tool_use(A)]
+  //   user [tool_result(A)]            ← array content, not a real turn
+  //   assistant [text, tool_use(B)]
+  //   user [tool_result(B)]
+  //   assistant [final text]
+  //
+  // We merge every assistant message in one run into a SINGLE ChatMessage
+  // so the UI shows one avatar per query (instead of one bubble per LLM
+  // round-trip). Runs are delimited by real user turns (string content);
+  // array-content user messages (tool_results) are continuations, not
+  // new queries. Tool-result content is paired into the preceding
+  // activity by id.
+
+  // Helper: stringify a tool_result block's content into display text.
+  const resultText = (b: RawBlock): string =>
+    typeof b.content === "string"
+      ? b.content
+      : Array.isArray(b.content)
+        ? b.content
+            .map((x) =>
+              typeof x === "string"
+                ? x
+                : (x as { text?: string })?.text ?? JSON.stringify(x),
+            )
+            .join("")
+        : b.content == null
+          ? ""
+          : JSON.stringify(b.content);
+
   const out: ChatMessage[] = [];
+  // The assistant bubble currently being assembled for the active run.
+  let cur: ChatMessage | null = null;
+
   for (let i = 0; i < raw.length; i++) {
     const m = raw[i];
+
     if (m.role === "user") {
-      // String content is a visible user turn. Array content holds
-      // tool_results that we pair into the preceding assistant's
-      // activities below — skip here.
+      // Array content = tool_results for the in-flight assistant run.
+      // Fold them into `cur`'s activities by id; do NOT start a new bubble.
+      if (Array.isArray(m.content)) {
+        if (cur?.activities) {
+          for (const b of m.content) {
+            if (b.type === "tool_result" && b.tool_use_id) {
+              const act = cur.activities.find((a) => a.id === b.tool_use_id);
+              if (act) act.result = resultText(b);
+            }
+          }
+        }
+        continue;
+      }
+      // String content = a real, visible user turn. It closes the
+      // current run; the next assistant message starts a fresh bubble.
       if (typeof m.content === "string") {
-        // Skip synthetic reminder injections — they would otherwise render
-        // as if the user typed them, which is confusing after a refresh.
         if (REMINDER_RE.test(m.content)) continue;
+        cur = null;
         out.push({ role: "user", text: m.content });
       }
       continue;
     }
+
     if (m.role !== "assistant") continue;
+
     const blocks: RawBlock[] = Array.isArray(m.content) ? m.content : [];
     const text = blocks
       .filter((b) => b.type === "text" && typeof b.text === "string")
@@ -286,46 +336,24 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
       .join("");
     const toolUses = blocks.filter((b) => b.type === "tool_use");
 
-    // Look ahead for tool_result blocks in the next message.
-    const next = raw[i + 1];
-    const results: Record<string, string> = {};
-    if (next && next.role === "user" && Array.isArray(next.content)) {
-      for (const b of next.content) {
-        if (b.type === "tool_result" && b.tool_use_id) {
-          results[b.tool_use_id] =
-            typeof b.content === "string"
-              ? b.content
-              : Array.isArray(b.content)
-                ? b.content
-                    .map((x) =>
-                      typeof x === "string"
-                        ? x
-                        : (x as { text?: string })?.text ?? JSON.stringify(x),
-                    )
-                    .join("")
-                : b.content == null
-                  ? ""
-                  : JSON.stringify(b.content);
-        }
-      }
+    // Start a new bubble for this run if there isn't an open one (i.e.
+    // we just passed a real user turn, or this is the first message).
+    if (!cur) {
+      cur = { role: "assistant", text: "", streaming: false, notices: [], activities: [] };
+      out.push(cur);
     }
-
-    const activities: ChatActivity[] = toolUses.map((b) => ({
-      kind: "tool_use",
-      id: b.id ?? "",
-      name: b.name ?? "",
-      input: b.input ?? {},
-      result: results[b.id ?? ""],
-      expanded: false,
-    }));
-
-    out.push({
-      role: "assistant",
-      text,
-      streaming: false,
-      notices: [],
-      activities,
-    });
+    // Append this round's text + tool calls to the merged bubble.
+    if (text) cur.text += text;
+    for (const b of toolUses) {
+      cur.activities!.push({
+        kind: "tool_use",
+        id: b.id ?? "",
+        name: b.name ?? "",
+        input: b.input ?? {},
+        result: undefined,
+        expanded: true, // default-expanded
+      });
+    }
   }
   return out;
 }

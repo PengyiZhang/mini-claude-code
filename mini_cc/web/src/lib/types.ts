@@ -124,6 +124,7 @@ export type SendEvent =
   | { type: "permission_request"; request_id: string; tool_name: string; tool_input: Record<string, unknown>; ttl_seconds?: number }
   | { type: "permission_resolved"; request_id: string; decision: "allow" | "deny" }
   | { type: "session_warm"; session_id: string }
+  | { type: "session_resumed"; project_id: string; session_id: string }
   | { type: "todos_updated"; todos: TodoItem[] }
   | { type: "done" }
   | { type: "error"; message: string }

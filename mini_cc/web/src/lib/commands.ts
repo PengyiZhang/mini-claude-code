@@ -109,3 +109,36 @@ export async function streamRunCommand(
     handlers.onError?.(e as Error);
   }
 }
+
+/**
+ * Fire-and-refetch helper for panel actions: run a server command to
+ * completion and resolve with the concatenated text payload. Panels call
+ * this for side effects (e.g. `/workflow save`, `/bg stop <id>`) then
+ * re-fetch their JSON view. Rejects on stream error.
+ */
+export async function runCommandOnce(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+  name: string,
+  args?: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let acc = "";
+    void streamRunCommand(
+      profile,
+      pid,
+      sid,
+      name,
+      {
+        onEvent: (ev) => {
+          if (ev.type === "text") acc += ev.text;
+          if (ev.type === "error") reject(new Error(ev.message));
+        },
+        onError: (e) => reject(e),
+        onDone: () => resolve(acc),
+      },
+      args,
+    );
+  });
+}

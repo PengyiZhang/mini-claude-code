@@ -11,6 +11,7 @@ import PermissionPrompt, {
 import SessionRow from "../components/SessionRow";
 import SlashMenu from "../components/SlashMenu";
 import TodoPanel from "../components/TodoPanel";
+import RunTablePanel from "../components/RunTablePanel";
 import {
   ApiError,
   deleteSession,
@@ -27,7 +28,7 @@ import { streamSend } from "../lib/sse";
 import { fetchCommands, streamRunCommand } from "../lib/commands";
 import type { CommandDef } from "../lib/commands";
 
-type Tab = "chat" | "files" | "sessions";
+type Tab = "chat" | "files" | "run";
 
 const EMPTY: ChatMessage[] = [];
 const EMPTY_PERMS: PermissionPromptData[] = [];
@@ -291,7 +292,7 @@ export default function Workspace() {
                 id: ev.id,
                 name: ev.name,
                 input: ev.input,
-                expanded: false,
+                expanded: true,
               });
               break;
             case "tool_result":
@@ -317,6 +318,15 @@ export default function Workspace() {
               break;
             case "session_warm":
               setWarmSet((m) => ({ ...m, [ev.session_id]: true }));
+              break;
+            case "session_resumed":
+              // Backend warmed a different session via /resume <id>. Rotate
+              // the active session so the chat pane follows. The existing
+              // hydrate useEffect (keyed on sid) pulls the new session's
+              // history from disk.
+              if (ev.session_id && ev.session_id !== sid) {
+                setSid(ev.session_id);
+              }
               break;
             case "todos_updated":
               if (chatKey) useTodos.getState().setTodos(chatKey, ev.todos);
@@ -428,7 +438,7 @@ export default function Workspace() {
         {/* Sidebar */}
         <aside className="w-64 border-r border-border bg-bg-panel p-3 flex flex-col gap-3">
           <div className="flex gap-1 text-sm">
-            {(["chat", "files", "sessions"] as Tab[]).map((t) => (
+            {(["chat", "files", "run"] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -474,6 +484,10 @@ export default function Workspace() {
                 Workspace files live in the tree. Use the <span className="font-mono">＋</span> button at the top of the tree to upload, and the <span className="font-mono">⬇</span> button to download. Right-click any folder for per-folder actions.
               </div>
             </div>
+          )}
+
+          {tab === "run" && (
+            <RunTablePanel profile={profile} pid={pid} sid={sid} />
           )}
 
           <div className="mt-auto text-xs text-ink-faint">
@@ -632,57 +646,6 @@ export default function Workspace() {
                     select a file to preview, or use the ＋ button above the tree to add files.
                   </div>
                 )}
-              </div>
-            </div>
-          )}
-
-          {tab === "sessions" && (
-            <div className="flex-1 p-6 space-y-3">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Sessions</h2>
-                <button
-                  onClick={newSession}
-                  disabled={busySid}
-                  className="px-4 py-1.5 bg-accent text-white rounded"
-                >
-                  ＋ new
-                </button>
-              </div>
-              <div className="space-y-2">
-                {sessions.length === 0 && (
-                  <div className="text-sm text-ink-dim">no sessions yet</div>
-                )}
-                {sessions.map((s) => (
-                  <div
-                    key={s}
-                    className="bg-bg-card border border-border rounded p-3 flex items-center justify-between"
-                  >
-                    <div className="flex items-center gap-2 font-mono text-sm">
-                      <span
-                        title={warmSet[s] ? "warm" : "cold"}
-                        className={`size-2 rounded-full ${warmSet[s] ? "bg-emerald-500" : "bg-slate-500"}`}
-                      />
-                      {s}
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => {
-                          setSid(s);
-                          setTab("chat");
-                        }}
-                        className="text-xs px-3 py-1 border border-border rounded hover:border-accent"
-                      >
-                        open
-                      </button>
-                      <button
-                        onClick={() => removeSession(s)}
-                        className="text-xs px-3 py-1 border border-err/50 text-err rounded hover:bg-err/10"
-                      >
-                        remove
-                      </button>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
           )}

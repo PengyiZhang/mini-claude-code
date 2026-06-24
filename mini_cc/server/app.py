@@ -24,6 +24,7 @@ from .routes import sessions as sessions_routes
 from .routes import permissions as permissions_routes
 from .routes import admin as admin_routes
 from .routes import commands as commands_routes
+from .routes import run_table as run_table_routes
 
 
 @asynccontextmanager
@@ -108,6 +109,7 @@ def build_app(*, data_dir: Path,
     app.include_router(permissions_routes.router)
     app.include_router(admin_routes.router)
     app.include_router(commands_routes.router)
+    app.include_router(run_table_routes.router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:

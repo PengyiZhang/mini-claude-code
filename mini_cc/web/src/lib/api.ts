@@ -306,6 +306,71 @@ export async function downloadZip(profile: TenantProfile, pid: string): Promise<
   return res.blob();
 }
 
+// ── Run Table (Phase J) ──────────────────────────────────────────────
+// Read-only JSON views backing the sidebar "Run Table" tab. Both are
+// session-scoped because background tasks + the active workflow live on
+// the session's loop at runtime.
+
+export interface WorkflowStepOut {
+  id: string;
+  prompt: string;
+  condition?: string | null;
+  parallel_with?: string | null;
+  on_failure?: string;
+  max_retries?: number;
+}
+
+export interface WorkflowOut {
+  id: string;
+  name: string;
+  description?: string;
+  status?: string;
+  current_step?: string | null;
+  steps?: WorkflowStepOut[];
+  results?: Record<string, string>;
+  state?: Record<string, unknown>;
+  saved_at?: string;
+}
+
+export interface WorkflowsOut {
+  active: WorkflowOut | null;
+  saved: WorkflowOut[];
+}
+
+export interface BackgroundTaskOut {
+  bg_id: string;
+  tool: string;
+  command?: string;
+  status: string;
+  result?: string;
+}
+
+export async function getRunTableWorkflows(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+): Promise<WorkflowsOut> {
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/sessions/${sid}/run-table/workflows`),
+    { headers: authHeaders(profile) },
+  );
+  if (!res.ok) await parseErr(res);
+  return (await res.json()) as WorkflowsOut;
+}
+
+export async function getRunTableBackground(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+): Promise<BackgroundTaskOut[]> {
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/sessions/${sid}/run-table/background`),
+    { headers: authHeaders(profile) },
+  );
+  if (!res.ok) await parseErr(res);
+  return (await res.json()) as BackgroundTaskOut[];
+}
+
 // ── Admin / keys (Phase F) ───────────────────────────────────────────
 // Admin uses an explicit tenantId (may differ from chat tenant profile).
 
