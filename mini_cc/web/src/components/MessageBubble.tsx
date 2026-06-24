@@ -20,8 +20,7 @@ export default function MessageBubble({ msg }: { msg: ChatMessage }) {
           <Activity key={a.id} msg={msg} activity={a} />
         ))}
         {(msg.text || msg.streaming) && (
-          <div className={`whitespace-pre-wrap break-words text-ink ${msg.streaming ? "streaming-cursor" : ""}`}>
-            {/* {msg.text} */}
+          <div className={`break-words text-ink ${msg.streaming ? "streaming-cursor" : ""}`}>
             <MarkdownRenderer content={msg.text} />
           </div>
         )}

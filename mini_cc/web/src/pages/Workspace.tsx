@@ -432,11 +432,11 @@ export default function Workspace() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen overflow-hidden flex flex-col">
       <TopBar title={`${pid}`} />
-      <div className="flex-1 flex">
+      <div className="flex-1 flex min-h-0">
         {/* Sidebar */}
-        <aside className="w-64 border-r border-border bg-bg-panel p-3 flex flex-col gap-3">
+        <aside className="w-64 border-r border-border bg-bg-panel p-3 flex flex-col gap-3 overflow-y-auto shrink-0">
           <div className="flex gap-1 text-sm">
             {(["chat", "files", "run"] as Tab[]).map((t) => (
               <button
