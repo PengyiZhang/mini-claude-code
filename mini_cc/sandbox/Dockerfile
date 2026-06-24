@@ -1,6 +1,9 @@
 # mini_cc/sandbox/Dockerfile
-# Base image: locally available python:3.10-slim in WSL2 Ubuntu-24.04
-# (avoids network pull during build; 3.12-slim not present locally)
+# Default base: python:3.10-slim (small, broadly cached). Works on any
+# Debian release the python image targets — Bookworm / Trixie / Bullseye.
+# If you need to swap bases (e.g. an older Bullseye image whose apt repos
+# have been retired), change FROM below and add a sources swap before
+# the apt-get line.
 FROM python:3.10-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

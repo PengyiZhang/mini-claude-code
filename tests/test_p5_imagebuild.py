@@ -15,8 +15,6 @@ def test_render_default_no_packages():
     df = render_dockerfile(ContainerConfig())
     assert "FROM python:3.10-slim" in df
     assert "CMD" in df and "sleep" in df and "infinity" in df
-    # No *extra* install layers appended (base Dockerfile still has its own
-    # apt-get for git/ripgrep and one for nodejs — both stay).
     assert "pip install" not in df
     assert "npm install -g" not in df
 
