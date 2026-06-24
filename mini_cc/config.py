@@ -44,6 +44,43 @@ def _env_first(*names: str) -> Optional[str]:
     return None
 
 
+def _mcp_servers_from_env() -> dict[str, dict] | None:
+    """Parse ``MINI_CC_MCP_SERVERS`` as JSON. Expected shape::
+
+        {"docs": {"command": ["npx", "mcp-server-docs"], "env": {...}},
+         "fs":   {"command": ["python", "-m", "mcp_server_fs"]}}
+
+    Returns None on missing/empty/invalid input so the rest of the app
+    can treat "no MCP configured" as a plain falsy value.
+    """
+    import json
+    raw = os.getenv("MINI_CC_MCP_SERVERS")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    # Filter out entries that obviously can't boot (no command, command
+    # not a non-empty list). We don't validate executables here — that
+    # happens lazily at connect time so a broken server doesn't block
+    # the whole project from loading.
+    out: dict[str, dict] = {}
+    for name, spec in parsed.items():
+        if not isinstance(spec, dict):
+            continue
+        cmd = spec.get("command")
+        if isinstance(cmd, list) and cmd:
+            out[name] = {
+                "command": cmd,
+                **({"env": spec["env"]} if isinstance(spec.get("env"), dict) else {}),
+                **({"cwd": spec["cwd"]} if isinstance(spec.get("cwd"), str) else {}),
+            }
+    return out or None
+
+
 @dataclass
 class AnthropicConfig:
     """Project-wide LLM configuration.
@@ -63,6 +100,10 @@ class AnthropicConfig:
     # /search endpoint; otherwise the tool returns a clear "not
     # configured" error so the agent can fall back to web_fetch.
     tavily_api_key: Optional[str] = None
+    # MCP servers to launch automatically per project. Each entry is
+    # ``{command: [...], env: {...}, cwd: "..."}``. Sourced from
+    # ``MINI_CC_MCP_SERVERS`` as JSON, or set programmatically.
+    mcp_servers: dict[str, dict] | None = None
 
     @classmethod
     def from_env(cls) -> "AnthropicConfig":
@@ -77,6 +118,7 @@ class AnthropicConfig:
                 "LITELLM_BASE_URL", "OPENAI_BASE_URL", "MINI_CC_LITELLM_BASE_URL"),
             tavily_api_key=_env_first(
                 "TAVILY_API_KEY", "MINI_CC_TAVILY_API_KEY"),
+            mcp_servers=_mcp_servers_from_env(),
         )
 
     def build_client(self) -> Anthropic:

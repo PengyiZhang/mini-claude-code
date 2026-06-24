@@ -112,6 +112,7 @@ def _workflow_run_step(ctx: ToolContext, args: dict) -> str:
     except Exception as e:
         return f"Error running step `{step_id}`: {type(e).__name__}: {e}"
     wf.results[step_id] = result
+    _persist_active(ctx, wf)
     return f"[step `{step_id}` completed]\n\n{result}"
 
 
@@ -212,6 +213,23 @@ def _set_active_workflow(ctx: ToolContext, wf: Workflow) -> None:
         setattr(project, "active_workflow", wf)
     except Exception:
         object.__setattr__(project, "active_workflow", wf)
+    _persist_active(ctx, wf)
+
+
+def _persist_active(ctx: ToolContext, wf: Workflow | None) -> None:
+    """Mirror the active workflow into storage so a server restart can
+    restore it. Best-effort — silently skipped if storage doesn't
+    implement the workflow methods (older Storage impls, in-memory test
+    stubs)."""
+    if wf is None:
+        return
+    storage = getattr(ctx, "storage", None) or getattr(ctx.project_ref, "storage", None)
+    if storage is None or not hasattr(storage, "save_workflow"):
+        return
+    try:
+        storage.save_workflow(ctx.project_id, wf.to_dict())
+    except Exception:
+        pass
 
 
 def _summarize(wf: Workflow, *, header: str) -> str:

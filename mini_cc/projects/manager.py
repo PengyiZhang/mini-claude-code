@@ -188,7 +188,42 @@ class ProjectManager:
             project_id=project_id,
             storage=storage,
         )
+        # Auto-launch configured MCP servers. Failures are logged via the
+        # /mcp command (the pool keeps a record of attempted connections
+        # through list_connected); we don't let one broken server block
+        # project assembly.
+        _connect_configured_mcp_servers(mcp_pool)
         return project
+
+
+def _connect_configured_mcp_servers(pool: MCPPool) -> None:
+    """Read mcp_servers from default_config() and connect each.
+
+    Best-effort: a server that fails to spawn or handshake is skipped.
+    Successful connections show up in ``/mcp`` immediately.
+    """
+    try:
+        from ..config import default_config
+        servers = default_config().mcp_servers or {}
+    except Exception:
+        return
+    if not servers:
+        return
+    for name, spec in servers.items():
+        command = spec.get("command") or []
+        if not isinstance(command, list) or not command:
+            continue
+        try:
+            pool.connect_stdio(
+                name, command,
+                env=spec.get("env"),
+                cwd=spec.get("cwd"),
+            )
+        except Exception:
+            # connect_stdio returns (False, message) rather than raising
+            # for the expected error paths; this guard catches any
+            # surprise exceptions without aborting the rest of the list.
+            pass
 
 
 def _build_teammate_loop(project: "Project", session_id: str):

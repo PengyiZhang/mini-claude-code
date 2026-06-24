@@ -9,6 +9,7 @@ Layout under <state_root>/<project_id>/:
     sessions/index.json
     transcripts/transcript_<ts>.jsonl
     tool_results/<tool_use_id>.txt
+    workflows/<wf_id>.json
 """
 from __future__ import annotations
 
@@ -53,6 +54,7 @@ class FSStorage:
         (p / "sessions").mkdir(parents=True, exist_ok=True)
         (p / "transcripts").mkdir(parents=True, exist_ok=True)
         (p / "tool_results").mkdir(parents=True, exist_ok=True)
+        (p / "workflows").mkdir(parents=True, exist_ok=True)
         return p
 
     @staticmethod
@@ -274,3 +276,52 @@ class FSStorage:
         if not fp.exists():
             return None
         return fp.read_text(encoding="utf-8")
+
+    # ── Workflows ──────────────────────────────────────────────────────
+    @staticmethod
+    def _safe_wf_id(wf_id: str) -> str:
+        # Same character policy as session ids so workflow ids can't
+        # escape the workflows/ subdir via ../.
+        return "".join(c if c.isalnum() or c in "-_" else "_" for c in wf_id)
+
+    def save_workflow(self, project_id, wf_dict):
+        wf_id = self._safe_wf_id(wf_dict.get("id") or "wf_unknown")
+        with self._lock(f"{project_id}:wf:{wf_id}"):
+            payload = dict(wf_dict)
+            payload["id"] = wf_id
+            payload.setdefault("saved_at", _iso_now())
+            fp = self._proj(project_id) / "workflows" / f"{wf_id}.json"
+            self._atomic_write_json(fp, payload)
+
+    def load_workflow(self, project_id, wf_id) -> dict | None:
+        fp = self._proj(project_id) / "workflows" / f"{self._safe_wf_id(wf_id)}.json"
+        if not fp.exists():
+            return None
+        with self._lock(f"{project_id}:wf:{wf_id}"):
+            try:
+                return json.loads(fp.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return None
+
+    def list_workflows(self, project_id) -> list[dict]:
+        d = self._proj(project_id) / "workflows"
+        out: list[dict] = []
+        for fp in d.glob("*.json"):
+            try:
+                raw = json.loads(fp.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    out.append(raw)
+            except (json.JSONDecodeError, OSError):
+                continue
+        out.sort(key=lambda w: w.get("saved_at", ""), reverse=True)
+        return out
+
+    def delete_workflow(self, project_id, wf_id) -> bool:
+        fp = self._proj(project_id) / "workflows" / f"{self._safe_wf_id(wf_id)}.json"
+        if not fp.exists():
+            return False
+        try:
+            fp.unlink()
+            return True
+        except FileNotFoundError:
+            return False

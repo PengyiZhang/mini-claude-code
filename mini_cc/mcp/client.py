@@ -104,6 +104,35 @@ class MCPPool:
                       f"Discovered {len(client.tools)} tools: "
                       f"{', '.join(tool_names)}")
 
+    def connect_stdio(self, name: str, command: list[str],
+                      *, env: dict | None = None,
+                      cwd: str | None = None) -> tuple[bool, str]:
+        """Spawn a real MCP subprocess and connect to it.
+
+        Returns ``(ok, message)``. On failure the message explains the
+        underlying error (command not found, handshake timeout, etc.).
+        A repeated call with the same name is a no-op success.
+        """
+        if name in self._clients:
+            return True, f"MCP server '{name}' already connected"
+        # Lazy import keeps the stdio transport out of the hot path for
+        # projects that don't use MCP.
+        from .stdio import StdioMCPClient, StdioMCPError
+        try:
+            client = StdioMCPClient(name, command, env=env, cwd=cwd)
+            client.startup()
+        except StdioMCPError as e:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            return False, str(e)
+        self._clients[name] = client
+        tool_names = [t["name"] for t in client.tools]
+        return True, (f"Connected to MCP server '{name}' over stdio. "
+                      f"Discovered {len(client.tools)} tools: "
+                      f"{', '.join(tool_names)}")
+
     def disconnect(self, name: str) -> bool:
         return self._clients.pop(name, None) is not None
 
