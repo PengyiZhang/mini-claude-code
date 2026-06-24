@@ -4,9 +4,11 @@ import {
   getRunTableWorkflows,
   getRunTableBackground,
   type WorkflowsOut,
+  type WorkflowOut,
   type BackgroundTaskOut,
 } from "../lib/api";
 import { runCommandOnce } from "../lib/commands";
+import { WorkflowViewer } from "./WorkflowViewer";
 
 /**
  * Sidebar "Run Table" panel — aggregates the active session's workflows
@@ -34,6 +36,7 @@ export default function RunTablePanel({
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<WorkflowOut | null>(null);
 
   const refresh = useCallback(async () => {
     if (!sid) return;
@@ -114,7 +117,7 @@ export default function RunTablePanel({
         </div>
 
         {wf.active ? (
-          <ActiveWorkflow wf={wf.active} />
+          <ActiveWorkflow wf={wf.active} onPreview={() => setViewing(wf.active!)} />
         ) : (
           <div className="text-xs text-ink-faint italic">no active workflow</div>
         )}
@@ -127,7 +130,13 @@ export default function RunTablePanel({
                 key={s.id}
                 className="flex items-center gap-1 text-xs bg-bg-card border border-border rounded px-2 py-1"
               >
-                <span className="text-ink truncate flex-1">{s.name}</span>
+                <button
+                  onClick={() => setViewing(s)}
+                  className="text-ink truncate flex-1 text-left hover:text-accent"
+                  title="preview"
+                >
+                  {s.name}
+                </button>
                 <span className="text-ink-faint">{(s.results && Object.keys(s.results).length) ?? 0}/{s.steps?.length ?? 0}</span>
                 <button
                   onClick={() => void act(`load:${s.id}`, "workflow", `load ${s.id}`)}
@@ -190,18 +199,33 @@ export default function RunTablePanel({
           ))
         )}
       </section>
+
+      <WorkflowViewer wf={viewing} onClose={() => setViewing(null)} />
     </div>
   );
 }
 
-function ActiveWorkflow({ wf }: { wf: NonNullable<WorkflowsOut["active"]> }) {
+function ActiveWorkflow({
+  wf,
+  onPreview,
+}: {
+  wf: NonNullable<WorkflowsOut["active"]>;
+  onPreview: () => void;
+}) {
   const done = wf.results ? Object.keys(wf.results).length : 0;
   const total = wf.steps?.length ?? 0;
   return (
     <div className="text-xs bg-bg-card border border-border rounded p-2 space-y-1">
       <div className="flex items-center gap-2">
-        <span className="text-ink font-medium truncate">{wf.name}</span>
+        <button
+          onClick={onPreview}
+          className="text-ink font-medium truncate hover:text-accent text-left"
+          title="preview workflow"
+        >
+          {wf.name}
+        </button>
         <span className="text-ink-faint">{wf.status}</span>
+        <span className="text-ink-faint ml-auto">👁</span>
       </div>
       <div className="text-ink-faint">{done}/{total} steps done</div>
       {wf.steps && wf.steps.length > 0 && (
