@@ -27,15 +27,16 @@ const CodeBlock: Components["code"] = ({
 
 export const MarkdownRenderer = ({ content }: { content: string }) => {
   return (
+    
     <div className="markdown-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={{
-          code: CodeBlock,
-        }}
+
       >
         {content}
       </ReactMarkdown>
+
     </div>
+
   );
 };

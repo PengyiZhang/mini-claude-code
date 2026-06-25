@@ -121,6 +121,51 @@ class ProjectManager:
         # the real data_dir explicitly so the same ProjectManager finds
         # <data_dir>/.mini_cc/ even when root != data_dir.
         self.data_dir = Path(data_dir_for_system or self.root).resolve()
+        # Assembled-project cache, keyed by (tenant_id, project_id).
+        # Without this, every pm.get() (called by every API route) rebuilt
+        # the whole Project + re-ran the MCP auto-connect sweep — ~2s for a
+        # remote HTTP server, per request, leaking MCP subprocesses each
+        # time. Caching makes the warm path O(microseconds) and guarantees
+        # route handlers and the SessionManager's warm loops share ONE
+        # Project object. See _config_signature for the invalidation rule.
+        self._cache: dict[tuple[str, str], Project] = {}
+        self._sigs: dict[tuple[str, str], tuple] = {}
+
+    def _config_signature(self, tenant_id: str, workspace: Path) -> tuple:
+        """Cheap fingerprint of the MCP plugin config across all tiers.
+
+        We stat ``.mcp.json``, ``mcp.toml``, and ``permissions.toml`` in
+        each tier dir and pack (path, mtime, size) into a tuple. A changed
+        signature invalidates the assembled-project cache so a freshly-edited
+        config file is picked up on the next ``get()`` without a server
+        restart. Stats are ~microseconds, so checking on every (cached)
+        get is fine. (Skills have their own hot-rescan via /skills +
+        SkillLoader.scan, so they're not part of this fingerprint.)
+        """
+        from ..plugins import project_tier_dirs
+        sig: list = []
+        for td in project_tier_dirs(self.data_dir, tenant_id, workspace):
+            for name in (".mcp.json", "mcp.toml", "permissions.toml"):
+                fp = td / name
+                try:
+                    st = fp.stat()
+                    sig.append((str(fp), st.st_mtime_ns, st.st_size))
+                except OSError:
+                    sig.append((str(fp), 0, 0))
+        return tuple(sig)
+
+    def invalidate(self, project_id: str,
+                   tenant_id: str | None = None) -> None:
+        """Drop the cached assembled Project (if any). Next ``get()``
+        re-assembles from scratch. Call after programmatic config changes
+        that bypass the filesystem mtime signal."""
+        if tenant_id is None:
+            meta = find_meta(self.root, project_id)
+            if meta is None:
+                return
+            tenant_id = meta.tenant_id
+        self._cache.pop((tenant_id, project_id), None)
+        self._sigs.pop((tenant_id, project_id), None)
 
     def _state_root(self, tenant_id: str) -> Path:
         # Per-tenant storage root — two tenants using the same project_id
@@ -149,6 +194,14 @@ class ProjectManager:
         from ..plugins import ensure_tier_dir as _ensure, PluginTier as _T
         _ensure(ws, _T.PROJECT)
         write_meta(self.root, meta)
+        # NOTE: we deliberately do NOT prime the cache here. ``create()``
+        # returns before the caller has finished configuring the workspace
+        # (e.g. writing .mini_cc/permissions.toml). Priming now would pin
+        # a project assembled against a half-configured workspace, and a
+        # later get() would return that stale object. The first get()
+        # assembles lazily — after the workspace is fully set up — and
+        # caches that. create()'s returned project is the same shape, just
+        # not the cached identity.
         return self._assemble(project_id, meta)
 
     def get(self, project_id: str,
@@ -159,7 +212,18 @@ class ProjectManager:
             meta = find_meta(self.root, project_id)
         if meta is None:
             raise KeyError(f"project not found: {project_id}")
-        return self._assemble(project_id, meta)
+        key = (meta.tenant_id, project_id)
+        ws = workspace_path(self.root, meta.tenant_id, project_id)
+        # Cache hit only when the MCP config fingerprint is unchanged —
+        # editing .mini_cc/.mcp.json bumps an mtime and forces a rebuild.
+        sig = self._config_signature(meta.tenant_id, ws)
+        cached = self._cache.get(key)
+        if cached is not None and self._sigs.get(key) == sig:
+            return cached
+        project = self._assemble(project_id, meta)
+        self._cache[key] = project
+        self._sigs[key] = sig
+        return project
 
     def list(self, tenant_id: str | None = None) -> list[Project]:
         return [self.get(pid, tenant_id=tenant_id)
@@ -189,6 +253,9 @@ class ProjectManager:
         storage_dir = self._state_root(meta.tenant_id) / project_id
         if storage_dir.exists():
             shutil.rmtree(storage_dir, ignore_errors=True)
+        # Drop any cached handle so it can't be re-served after deletion.
+        self._cache.pop((meta.tenant_id, project_id), None)
+        self._sigs.pop((meta.tenant_id, project_id), None)
 
     def _assemble(self, project_id: str, meta: ProjectMeta) -> Project:
         ws = workspace_path(self.root, meta.tenant_id, project_id)
@@ -250,43 +317,44 @@ def _connect_configured_mcp_servers(pool: MCPPool, *,
 
     Sources merged in priority order (later wins on name clash):
 
-    1. ``<data_dir>/.mini_cc/mcp.toml``           — system tier
-    2. ``<data_dir>/tenants/<tid>/.mini_cc/mcp.toml`` — tenant tier
-    3. ``<workspace>/.mini_cc/mcp.toml``          — project tier
-    4. ``default_config().mcp_servers``            — env (legacy escape hatch)
+    1. ``<data_dir>/.mini_cc/``             — system tier
+       (``.mcp.json`` overrides ``mcp.toml`` within a tier)
+    2. ``<data_dir>/tenants/<tid>/.mini_cc/`` — tenant tier
+    3. ``<workspace>/.mini_cc/``            — project tier
+    4. ``default_config().mcp_servers``     — env (legacy escape hatch)
 
-    Best-effort: a server that fails to spawn or handshake is skipped.
-    Successful connections show up in ``/mcp`` immediately.
+    Each spec is dispatched by ``type`` (stdio/http/sse) via
+    :meth:`MCPPool.connect_from_spec`. Best-effort: a server that fails
+    to spawn or handshake is recorded on the pool's attempt log (visible
+    in ``/mcp`` under "failed to connect") rather than aborting
+    assembly. Successful connections show up in ``/mcp`` immediately.
     """
     from ..plugins import (PluginTier, discover_mcp_servers, project_tier_dirs)
     tier_dirs: list[Path] = []
     if data_dir is not None and tenant_id is not None and workspace is not None:
         tier_dirs = project_tier_dirs(data_dir, tenant_id, workspace)
     servers: dict[str, dict] = discover_mcp_servers(tier_dirs)
-    # Env / programmatic override last → wins.
+    # Env / programmatic override last → wins. Legacy shape is the bare
+    # ``{command: [...]}``; default to stdio if ``type`` is missing.
     try:
         from ..config import default_config
         env_servers = default_config().mcp_servers or {}
         if env_servers:
-            servers.update(env_servers)
+            for k, v in env_servers.items():
+                if isinstance(v, dict) and "type" not in v:
+                    v = {**v, "type": "stdio"}
+                servers[k] = v
     except Exception:
         pass
     if not servers:
         return
     for name, spec in servers.items():
-        command = spec.get("command") or []
-        if not isinstance(command, list) or not command:
-            continue
         try:
-            pool.connect_stdio(
-                name, command,
-                env=spec.get("env"),
-                cwd=spec.get("cwd"),
-            )
+            pool.connect_from_spec(name, spec)
         except Exception:
-            # connect_stdio returns (False, message) rather than raising
-            # for the expected error paths; this guard catches any
-            # surprise exceptions without aborting the rest of the list.
+            # connect_from_spec returns (False, message) for expected
+            # error paths; this guard catches surprise exceptions without
+            # aborting the rest of the list.
             pass
 
 

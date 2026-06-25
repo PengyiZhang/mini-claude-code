@@ -202,6 +202,43 @@ def _cmd_skills(ctx: CommandContext) -> Iterator[dict]:
     yield {"type": "done"}
 
 
+def _cmd_tools(ctx: CommandContext) -> Iterator[dict]:
+    """List every tool the agent can call this turn.
+
+    Combines the builtin tool registry (bash, fs, web_search, ...) with
+    the live MCP tools from any connected MCP server. The same view the
+    Anthropic API sees in the ``tools`` field — useful for debugging
+    "why doesn't the agent see my tool" (e.g. web_search requires
+    TAVILY_API_KEY to *succeed* but is always *registered*).
+    """
+    from ..tools import builtin_tools
+    project = ctx.project
+    lines = [f"**Tools visible to the agent in `{ctx.project_id}`:**", ""]
+    builtin = [t.name for t in builtin_tools()]
+    lines.append(f"**builtin ({len(builtin)}):**")
+    for name in sorted(builtin):
+        lines.append(f"- `{name}`")
+    mcp_names: list[str] = []
+    if project is not None and project.mcp_pool is not None:
+        try:
+            for t in project.mcp_pool.all_tools():
+                mcp_names.append(t.name)
+        except Exception:
+            pass
+    lines.append("")
+    lines.append(f"**MCP ({len(mcp_names)}):**")
+    if mcp_names:
+        for name in sorted(mcp_names):
+            lines.append(f"- `{name}`")
+    else:
+        lines.append("_none — no MCP servers connected_")
+    lines.append("")
+    lines.append("Note: tools like `web_search` are always listed but return "
+                 "an error at runtime if their API key is missing.")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
 def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
     """List MCP servers registered for this project.
 
@@ -220,10 +257,23 @@ def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
     except Exception:
         available = []
     connectable = sorted(s for s in available if s not in connected)
-    if not connected and not connectable:
+    # Discovered-on-disk servers that were tried at assembly time but
+    # failed to connect (auth error, unreachable host, …). Without
+    # surfacing these the user sees "no servers registered" and has no
+    # clue why their .mcp.json didn't take effect.
+    try:
+        attempts = pool.list_attempts()
+    except Exception:
+        attempts = {}
+    failed = sorted(
+        name for name, rec in attempts.items()
+        if not rec.ok and name not in connected)
+    if not connected and not connectable and not failed:
         yield {"type": "text",
-               "text": "_no MCP servers registered. Register a factory at app "
-                       "startup via `MCPPool.register_factory(name, fn)`._"}
+               "text": "_no MCP servers registered. Drop a ``.mcp.json`` "
+                       "into any ``.mini_cc/`` tier, or register a factory "
+                       "at app startup via "
+                       "``MCPPool.register_factory(name, fn)``._"}
         yield {"type": "done"}
         return
     lines = [f"**MCP servers for `{ctx.project_id}`:**", ""]
@@ -233,8 +283,17 @@ def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
             client = pool._clients.get(name)
             tool_count = len(getattr(client, "tools", []) or [])
             lines.append(f"- 🟢 `{name}` ({tool_count} tools live)")
-    if connectable:
+    if failed:
         if connected:
+            lines.append("")
+        lines.append("**failed to connect (discovered in .mcp.json/mcp.toml):**")
+        for name in failed:
+            reason = attempts[name].message
+            lines.append(f"- 🔴 `{name}` — {reason}")
+            lines.append(f"  _edit the matching entry in `.mini_cc/.mcp.json` "
+                         f"(or `mcp.toml`) and re-open the session to retry._")
+    if connectable:
+        if connected or failed:
             lines.append("")
         lines.append("**available (not connected):**")
         for name in connectable:
@@ -1089,6 +1148,11 @@ def default_registry() -> CommandRegistry:
         name="resume",
         description="List recent sessions, or resume one by id: `/resume <session_id>`.",
         handler=_cmd_resume,
+    ))
+    reg.register(SlashCommand(
+        name="tools",
+        description="List all tools (builtin + MCP) the agent can call.",
+        handler=_cmd_tools,
     ))
     _DEFAULT = reg
     return reg

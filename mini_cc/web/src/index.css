@@ -104,6 +104,13 @@ body {
   background: rgba(124, 92, 255, 0.16);
   color: #cdb8ff;
   border: 1px solid rgba(124, 92, 255, 0.22);
+
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+
+  max-width: 100%;
+  display: inline-block;
 }
 
 /* Fenced code blocks: clearly differentiated surface. */

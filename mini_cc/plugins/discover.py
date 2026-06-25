@@ -77,9 +77,38 @@ def discover_skills(tier_dirs: Iterable[Path]) -> dict[str, Skill]:
 
 
 # ── MCP server discovery ──────────────────────────────────────────────
+#
+# Two file formats are supported, in priority order within a tier:
+#
+#   1. ``.mcp.json``  — Claude Code format. Copy a Claude Code config
+#      verbatim into ``.mini_cc/`` and it Just Works. Shape::
+#
+#          {"mcpServers": {
+#              "name": {
+#                  "type": "stdio"|"http"|"sse",   # default stdio
+#                  "command": "npx",                 # stdio
+#                  "args": ["-y", "pkg"],
+#                  "env": {"KEY": "value"},
+#                  "url": "https://...",             # http/sse
+#                  "headers": {"Authorization": "..."}
+#              }
+#          }}
+#
+#   2. ``mcp.toml``   — mini_cc's original format. Shape::
+#
+#          [name]
+#          command = ["npx", "mcp-server-docs"]
+#          [name.env]
+#          KEY = "value"
+#
+# When both files exist in the same tier, ``.mcp.json`` wins. Across
+# tiers, the usual later-tier-wins rule applies.
+
+VALID_TYPES = ("stdio", "http", "sse")
+
 
 def write_mcp_servers(tier_dir: Path, servers: dict[str, dict]) -> None:
-    """Persist ``servers`` to ``<tier_dir>/mcp.toml``.
+    """Persist ``servers`` to ``<tier_dir>/mcp.toml`` (legacy mini_cc shape).
 
     Used by admin tooling and tests; production reads via
     :func:`discover_mcp_servers`. The TOML shape is the natural one::
@@ -111,11 +140,103 @@ def write_mcp_servers(tier_dir: Path, servers: dict[str, dict]) -> None:
     fp.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _normalize_spec(spec: dict) -> dict | None:
+    """Coerce one server spec from either format into the unified shape::
+
+        {"type": "stdio"|"http"|"sse",
+         "command": [...],        # stdio only
+         "env": {...}, "cwd": "...",
+         "url": "...",            # http/sse only
+         "headers": {...}}
+
+    Returns None if the spec is unusable (no command, no url, unknown
+    type, etc.) so the caller can silently skip it.
+    """
+    if not isinstance(spec, dict):
+        return None
+    declared_type = spec.get("type")
+    cmd_val = spec.get("command")
+    has_command_str = isinstance(cmd_val, str) and cmd_val
+    has_command_list = isinstance(cmd_val, list) and cmd_val
+    has_args_list = isinstance(spec.get("args"), list)
+    has_url = isinstance(spec.get("url"), str) and spec["url"]
+
+    # Type inference: Claude Code allows omitting ``type`` for stdio servers
+    # when ``command`` is present. ``url`` without ``type`` ⇒ http.
+    if declared_type is None:
+        if has_url:
+            inferred = "http"
+        elif has_command_str or has_command_list or has_args_list:
+            inferred = "stdio"
+        else:
+            return None
+    else:
+        inferred = str(declared_type).lower()
+    if inferred not in VALID_TYPES:
+        return None
+
+    out: dict = {"type": inferred}
+    if inferred == "stdio":
+        # Claude Code: ``command`` is a string + ``args`` is a list.
+        # mini_cc legacy TOML: ``command`` is already a list.
+        if has_command_str:
+            cmd = [str(cmd_val)]
+            if has_args_list:
+                cmd.extend(str(a) for a in spec["args"])
+            out["command"] = cmd
+        elif has_command_list:
+            out["command"] = [str(c) for c in cmd_val]
+        else:
+            return None
+        if isinstance(spec.get("env"), dict):
+            out["env"] = {str(k): str(v) for k, v in spec["env"].items()}
+        if isinstance(spec.get("cwd"), str) and spec["cwd"]:
+            out["cwd"] = spec["cwd"]
+    else:
+        # http / sse — both need a URL.
+        if not has_url:
+            return None
+        out["url"] = spec["url"]
+        if isinstance(spec.get("headers"), dict):
+            out["headers"] = {str(k): str(v)
+                              for k, v in spec["headers"].items()}
+        if isinstance(spec.get("env"), dict):
+            # Some HTTP servers want env-derived secrets surfaced as headers
+            # at call time; keep env around so callers can post-process.
+            out["env"] = {str(k): str(v) for k, v in spec["env"].items()}
+    return out
+
+
+def _read_mcp_json(tier_dir: Path) -> dict[str, dict]:
+    """Parse Claude Code's ``.mcp.json`` if present."""
+    fp = Path(tier_dir) / ".mcp.json"
+    if not fp.exists():
+        return {}
+    import json
+    try:
+        raw_text = fp.read_text(encoding="utf-8")
+        raw = json.loads(raw_text)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        _log.warning(".mcp.json %s unreadable: %s", fp, e)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    servers = raw.get("mcpServers") or raw.get("mcp_servers") or {}
+    if not isinstance(servers, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for name, spec in servers.items():
+        normalized = _normalize_spec(spec)
+        if normalized is not None:
+            out[str(name)] = normalized
+    return out
+
+
 def _read_mcp_toml(tier_dir: Path) -> dict[str, dict]:
     """Return the ``[name] -> spec`` dict from a tier's mcp.toml.
 
     Empty dict when the file is missing or unreadable. Spec is normalized
-    to ``{"command": [...], "env": {...}, "cwd": "..."}`` shape.
+    to the unified shape (``{"type": "stdio", "command": [...], ...}``).
     """
     fp = Path(tier_dir) / "mcp.toml"
     if not fp.exists():
@@ -129,21 +250,20 @@ def _read_mcp_toml(tier_dir: Path) -> dict[str, dict]:
 
     out: dict[str, dict] = {}
     for name, spec in raw.items():
-        if not isinstance(spec, dict):
-            continue
-        cmd = spec.get("command")
-        # Skip entries without a usable command — they can't boot anyway.
-        if not (isinstance(cmd, list) and cmd):
-            continue
-        normalized: dict = {"command": [str(c) for c in cmd]}
-        env = spec.get("env")
-        if isinstance(env, dict):
-            normalized["env"] = {str(k): str(v) for k, v in env.items()}
-        cwd = spec.get("cwd")
-        if isinstance(cwd, str):
-            normalized["cwd"] = cwd
-        out[name] = normalized
+        # TOML entries don't carry a ``type`` field in the legacy shape —
+        # they're always stdio. ``_normalize_spec`` infers it from command.
+        normalized = _normalize_spec(spec)
+        if normalized is not None:
+            out[str(name)] = normalized
     return out
+
+
+def _read_tier(tier_dir: Path) -> dict[str, dict]:
+    """One tier's merged servers. ``.mcp.json`` overrides ``mcp.toml``
+    on name clash within the same tier."""
+    merged = _read_mcp_toml(tier_dir)
+    merged.update(_read_mcp_json(tier_dir))
+    return merged
 
 
 def discover_mcp_servers(tier_dirs: Iterable[Path]) -> dict[str, dict]:
@@ -153,5 +273,5 @@ def discover_mcp_servers(tier_dirs: Iterable[Path]) -> dict[str, dict]:
         td = Path(td)
         if not td.exists():
             continue
-        merged.update(_read_mcp_toml(td))
+        merged.update(_read_tier(td))
     return merged

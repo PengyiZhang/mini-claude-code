@@ -17,6 +17,7 @@ Then per project:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Callable
 
 _DISALLOWED = re.compile(r"[^a-zA-Z0-9_-]")
@@ -24,6 +25,19 @@ _DISALLOWED = re.compile(r"[^a-zA-Z0-9_-]")
 
 def normalize_mcp_name(name: str) -> str:
     return _DISALLOWED.sub("_", name)
+
+
+@dataclass
+class AttemptRecord:
+    """Outcome of one connect attempt — kept so ``/mcp`` can surface
+    servers that were discovered on disk but failed to connect (auth
+    error, unreachable host, bad handshake, …). Without this a failed
+    server would silently vanish from both ``connected`` and the
+    ``connectable`` factory list, leaving the user staring at "no MCP
+    servers registered" with no clue why."""
+    name: str
+    ok: bool
+    message: str
 
 
 class MCPClient:
@@ -69,6 +83,16 @@ class MCPPool:
     def __init__(self, project_id: str):
         self.project_id = project_id
         self._clients: dict[str, MCPClient] = {}
+        # name -> last outcome of a connect attempt. Populated by every
+        # connect_* path so /mcp can show discovered-but-failed servers.
+        self._attempts: dict[str, AttemptRecord] = {}
+
+    def _record_attempt(self, name: str, ok: bool, message: str) -> None:
+        self._attempts[name] = AttemptRecord(name=name, ok=ok, message=message)
+
+    def list_attempts(self) -> dict[str, AttemptRecord]:
+        """Return every recorded connect attempt keyed by server name."""
+        return dict(self._attempts)
 
     # ── Factory registry (app-level) ───────────────────────────────────
     @classmethod
@@ -100,9 +124,11 @@ class MCPPool:
         client = factory()
         self._clients[name] = client
         tool_names = [t["name"] for t in client.tools]
-        return True, (f"Connected to MCP server '{name}'. "
-                      f"Discovered {len(client.tools)} tools: "
-                      f"{', '.join(tool_names)}")
+        msg = (f"Connected to MCP server '{name}'. "
+               f"Discovered {len(client.tools)} tools: "
+               f"{', '.join(tool_names)}")
+        self._record_attempt(name, True, msg)
+        return True, msg
 
     def connect_stdio(self, name: str, command: list[str],
                       *, env: dict | None = None,
@@ -126,12 +152,98 @@ class MCPPool:
                 client.close()  # type: ignore[name-defined]
             except Exception:
                 pass
+            self._record_attempt(name, False, str(e))
             return False, str(e)
         self._clients[name] = client
         tool_names = [t["name"] for t in client.tools]
-        return True, (f"Connected to MCP server '{name}' over stdio. "
-                      f"Discovered {len(client.tools)} tools: "
-                      f"{', '.join(tool_names)}")
+        msg = (f"Connected to MCP server '{name}' over stdio. "
+               f"Discovered {len(client.tools)} tools: "
+               f"{', '.join(tool_names)}")
+        self._record_attempt(name, True, msg)
+        return True, msg
+
+    def connect_http(self, name: str, url: str, *,
+                     headers: dict | None = None) -> tuple[bool, str]:
+        """Connect to a remote MCP server using Streamable HTTP.
+
+        Returns ``(ok, message)``. Repeated calls with the same name are
+        no-op successes — same contract as :meth:`connect_stdio`.
+        """
+        if name in self._clients:
+            return True, f"MCP server '{name}' already connected"
+        from .http import HttpMCPClient, HttpMCPError
+        try:
+            client = HttpMCPClient(name, url, headers=headers)
+            client.startup()
+        except HttpMCPError as e:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            self._record_attempt(name, False, str(e))
+            return False, str(e)
+        self._clients[name] = client
+        tool_names = [t["name"] for t in client.tools]
+        msg = (f"Connected to MCP server '{name}' over http. "
+               f"Discovered {len(client.tools)} tools: "
+               f"{', '.join(tool_names)}")
+        self._record_attempt(name, True, msg)
+        return True, msg
+
+    def connect_sse(self, name: str, url: str, *,
+                    headers: dict | None = None) -> tuple[bool, str]:
+        """Connect to a remote MCP server using the legacy SSE transport."""
+        if name in self._clients:
+            return True, f"MCP server '{name}' already connected"
+        from .http import SseMCPClient, HttpMCPError
+        try:
+            client = SseMCPClient(name, url, headers=headers)
+            client.startup()
+        except HttpMCPError as e:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            self._record_attempt(name, False, str(e))
+            return False, str(e)
+        self._clients[name] = client
+        tool_names = [t["name"] for t in client.tools]
+        msg = (f"Connected to MCP server '{name}' over sse. "
+               f"Discovered {len(client.tools)} tools: "
+               f"{', '.join(tool_names)}")
+        self._record_attempt(name, True, msg)
+        return True, msg
+
+    def connect_from_spec(self, name: str, spec: dict) -> tuple[bool, str]:
+        """Dispatch by transport type.
+
+        ``spec`` is the unified shape produced by the plugin discovery
+        layer: ``{"type": "stdio"|"http"|"sse", ...}``. Unknown types
+        return ``(False, message)`` rather than raising so a single bad
+        entry can't abort the auto-connect loop in project assembly.
+        """
+        spec_type = (spec or {}).get("type", "stdio")
+        if spec_type == "stdio":
+            command = spec.get("command") or []
+            if not isinstance(command, list) or not command:
+                return False, (
+                    f"MCP server '{name}': stdio spec missing command list")
+            return self.connect_stdio(
+                name, command,
+                env=spec.get("env"),
+                cwd=spec.get("cwd"),
+            )
+        if spec_type == "http":
+            url = spec.get("url")
+            if not url:
+                return False, f"MCP server '{name}': http spec missing url"
+            return self.connect_http(name, url, headers=spec.get("headers"))
+        if spec_type == "sse":
+            url = spec.get("url")
+            if not url:
+                return False, f"MCP server '{name}': sse spec missing url"
+            return self.connect_sse(name, url, headers=spec.get("headers"))
+        return False, f"MCP server '{name}': unknown type {spec_type!r}"
 
     def disconnect(self, name: str) -> bool:
         return self._clients.pop(name, None) is not None
