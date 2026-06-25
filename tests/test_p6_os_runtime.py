@@ -342,3 +342,21 @@ def test_list_managed_returns_empty_on_error(monkeypatch):
     _mock_urlopen(monkeypatch,
         lambda req: (500, b'{"error":"down"}', {}))
     assert OpenSandboxRuntime(cfg).list_managed() == []
+
+
+# ── build_image ───────────────────────────────────────────────────────────
+
+def test_build_image_delegates_to_docker_runtime(monkeypatch, tmp_path):
+    """OpenSandbox consumes pre-built images; build_image delegates to
+    DockerRuntime so the existing imagebuild pipeline still works."""
+    from pathlib import Path
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    captured = []
+    monkeypatch.setattr(
+        "mini_cc.sandbox.runtime.DockerRuntime.build_image",
+        lambda self, tag, context_dir, dockerfile=None:
+            captured.append((tag, context_dir, dockerfile)))
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    OpenSandboxRuntime(cfg).build_image(
+        "mini_cc-sandbox:latest", Path(tmp_path), dockerfile=None)
+    assert captured == [("mini_cc-sandbox:latest", Path(tmp_path), None)]

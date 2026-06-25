@@ -154,6 +154,16 @@ class OpenSandboxRuntime:
                 for it in body.get("items", [])
                 if it.get("metadata", {}).get(_TID_KEY)]
 
+    def build_image(self, tag: str, context_dir, dockerfile=None) -> None:
+        """OpenSandbox consumes pre-built images, so building stays local.
+
+        Delegates to DockerRuntime so the existing imagebuild pipeline
+        (Dockerfile render + docker build) keeps working. This is what
+        ``cmd_sandbox_build_image`` and ServerRuntimeContext call when they
+        need to (re)build the sandbox image."""
+        from .runtime import DockerRuntime
+        DockerRuntime().build_image(tag, context_dir, dockerfile)
+
     def ensure_running(self, *, name: str, image: str,
                        mounts: list, network: str,
                        cpu_quota: str | None = None,
