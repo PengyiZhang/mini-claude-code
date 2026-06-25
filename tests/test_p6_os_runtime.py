@@ -229,3 +229,64 @@ def test_status_paused(monkeypatch):
             {"id":"sbx_a","status":{"state":"Paused"}}]}).encode(), {})
     _mock_urlopen(monkeypatch, responder)
     assert OpenSandboxRuntime(cfg).status("t1") == "paused"
+
+
+# ── exec ──────────────────────────────────────────────────────────────────
+
+def test_exec_returns_completed_process(monkeypatch):
+    """exec resolves execd endpoint, POSTs /command/run, parses SSE → CP."""
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k", execd_port=44772)
+    def responder(req: Request):
+        # 1) tid → sandbox lookup
+        if "metadata=" in req.full_url and req.method == "GET":
+            return (200, json.dumps({"items":[
+                {"id":"sbx_a","status":{"state":"Running"}}]}).encode(), {})
+        # 2) execd endpoint discovery
+        if "/endpoints/44772" in req.full_url:
+            return (200, json.dumps({
+                "endpoint":"osb-host/sandboxes/sbx_a/port/44772",
+                "headers":{"X-Sandbox-Token":"tok"}}).encode(), {})
+        return (404, b'{}', {})
+    _mock_urlopen(monkeypatch, responder)
+
+    sse_body = (
+        b'event: init\ndata: {"execution_id":"e1"}\n\n'
+        b'event: stdout\ndata: {"text":"hello\\n"}\n\n'
+        b'event: stderr\ndata: {"text":"warn\\n"}\n\n'
+        b'event: complete\ndata: {"exit_code":0}\n\n'
+    )
+    monkeypatch.setattr(
+        "mini_cc.sandbox.opensandbox_runtime._stream_sse",
+        lambda url, headers, body, timeout: sse_body)
+
+    cp = OpenSandboxRuntime(cfg).exec(
+        name="t1", workdir="/workspaces/p1",
+        command="echo hello", timeout=30, env={"FOO":"bar"})
+    assert isinstance(cp, subprocess.CompletedProcess)
+    assert cp.returncode == 0
+    assert cp.stdout == "hello\n"
+    assert cp.stderr == "warn\n"
+
+
+def test_exec_raises_when_no_sandbox(monkeypatch):
+    import pytest
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    from mini_cc.sandbox.runtime import RuntimeUnavailable
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    _mock_urlopen(monkeypatch,
+        lambda req: (200, b'{"items":[],"pagination":{}}', {}))
+    with pytest.raises(RuntimeUnavailable):
+        OpenSandboxRuntime(cfg).exec(
+            name="t1", workdir="/w", command="ls", timeout=10, env={})
+
+
+def test_parse_sse_output_basic():
+    from mini_cc.sandbox.opensandbox_runtime import _parse_sse_output
+    raw = (b'event: stdout\ndata: {"text":"line1\\n"}\n\n'
+           b'event: stdout\ndata: {"text":"line2\\n"}\n\n'
+           b'event: complete\ndata: {"exit_code":7}\n\n')
+    rc, out, err = _parse_sse_output(raw)
+    assert rc == 7
+    assert out == "line1\nline2\n"
+    assert err == ""

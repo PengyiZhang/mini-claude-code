@@ -101,6 +101,31 @@ class OpenSandboxRuntime:
         state = sb.get("status", {}).get("state", "Pending")
         return self._STATE_MAP.get(state, "missing")
 
+    def exec(self, *, name: str, workdir: str, command: str,
+             timeout: int, env: dict[str, str]) -> "subprocess.CompletedProcess":
+        """Run ``command`` inside the tid's sandbox; return CompletedProcess.
+
+        Three-step: resolve sandbox by tid → resolve execd endpoint → POST
+        /command/run with SSE, accumulate stdout/stderr/exit_code."""
+        import subprocess
+        sb = _find_by_tid(self.cfg, name)
+        if sb is None:
+            from .runtime import RuntimeUnavailable
+            raise RuntimeUnavailable(
+                f"no sandbox for tid={name}; call ensure_running first")
+        sid = sb["id"]
+        url, hdrs = _get_execd_endpoint(self.cfg, sid)
+        payload = json.dumps({
+            "command": command,
+            "working_directory": workdir or None,
+            "env": env or {},
+        }).encode()
+        raw = _stream_sse(url, hdrs, payload, timeout=timeout)
+        rc, out, err = _parse_sse_output(raw)
+        return subprocess.CompletedProcess(
+            args=["opensandbox", "exec", name, command],
+            returncode=rc, stdout=out, stderr=err)
+
     def ensure_running(self, *, name: str, image: str,
                        mounts: list, network: str,
                        cpu_quota: str | None = None,
@@ -204,3 +229,64 @@ def _build_volumes(mounts: list) -> list:
                 "host": {"path": host},
             })
     return vols
+
+
+def _get_execd_endpoint(cfg: OpenSandboxConfig, sid: str) -> tuple[str, dict]:
+    """Resolve execd's public URL + auth headers via the lifecycle server.
+
+    Mirrors SDK behaviour (adapters/command_adapter.py:144): GET
+    /sandboxes/{id}/endpoints/{execd_port} returns the endpoint URL and
+    optional auth headers to forward on every execd call. URL host is
+    protocol-relative in the spec; we prepend ``http://`` if missing."""
+    status, body = _request(
+        cfg, "GET", f"/sandboxes/{sid}/endpoints/{cfg.execd_port}")
+    if status != 200:
+        from .runtime import RuntimeUnavailable
+        raise RuntimeUnavailable(
+            f"cannot resolve execd endpoint for {sid}: HTTP {status}")
+    host = body["endpoint"]
+    base = host if "://" in host else f"http://{host}"
+    return f"{base}/command/run", body.get("headers") or {}
+
+
+def _stream_sse(url: str, headers: dict, body: bytes, timeout: int) -> bytes:
+    """POST to ``url`` (execd /command/run) with SSE response; return raw
+    bytes so the caller can split events. urllib blocks until close, which
+    is fine — execd closes the stream on command completion."""
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    for k, v in headers.items():
+        req.add_header(k, v)
+    with urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def _parse_sse_output(raw: bytes) -> tuple[int, str, str]:
+    """Walk an SSE byte stream, accumulate stdout/stderr text + exit code.
+
+    Each event is two lines: ``event: <type>`` and ``data: <json>``. We
+    care about ``stdout`` / ``stderr`` (carry ``text``) and ``complete``
+    (carries ``exit_code``). Anything else is ignored."""
+    stdout, stderr = [], []
+    exit_code = 0
+    for raw_evt in raw.split(b"\n\n"):
+        event_type = None
+        data = b""
+        for line in raw_evt.split(b"\n"):
+            if line.startswith(b"event:"):
+                event_type = line[6:].strip().decode()
+            elif line.startswith(b"data:"):
+                data = line[5:].strip()
+        if not data:
+            continue
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if event_type == "stdout":
+            stdout.append(payload.get("text", ""))
+        elif event_type == "stderr":
+            stderr.append(payload.get("text", ""))
+        elif event_type == "complete":
+            exit_code = int(payload.get("exit_code", 0))
+    return exit_code, "".join(stdout), "".join(stderr)
