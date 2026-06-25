@@ -92,14 +92,27 @@ class DockerRuntime:
                 "--name", name,
                 "--restart=unless-stopped",
                 f"--network={network}")
-        for host, container, options in mounts:
-            # When docker lives inside WSL, a Windows host path must be
-            # its /mnt/<drive>/... view or the bind mount silently fails.
-            from .osdetect import to_wsl_path
-            host_arg = to_wsl_path(host) if self._prefix else host
-            spec = f"{host_arg}:{container}"
-            if options:
-                spec += f":{options}"
+        from .config import HostMount, MountSpec
+        from .osdetect import to_wsl_path
+        for mount in mounts:
+            if isinstance(mount, MountSpec):
+                if not isinstance(mount.backend, HostMount):
+                    raise ValueError(
+                        f"DockerRuntime only supports HostMount, "
+                        f"got {type(mount.backend).__name__}")
+                host_arg = (to_wsl_path(mount.backend.path)
+                            if self._prefix else mount.backend.path)
+                spec = f"{host_arg}:{mount.mount_path}"
+                if mount.read_only:
+                    spec += ":ro"
+            else:  # legacy tuple (host, container, options)
+                host, container, options = mount
+                # When docker lives inside WSL, a Windows host path must be
+                # its /mnt/<drive>/... view or the bind mount silently fails.
+                host_arg = to_wsl_path(host) if self._prefix else host
+                spec = f"{host_arg}:{container}"
+                if options:
+                    spec += f":{options}"
             argv += ["-v", spec]
         if cpu_quota:
             argv += [f"--cpus={cpu_quota}"]
