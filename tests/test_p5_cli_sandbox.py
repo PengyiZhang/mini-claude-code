@@ -15,10 +15,14 @@ def _native_probe(monkeypatch):
     """The CLI subcommands call probe_docker() to pick up a WSL argv
     prefix. On a dev machine that actually has WSL2 the probe would
     return ("wsl",) and break these argv-shape assertions. Pin it to a
-    native probe so the tests stay platform-independent."""
+    native probe so the tests stay platform-independent. Also un-set any
+    OPEN_SANDBOX_* env so _get_sandbox_runtime() takes the docker path."""
     monkeypatch.setattr(
         "mini_cc.sandbox.osdetect.probe_docker",
         lambda **kw: DockerAvailability(available=True, argv_prefix=()))
+    monkeypatch.delenv("OPEN_SANDBOX_DOMAIN", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_API_KEY", raising=False)
+    monkeypatch.delenv("MINI_CC_SANDBOX_BACKEND", raising=False)
 
 
 def test_build_image_invokes_docker(monkeypatch, tmp_path):

@@ -68,3 +68,29 @@ def test_build_runtime_returns_none_when_nothing_available(monkeypatch):
         lambda **kw: type("A", (), {"available": False, "argv_prefix": ()})())
     rt = ServerRuntimeContext._build_runtime(_bare_ctx())
     assert rt is None
+
+
+# ── CLI sandbox commands pick the right backend ───────────────────────────
+
+def test_cli_get_sandbox_runtime_uses_opensandbox_when_env_set(monkeypatch):
+    """OPEN_SANDBOX_* env + reachable server → returns OpenSandboxRuntime."""
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    from mini_cc.server.cli import _get_sandbox_runtime
+    monkeypatch.setenv("OPEN_SANDBOX_DOMAIN", "osb:8080")
+    monkeypatch.setattr(
+        "mini_cc.sandbox.opensandbox_runtime.OpenSandboxRuntime.is_available",
+        lambda self: True)
+    rt = _get_sandbox_runtime()
+    assert isinstance(rt, OpenSandboxRuntime)
+
+
+def test_cli_get_sandbox_runtime_falls_back_to_docker(monkeypatch):
+    """No opensandbox env → straight to DockerRuntime."""
+    from mini_cc.sandbox.runtime import DockerRuntime
+    from mini_cc.server.cli import _get_sandbox_runtime
+    monkeypatch.delenv("OPEN_SANDBOX_DOMAIN", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_API_KEY", raising=False)
+    monkeypatch.setattr("mini_cc.sandbox.osdetect.probe_docker",
+        lambda **kw: type("A", (), {"available": True, "argv_prefix": ()})())
+    rt = _get_sandbox_runtime()
+    assert isinstance(rt, DockerRuntime)

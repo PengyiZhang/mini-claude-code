@@ -220,19 +220,44 @@ def cmd_sandbox_build_image(args) -> int:
     return 0
 
 
-def cmd_sandbox_status(args) -> int:
-    """python -m mini_cc.server sandbox status [--tid TID]"""
+def _get_sandbox_runtime():
+    """Pick a runtime instance for ``sandbox status/stop`` CLI commands.
+
+    Mirrors ServerRuntimeContext._build_runtime's three-tier fallback:
+    opensandbox (if env configured) → docker → None. The CLI uses this
+    instead of hardcoding DockerRuntime so it stays consistent with the
+    running server's backend choice."""
+    import os
+    if os.environ.get("OPEN_SANDBOX_DOMAIN") \
+            or os.environ.get("OPEN_SANDBOX_API_KEY"):
+        try:
+            from ..sandbox.opensandbox_runtime import (
+                OpenSandboxConfig, OpenSandboxRuntime)
+            rt = OpenSandboxRuntime(OpenSandboxConfig.from_env())
+            if rt.is_available():
+                return rt
+        except Exception:
+            pass
     from ..sandbox.osdetect import probe_docker
     from ..sandbox.runtime import DockerRuntime
-    rt = DockerRuntime(prefix=probe_docker(force=True).argv_prefix)
+    return DockerRuntime(prefix=probe_docker(force=True).argv_prefix)
+
+
+def cmd_sandbox_status(args) -> int:
+    """python -m mini_cc.server sandbox status [--tid TID]"""
+    rt = _get_sandbox_runtime()
     if not rt.is_available():
-        print("docker unavailable", file=sys.stderr)
+        print("no container backend available", file=sys.stderr)
         return 1
     names = rt.list_managed()
     if args.tenant_id:
+        # OpenSandboxRuntime.list_managed returns tids directly;
+        # DockerRuntime returns container names like ``mini_cc-<tid>``.
+        # Filter loosely so both shapes work.
+        wanted_tid = args.tenant_id
         from ..sandbox.manager import _container_name
-        wanted = _container_name(args.tenant_id)
-        names = [n for n in names if n == wanted]
+        wanted_name = _container_name(args.tenant_id)
+        names = [n for n in names if n == wanted_tid or n == wanted_name]
     for n in names:
         st = rt.status(n)
         print(f"{n}\t{st}")
@@ -241,14 +266,16 @@ def cmd_sandbox_status(args) -> int:
 
 def cmd_sandbox_stop(args) -> int:
     """python -m mini_cc.server sandbox stop TID"""
-    from ..sandbox.osdetect import probe_docker
-    from ..sandbox.runtime import DockerRuntime
     from ..sandbox.manager import _container_name
-    rt = DockerRuntime(prefix=probe_docker(force=True).argv_prefix)
-    name = _container_name(args.tenant_id)
+    rt = _get_sandbox_runtime()
+    # OpenSandboxRuntime takes tid directly; DockerRuntime wants the
+    # ``mini_cc-<tid>`` container name. Pass both and let the runtime
+    # decide (status/stop are idempotent and tolerant of unknown names).
+    candidates = [args.tenant_id, _container_name(args.tenant_id)]
     try:
-        rt.stop(name)
-        rt.remove(name)
+        for name in candidates:
+            rt.stop(name)
+            rt.remove(name)
     except Exception as exc:
         print(f"stop failed: {exc}", file=sys.stderr)
         return 1
