@@ -34,7 +34,8 @@ def test_ensure_running_invokes_runtime_with_expected_args():
     mgr.ensure_running()
     assert len(rt.calls) == 1
     method, kwargs = rt.calls[0]
-    assert kwargs["name"] == "mini_cc-t1"
+    # tid passed as logical identity; runtime synthesizes docker name.
+    assert kwargs["name"] == "t1"
     assert kwargs["image"] == "img:v1"
     assert kwargs["network"] == "none"
     mounts = kwargs["mounts"]

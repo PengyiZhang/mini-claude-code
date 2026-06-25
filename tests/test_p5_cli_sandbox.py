@@ -58,8 +58,9 @@ def test_status_shows_managed_containers(monkeypatch, capsys):
     rc = cmd_sandbox_status(args)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "mini_cc-t1" in out
-    assert "mini_cc-t2" in out
+    # list_managed returns tids (strips mini_cc- prefix); CLI prints them.
+    assert "t1\t" in out
+    assert "t2\t" in out
 
 
 def test_status_filters_by_tenant(monkeypatch, capsys):
@@ -81,8 +82,9 @@ def test_status_filters_by_tenant(monkeypatch, capsys):
     rc = cmd_sandbox_status(args)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "mini_cc-t1" in out
-    assert "mini_cc-t2" not in out
+    # list_managed returns tids; filter keeps only t1.
+    assert "t1\t" in out
+    assert "t2\t" not in out
 
 
 def test_stop_with_tenant_id(monkeypatch):

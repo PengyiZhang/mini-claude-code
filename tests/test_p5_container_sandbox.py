@@ -55,7 +55,8 @@ def test_execute_second_call_reuses_container(sandbox):
     assert len(exec_calls) == 2
     # Container started exactly once: after first ensure_running, the
     # FakeRuntime _statuses entry exists and is 'running' throughout.
-    assert rt._statuses.get("mini_cc-t1") == "running"
+    # Keyed by tid now (manager passes tid, not pre-sanitized name).
+    assert rt._statuses.get("t1") == "running"
     # All ensure_running calls are no-ops at the docker level once running
     # (DockerRuntime short-circuits via status check); we verify the
     # manager doesn't refuse to call exec twice.

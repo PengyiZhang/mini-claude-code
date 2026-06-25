@@ -6,9 +6,16 @@ Two implementations:
 
 The Protocol is narrow: ensure_running, exec, status, stop, remove,
 list_managed, is_available, build_image (delegated to imagebuild).
+
+Name semantics: the ``name`` arg is the *logical identity* (tenant id).
+Each runtime decides how to use it: DockerRuntime synthesizes a
+DNS-safe ``mini_cc-<sanitized>`` container name; OpenSandboxRuntime
+indexes via metadata ``mini-cc-tid=<tid>``. Callers should never
+pre-sanitize.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +24,27 @@ from typing import Protocol
 
 class RuntimeUnavailable(RuntimeError):
     """Raised when a runtime call is made against an unavailable backend."""
+
+
+_DOCKER_PREFIX = "mini_cc-"
+_DOCKER_MAX_NAME = 63  # Docker container name limit
+
+
+def _docker_name_from_tid(tid: str) -> str:
+    """Synthesize a valid Docker container name from a tenant id.
+
+    Docker names: ``[A-Za-z0-9][A-Za-z0-9_.-]*``. We replace anything
+    outside that class with ``_`` and clip to 63 chars (keeping the
+    ``mini_cc-`` prefix)."""
+    if not tid:
+        raise ValueError("tid must be non-empty")
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]", "_", tid)
+    if not sanitized or sanitized[0] in ".-":
+        sanitized = "t_" + sanitized
+    name = _DOCKER_PREFIX + sanitized
+    if len(name) > _DOCKER_MAX_NAME:
+        name = _DOCKER_PREFIX + sanitized[-(_DOCKER_MAX_NAME - len(_DOCKER_PREFIX)):]
+    return name
 
 
 class ContainerRuntime(Protocol):
@@ -69,9 +97,11 @@ class DockerRuntime:
         return cp.returncode == 0
 
     def status(self, name: str) -> str:
-        """One of 'running', 'exited', 'missing'."""
+        """One of 'running', 'exited', 'missing'. ``name`` is the tid;
+        the docker container name is synthesized internally."""
+        docker_name = _docker_name_from_tid(name)
         cp = subprocess.run(
-            self._argv("inspect", "--format", "{{.State.Status}}", name),
+            self._argv("inspect", "--format", "{{.State.Status}}", docker_name),
             capture_output=True, text=True, timeout=10)
         if cp.returncode != 0:
             return "missing"
@@ -81,15 +111,16 @@ class DockerRuntime:
                        mounts: list[tuple[str, str, str]],
                        network: str, cpu_quota: str | None = None,
                        memory_limit: str | None = None) -> None:
+        docker_name = _docker_name_from_tid(name)
         st = self.status(name)
         if st == "running":
             return
         if st == "exited":
-            subprocess.run(self._argv("start", name),
+            subprocess.run(self._argv("start", docker_name),
                            capture_output=True, text=True, timeout=30)
             return
         argv = self._argv("run", "-d",
-                "--name", name,
+                "--name", docker_name,
                 "--restart=unless-stopped",
                 f"--network={network}")
         from .config import HostMount, MountSpec
@@ -124,31 +155,41 @@ class DockerRuntime:
 
     def exec(self, *, name: str, workdir: str, command: str,
              timeout: int, env: dict[str, str]) -> subprocess.CompletedProcess:
+        docker_name = _docker_name_from_tid(name)
         argv = self._argv("exec")
         if workdir:
             argv += ["-w", workdir]
         for k, v in env.items():
             argv += ["-e", f"{k}={v}"]
-        argv += [name, "sh", "-c", command]
+        argv += [docker_name, "sh", "-c", command]
         return subprocess.run(argv, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout)
 
     def stop(self, name: str) -> None:
-        subprocess.run(self._argv("stop", name),
+        subprocess.run(self._argv("stop", _docker_name_from_tid(name)),
                        capture_output=True, text=True, timeout=30)
 
     def remove(self, name: str) -> None:
-        subprocess.run(self._argv("rm", "-f", name),
+        subprocess.run(self._argv("rm", "-f", _docker_name_from_tid(name)),
                        capture_output=True, text=True, timeout=30)
 
     def list_managed(self, prefix: str = "mini_cc-") -> list[str]:
+        """Return tids of managed containers (strips the ``mini_cc-`` prefix).
+
+        ``prefix`` is the docker-level container-name prefix; the return
+        value is the underlying tid. Matches OpenSandboxRuntime.list_managed
+        which returns tids directly via metadata."""
         cp = subprocess.run(
             self._argv("ps", "-a", "--format", "{{.Names}}"),
             capture_output=True, text=True, timeout=10)
         if cp.returncode != 0:
             return []
-        return [n.strip() for n in cp.stdout.splitlines()
-                if n.strip().startswith(prefix)]
+        out = []
+        for n in cp.stdout.splitlines():
+            n = n.strip()
+            if n.startswith(prefix):
+                out.append(n[len(prefix):])
+        return out
 
     def build_image(self, tag: str, context_dir: Path,
                     dockerfile: Path | None = None) -> None:

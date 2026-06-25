@@ -21,11 +21,11 @@ def test_fake_runtime_default_unavailable():
 
 def test_fake_runtime_records_run_call():
     rt = FakeRuntime(available=True)
-    rt.ensure_running(name="mini_cc-t1", image="img", mounts=[], network="none")
+    rt.ensure_running(name="t1", image="img", mounts=[], network="none")
     assert len(rt.calls) == 1
     method, kwargs = rt.calls[0]
     assert method == "ensure_running"
-    assert kwargs["name"] == "mini_cc-t1"
+    assert kwargs["name"] == "t1"
 
 
 def test_fake_runtime_status_running_skips_ensure():
@@ -69,7 +69,8 @@ def test_docker_runtime_run_command_shape(monkeypatch):
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="")
     monkeypatch.setattr(subprocess, "run", fake)
     rt = DockerRuntime()
-    rt.ensure_running(name="mini_cc-t1", image="img",
+    # Pass tid; DockerRuntime synthesizes the mini_cc-<tid> container name.
+    rt.ensure_running(name="t1", image="img",
                       mounts=[("/host/w", "/workspaces", "")],
                       network="none")
     run_calls = [c for c in captured if c[:2] == ["docker", "run"]]
@@ -82,7 +83,7 @@ def test_docker_runtime_run_command_shape(monkeypatch):
     assert "img" in argv
     assert "--name" in argv
     n_idx = argv.index("--name")
-    assert argv[n_idx + 1] == "mini_cc-t1"
+    assert argv[n_idx + 1] == "mini_cc-t1"  # synthesized from tid
 
 
 def test_docker_runtime_exec_command_shape(monkeypatch):
@@ -91,7 +92,7 @@ def test_docker_runtime_exec_command_shape(monkeypatch):
         lambda a, **kw: captured.append(a) or subprocess.CompletedProcess(
             args=a, returncode=0, stdout="ok"))
     rt = DockerRuntime()
-    rt.exec(name="mini_cc-t1", workdir="/workspaces/p1",
+    rt.exec(name="t1", workdir="/workspaces/p1",
             command="ls -la", timeout=30, env={"FOO": "bar"})
     exec_calls = [c for c in captured if c[:2] == ["docker", "exec"]]
     assert len(exec_calls) == 1
@@ -102,7 +103,7 @@ def test_docker_runtime_exec_command_shape(monkeypatch):
     assert "-e" in argv
     e_idx = argv.index("-e")
     assert argv[e_idx + 1] == "FOO=bar"
-    assert "mini_cc-t1" in argv
+    assert "mini_cc-t1" in argv  # synthesized from tid="t1"
     # Last 3 are `sh -c "ls -la"`
     assert argv[-3:] == ["sh", "-c", "ls -la"]
 
@@ -110,13 +111,13 @@ def test_docker_runtime_exec_command_shape(monkeypatch):
 def test_docker_runtime_status_returns_string(monkeypatch):
     monkeypatch.setattr(subprocess, "run",
         lambda a, **kw: subprocess.CompletedProcess(args=a, returncode=0, stdout="running\n"))
-    assert DockerRuntime().status("mini_cc-t1") == "running"
+    assert DockerRuntime().status("t1") == "running"
 
 
 def test_docker_runtime_status_missing(monkeypatch):
     monkeypatch.setattr(subprocess, "run",
         lambda a, **kw: subprocess.CompletedProcess(args=a, returncode=1, stderr="No such object"))
-    assert DockerRuntime().status("mini_cc-t1") == "missing"
+    assert DockerRuntime().status("t1") == "missing"
 
 
 def test_docker_runtime_stop_and_remove(monkeypatch):
@@ -124,19 +125,22 @@ def test_docker_runtime_stop_and_remove(monkeypatch):
     monkeypatch.setattr(subprocess, "run",
         lambda a, **kw: captured.append(a) or subprocess.CompletedProcess(args=a, returncode=0))
     rt = DockerRuntime()
-    rt.stop("mini_cc-t1")
-    rt.remove("mini_cc-t1")
+    rt.stop("t1")
+    rt.remove("t1")
+    # tid → mini_cc-<tid> synthesis happens internally
     assert ["docker", "stop", "mini_cc-t1"] in captured
     assert ["docker", "rm", "-f", "mini_cc-t1"] in captured
 
 
 def test_docker_runtime_list_managed(monkeypatch):
+    """list_managed returns tids (strips the mini_cc- prefix) so its
+    return value matches OpenSandboxRuntime's metadata-indexed output."""
     monkeypatch.setattr(subprocess, "run",
         lambda a, **kw: subprocess.CompletedProcess(args=a, returncode=0,
             stdout="mini_cc-t1\nmini_cc-t2\nother-container\n"))
     rt = DockerRuntime()
     names = rt.list_managed()
-    assert names == ["mini_cc-t1", "mini_cc-t2"]
+    assert names == ["t1", "t2"]
 
 
 # ── WSL prefix: Docker living inside a WSL2 distro ────────────────────────
@@ -149,7 +153,7 @@ def test_docker_runtime_wsl_prefix_prepended(monkeypatch):
             args=a, returncode=0, stdout="running\n"))
     rt = DockerRuntime(prefix=["wsl"])
     assert rt.prefix == ("wsl",)
-    rt.status("mini_cc-t1")
+    rt.status("t1")
     assert captured[-1][:3] == ["wsl", "docker", "inspect"]
 
 
@@ -162,7 +166,7 @@ def test_docker_runtime_wsl_translates_mount_paths(monkeypatch):
             args=a, returncode=0, stdout=""))
     rt = DockerRuntime(prefix=["wsl"])
     rt.ensure_running(
-        name="mini_cc-t1", image="img",
+        name="t1", image="img",
         mounts=[(r"E:\data\tenants\t1\projects", "/workspaces", "")],
         network="none")
     run_calls = [c for c in captured if c[:3] == ["wsl", "docker", "run"]]
@@ -182,7 +186,7 @@ def test_docker_runtime_native_does_not_translate_mounts(monkeypatch):
             args=a, returncode=0, stdout=""))
     rt = DockerRuntime()  # native
     rt.ensure_running(
-        name="mini_cc-t1", image="img",
+        name="t1", image="img",
         mounts=[(r"E:\data\proj", "/workspaces", "")],
         network="none")
     run_calls = [c for c in captured if c[:2] == ["docker", "run"]]

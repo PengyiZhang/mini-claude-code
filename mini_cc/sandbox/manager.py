@@ -1,9 +1,12 @@
 """Per-tenant container lifecycle. One TenantContainerManager per tenant id.
 
 Owns:
-- The sanitized container name (mini_cc-<sanitized_tid>, ≤63 chars).
+- Passing the tid (the logical identity) to the runtime. Each runtime
+  decides how to use it — DockerRuntime synthesizes ``mini_cc-<sanitized>``
+  for the docker CLI; OpenSandboxRuntime indexes by metadata.
 - Translating ContainerConfig → mount specs for ensure_running.
 - Forwarding exec() calls with workdir=/workspaces/<project_id>.
+- ``container_name`` attribute (display-only — kept for CLI/logs).
 
 Does NOT own:
 - Env filtering (caller's job; the Sandbox layer applies the policy).
@@ -12,33 +15,15 @@ Does NOT own:
 """
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 
 from .config import ContainerConfig
-from .runtime import ContainerRuntime
+from .runtime import ContainerRuntime, _docker_name_from_tid
 
-_PREFIX = "mini_cc-"
-_MAX_NAME = 63  # Docker container name limit
-
-
-def _container_name(tid: str) -> str:
-    """Sanitize tid to a valid Docker container name.
-
-    Docker names: [A-Za-z0-9][A-Za-z0-9_.-]*. We replace spaces and
-    path separators with _ (defensive — ProjectManager already validates
-    tid against [A-Za-z0-9_-]+ so most input is already clean).
-    """
-    if not tid:
-        raise ValueError("tid must be non-empty")
-    sanitized = re.sub(r"[^A-Za-z0-9_.-]", "_", tid)
-    if not sanitized or sanitized[0] in ".-":
-        sanitized = "t_" + sanitized
-    name = _PREFIX + sanitized
-    if len(name) > _MAX_NAME:
-        name = _PREFIX + sanitized[-(_MAX_NAME - len(_PREFIX)):]
-    return name
+# Backwards-compat alias. Older code imported ``_container_name`` from
+# this module; it's now ``_docker_name_from_tid`` in runtime.py.
+_container_name = _docker_name_from_tid
 
 
 class TenantContainerManager:
@@ -48,7 +33,9 @@ class TenantContainerManager:
         self.host_projects_dir = host_projects_dir
         self.config = config
         self.runtime = runtime
-        self.container_name = _container_name(tid)
+        # Display-only: the docker-style name when the runtime is
+        # DockerRuntime. Other runtimes (OpenSandbox) don't use it.
+        self.container_name = _docker_name_from_tid(tid)
 
     def _mounts(self) -> list[tuple[str, str, str]]:
         """The tenant projects dir is always mounted at /workspaces; any
@@ -60,7 +47,7 @@ class TenantContainerManager:
 
     def ensure_running(self) -> None:
         self.runtime.ensure_running(
-            name=self.container_name,
+            name=self.tid,
             image=self.config.image_tag,
             mounts=self._mounts(),
             network=self.config.network,
@@ -71,14 +58,14 @@ class TenantContainerManager:
              timeout: int, env: dict[str, str]) -> subprocess.CompletedProcess:
         self.ensure_running()
         return self.runtime.exec(
-            name=self.container_name,
+            name=self.tid,
             workdir=f"/workspaces/{project_id}",
             command=command,
             timeout=timeout,
             env=env)
 
     def stop(self) -> None:
-        self.runtime.stop(self.container_name)
+        self.runtime.stop(self.tid)
 
     def remove(self) -> None:
-        self.runtime.remove(self.container_name)
+        self.runtime.remove(self.tid)
