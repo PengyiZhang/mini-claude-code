@@ -137,3 +137,123 @@ the tenant layer entirely and was fixed in `cb5f25a`.
   long-running container per tenant — start-up cost amortised).
 - gVisor/Kata-style strong isolation. Docker default seccomp profile is
   what runs.
+
+---
+
+# OpenSandbox remote backend (P6)
+
+P6 adds a second container backend: an HTTP-driven
+[OpenSandbox](https://github.com/anthropics/opensandbox) lifecycle
+server. Where P5's `DockerRuntime` shells out to a local `docker`
+daemon, `OpenSandboxRuntime` talks to a remote FastAPI service that
+manages a fleet of sandboxes (Docker today, K8s planned).
+
+## When to use which
+
+| Need | Backend |
+|---|---|
+| Single dev machine, fast startup, no ops | `docker` (P5 default) |
+| Shared cluster, multi-tenant fleet, K8s scheduling | `opensandbox` |
+| Cross-region distributed runs | `opensandbox` |
+| Tight host bind-mounts (workspace on this host's disk) | `docker` |
+| Object storage / PVC mounts | `opensandbox` |
+
+Both backends honour the same `ContainerRuntime` Protocol, so the
+manager, sandbox layer, and CLI commands work unchanged.
+
+## Selection
+
+Three-tier fallback (first match wins):
+
+1. **Explicit:** `MINI_CC_SANDBOX_BACKEND=opensandbox|docker|auto`
+2. **Auto with env config:** if `OPEN_SANDBOX_DOMAIN` or
+   `OPEN_SANDBOX_API_KEY` is set, try opensandbox first.
+3. **Auto without env:** docker if available, else subprocess.
+
+```bash
+# .env
+MINI_CC_SANDBOX_BACKEND=auto          # auto-select
+OPEN_SANDBOX_DOMAIN=172.28.76.178:11123
+OPEN_SANDBOX_API_KEY=sk-opensandbox-...
+OPEN_SANDBOX_PROTOCOL=http            # default
+```
+
+If opensandbox is requested but unreachable, the server logs a warning
+and falls through to docker (so a misconfig doesn't brick the server).
+
+## Mount model
+
+`MountSpec` (Phase 2) is the backend-agnostic mount description:
+
+```python
+from mini_cc.sandbox.config import MountSpec, HostMount, PVCMount
+
+# Bind mount (DockerRuntime, OpenSandbox Docker provider)
+MountSpec(name="w", mount_path="/workspaces",
+         backend=HostMount(path="/host/p"))
+
+# Persistent volume claim (OpenSandbox K8s provider only)
+MountSpec(name="data", mount_path="/data",
+         backend=PVCMount(claim_name="t1-pvc", storage="5Gi"))
+
+# Read-only with sub-path
+MountSpec(name="cfg", mount_path="/etc/app",
+         backend=HostMount(path="/host/cfg"),
+         read_only=True, sub_path="prod")
+```
+
+| Backend | HostMount | PVCMount | OSSFSMount |
+|---|---|---|---|
+| `DockerRuntime` | ✅ | ❌ (raises ValueError) | ❌ |
+| `OpenSandboxRuntime` (Docker) | ✅ | ❌ | ❌ |
+| `OpenSandboxRuntime` (K8s) | ⚠️ host-path-in-pod, often wrong | ✅ | ✅ |
+
+When the runtime doesn't support a backend, it fails fast with a clear
+error rather than silently dropping the mount.
+
+## Code interpreter (stateful REPL)
+
+The `execute_code` tool (python) gains an optional OpenSandbox backend.
+When `MINI_CC_REPL_BACKEND=opensandbox` is set, python execution goes
+through execd's `/code/context` + `/code` endpoints — a Jupyter kernel
+session stays alive per context, so variables survive across calls.
+
+```bash
+MINI_CC_REPL_BACKEND=opensandbox    # opt-in; default is local pickle-wrapper
+```
+
+Falls back silently to the local path if the runtime isn't
+OpenSandbox-backed or the sandbox isn't running yet.
+
+## Optional MCP template
+
+For ad-hoc sandbox management (create/list/delete outside the agent's
+own tenant container), the OpenSandbox project ships an
+`opensandbox-mcp` server. mini_cc does **not** auto-provision it —
+copy the template into your project to enable:
+
+```bash
+cp mini_cc/sandbox/templates/opensandbox.mcp.json \
+   .mini_cc/.mcp.json
+# Edit env values, then restart the server
+```
+
+After restart, `/tools` will show `mcp__opensandbox__sandbox_create`
+and friends.
+
+**Trade-off:** the MCP path keeps sandbox state inside the MCP server
+process. Restart drops open handles. Use the main HTTP adapter
+(above) for per-tenant persistent containers; MCP is for exploratory
+or admin tasks.
+
+## What P6 deliberately omits
+
+- **gVisor/Kata/Firecracker**: spec supports `[secure_runtime]` config;
+  server-side concern, mini_cc doesn't expose the switch.
+- **Snapshot/restore**: spec-complete, but no current use case for
+  pausing tenant workspaces.
+- **LSP**: no native support in OpenSandbox (FS/exec/lifecycle only).
+  Code navigation is already covered by mini_cc's read/edit/grep/glob
+  tools. If needed later, run pyright/gopls in-sandbox and expose via
+  `sandbox_get_endpoint`.
+- **Multi-SDK languages**: Python is mini_cc's only host language.

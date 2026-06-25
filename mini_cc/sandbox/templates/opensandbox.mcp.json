@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "opensandbox": {
+      "type": "stdio",
+      "command": "opensandbox-mcp",
+      "args": [
+        "--api-key", "${OPEN_SANDBOX_API_KEY}",
+        "--domain", "${OPEN_SANDBOX_DOMAIN}",
+        "--protocol", "${OPEN_SANDBOX_PROTOCOL:-http}"
+      ],
+      "env": {
+        "OPEN_SANDBOX_API_KEY": "${OPEN_SANDBOX_API_KEY}",
+        "OPEN_SANDBOX_DOMAIN": "${OPEN_SANDBOX_DOMAIN}"
+      }
+    }
+  }
+}
