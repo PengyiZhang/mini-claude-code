@@ -177,3 +177,55 @@ def test_ensure_running_create_fails(monkeypatch):
         OpenSandboxRuntime(cfg).ensure_running(
             name="t1", image="python:3.11",
             mounts=[("/h","/workspaces","")], network="none")
+
+
+# ── status ────────────────────────────────────────────────────────────────
+
+def test_status_running(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    def responder(req):
+        if "metadata=" in req.full_url:
+            return (200, json.dumps({"items":[
+                {"id":"sbx_a","status":{"state":"Running"}}]}).encode(), {})
+        return (404, b'{}', {})
+    _mock_urlopen(monkeypatch, responder)
+    assert OpenSandboxRuntime(cfg).status("t1") == "running"
+
+
+def test_status_missing_when_no_sandbox(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    _mock_urlopen(monkeypatch,
+        lambda req: (200, b'{"items":[],"pagination":{}}', {}))
+    assert OpenSandboxRuntime(cfg).status("t1") == "missing"
+
+
+def test_status_terminated_maps_to_missing(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    def responder(req):
+        return (200, json.dumps({"items":[
+            {"id":"sbx_a","status":{"state":"Terminated"}}]}).encode(), {})
+    _mock_urlopen(monkeypatch, responder)
+    assert OpenSandboxRuntime(cfg).status("t1") == "missing"
+
+
+def test_status_failed_maps_to_missing(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    def responder(req):
+        return (200, json.dumps({"items":[
+            {"id":"sbx_a","status":{"state":"Failed"}}]}).encode(), {})
+    _mock_urlopen(monkeypatch, responder)
+    assert OpenSandboxRuntime(cfg).status("t1") == "missing"
+
+
+def test_status_paused(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    def responder(req):
+        return (200, json.dumps({"items":[
+            {"id":"sbx_a","status":{"state":"Paused"}}]}).encode(), {})
+    _mock_urlopen(monkeypatch, responder)
+    assert OpenSandboxRuntime(cfg).status("t1") == "paused"

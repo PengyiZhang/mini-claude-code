@@ -67,12 +67,39 @@ def _request(cfg: OpenSandboxConfig, method: str, path: str,
 class OpenSandboxRuntime:
     """ContainerRuntime Protocol implementation backed by OpenSandbox."""
 
+    # OpenSandbox state → mini_cc runtime status string.
+    # Terminated/Failed both map to "missing" so callers can treat the
+    # sandbox as gone (re-ensure_running will create a fresh one).
+    _STATE_MAP = {
+        "Pending": "pending",
+        "Running": "running",
+        "Paused": "paused",
+        "Pausing": "paused",
+        "Resuming": "running",
+        "Stopping": "exited",
+        "Terminated": "missing",
+        "Failed": "missing",
+    }
+
     def __init__(self, cfg: OpenSandboxConfig):
         self.cfg = cfg
 
     def is_available(self) -> bool:
         status, _ = _request(self.cfg, "GET", "/health", timeout=5)
         return status == 200
+
+    def status(self, name: str) -> str:
+        """Return mini_cc-style status string for the tid's sandbox.
+
+        Maps OpenSandbox lifecycle states onto the smaller vocabulary used
+        by DockerRuntime ('running' / 'paused' / 'missing' / etc.) so
+        callers (CLI status, ContainerSandbox) work unchanged. The list
+        response already carries status, so no follow-up GET."""
+        sb = _find_by_tid(self.cfg, name)
+        if sb is None:
+            return "missing"
+        state = sb.get("status", {}).get("state", "Pending")
+        return self._STATE_MAP.get(state, "missing")
 
     def ensure_running(self, *, name: str, image: str,
                        mounts: list, network: str,
@@ -86,9 +113,9 @@ class OpenSandboxRuntime:
         bind mounts since OpenSandbox Docker runtime mirrors that semantic.
         """
         tid = name
-        sid = _find_by_tid(self.cfg, tid)
-        if sid is not None:
-            return
+        existing = _find_by_tid(self.cfg, tid)
+        if existing is not None:
+            return  # already created for this tid
         body = {
             "image": {"uri": image},
             "entrypoint": ["tail", "-f", "/dev/null"],  # long-lived placeholder
@@ -122,14 +149,17 @@ class OpenSandboxRuntime:
 _TID_KEY = "mini-cc-tid"  # DNS-label compliant (no underscore)
 
 
-def _find_by_tid(cfg: OpenSandboxConfig, tid: str) -> str | None:
-    """GET /sandboxes filtered by metadata → first matching id, or None."""
+def _find_by_tid(cfg: OpenSandboxConfig, tid: str) -> dict | None:
+    """GET /sandboxes filtered by metadata → first matching sandbox dict.
+
+    Returns the full sandbox object (id + status + metadata) so callers
+    can read state without a follow-up GET."""
     qs = f"?metadata={_TID_KEY}%3D{tid}&pageSize=1"
     status, body = _request(cfg, "GET", f"/sandboxes{qs}")
     if status != 200:
         return None
     items = body.get("items") or []
-    return items[0]["id"] if items else None
+    return items[0] if items else None
 
 
 def _wait_running(cfg: OpenSandboxConfig, sid: str) -> None:
