@@ -225,6 +225,14 @@ MINI_CC_REPL_BACKEND=opensandbox    # opt-in; default is local pickle-wrapper
 Falls back silently to the local path if the runtime isn't
 OpenSandbox-backed or the sandbox isn't running yet.
 
+**Image requirement:** the sandbox image must have `jupyter` +
+`ipykernel` installed. `opensandbox/code-interpreter-base:latest` is
+the reference image (see
+[OpenSandbox sandboxes/code-interpreter/](https://github.com/anthropics/opensandbox/tree/main/sandboxes/code-interpreter)).
+A plain `python:3.11-slim` will hang on `/code/context` because execd
+waits for a Jupyter kernel that doesn't exist. The `/command` endpoint
+is unaffected — shell exec works on any image.
+
 ## Optional MCP template
 
 For ad-hoc sandbox management (create/list/delete outside the agent's
