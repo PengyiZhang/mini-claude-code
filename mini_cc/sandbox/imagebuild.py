@@ -70,16 +70,23 @@ def render_dockerfile(cfg: ContainerConfig) -> str:
     return "\n".join(head + layers + tail) + "\n"
 
 
-def build_image(tag: str, cfg: ContainerConfig) -> None:
+def build_image(tag: str, cfg: ContainerConfig, *,
+                prefix: tuple[str, ...] | list[str] = ()) -> None:
     """Write the rendered Dockerfile to the build context and invoke docker.
 
     When ``cfg.dockerfile_path`` is set, that file is used verbatim as
     the ``-f`` argument (no copy). Otherwise the rendered Dockerfile is
     written to ``Dockerfile.rendered`` in the context dir.
 
+    ``prefix`` is prepended to the ``docker build`` call (e.g.
+    ``("wsl",)`` when docker lives inside a WSL2 distro). The build
+    context + dockerfile paths are translated to their WSL ``/mnt/``
+    view in that case so the in-WSL daemon can read them.
+
     Raises ImageBuildError on non-zero exit. Caller decides whether to
     fail the request or degrade.
     """
+    from .osdetect import docker_argv, to_wsl_path
     ctx = _context_dir()
     if cfg.dockerfile_path:
         # User owns the image; point -f straight at their file.
@@ -89,7 +96,15 @@ def build_image(tag: str, cfg: ContainerConfig) -> None:
         out_path = ctx / "Dockerfile.rendered"
         out_path.write_text(dockerfile_text, encoding="utf-8")
         dockerfile_arg = str(out_path)
-    args = ["docker", "build", "-t", tag, "-f", dockerfile_arg, str(ctx)]
+    # When docker runs inside WSL it can only see the Windows filesystem
+    # through /mnt/<drive>/... — translate both the context and the
+    # Dockerfile path so the build actually finds them.
+    if prefix:
+        dockerfile_arg = to_wsl_path(dockerfile_arg)
+        ctx_arg = to_wsl_path(str(ctx))
+    else:
+        ctx_arg = str(ctx)
+    args = docker_argv(prefix, "build", "-t", tag, "-f", dockerfile_arg, ctx_arg)
     cp = subprocess.run(args, capture_output=True, text=True, timeout=600)
     if cp.returncode != 0:
         raise ImageBuildError(

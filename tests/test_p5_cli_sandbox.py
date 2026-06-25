@@ -5,8 +5,20 @@ import subprocess
 
 import pytest
 
+from mini_cc.sandbox.osdetect import DockerAvailability
 from mini_cc.server.cli import (
     cmd_sandbox_build_image, cmd_sandbox_status, cmd_sandbox_stop)
+
+
+@pytest.fixture(autouse=True)
+def _native_probe(monkeypatch):
+    """The CLI subcommands call probe_docker() to pick up a WSL argv
+    prefix. On a dev machine that actually has WSL2 the probe would
+    return ("wsl",) and break these argv-shape assertions. Pin it to a
+    native probe so the tests stay platform-independent."""
+    monkeypatch.setattr(
+        "mini_cc.sandbox.osdetect.probe_docker",
+        lambda **kw: DockerAvailability(available=True, argv_prefix=()))
 
 
 def test_build_image_invokes_docker(monkeypatch, tmp_path):

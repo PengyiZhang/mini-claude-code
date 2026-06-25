@@ -137,3 +137,56 @@ def test_docker_runtime_list_managed(monkeypatch):
     rt = DockerRuntime()
     names = rt.list_managed()
     assert names == ["mini_cc-t1", "mini_cc-t2"]
+
+
+# ── WSL prefix: Docker living inside a WSL2 distro ────────────────────────
+
+def test_docker_runtime_wsl_prefix_prepended(monkeypatch):
+    """prefix=("wsl",) → every call becomes ``wsl docker ...``."""
+    captured = []
+    monkeypatch.setattr(subprocess, "run",
+        lambda a, **kw: captured.append(a) or subprocess.CompletedProcess(
+            args=a, returncode=0, stdout="running\n"))
+    rt = DockerRuntime(prefix=["wsl"])
+    assert rt.prefix == ("wsl",)
+    rt.status("mini_cc-t1")
+    assert captured[-1][:3] == ["wsl", "docker", "inspect"]
+
+
+def test_docker_runtime_wsl_translates_mount_paths(monkeypatch):
+    """A Windows host mount source must become its /mnt/<drive>/... view
+    when docker runs inside WSL, or the bind mount silently fails."""
+    captured = []
+    monkeypatch.setattr(subprocess, "run",
+        lambda a, **kw: captured.append(a) or subprocess.CompletedProcess(
+            args=a, returncode=0, stdout=""))
+    rt = DockerRuntime(prefix=["wsl"])
+    rt.ensure_running(
+        name="mini_cc-t1", image="img",
+        mounts=[(r"E:\data\tenants\t1\projects", "/workspaces", "")],
+        network="none")
+    run_calls = [c for c in captured if c[:3] == ["wsl", "docker", "run"]]
+    assert len(run_calls) == 1
+    argv = run_calls[0]
+    v_idx = argv.index("-v")
+    # Host side translated to the WSL view; container side unchanged.
+    assert argv[v_idx + 1] == "/mnt/e/data/tenants/t1/projects:/workspaces"
+
+
+def test_docker_runtime_native_does_not_translate_mounts(monkeypatch):
+    """prefix=() (Docker Desktop native) leaves Windows paths alone —
+    Docker Desktop does its own path translation."""
+    captured = []
+    monkeypatch.setattr(subprocess, "run",
+        lambda a, **kw: captured.append(a) or subprocess.CompletedProcess(
+            args=a, returncode=0, stdout=""))
+    rt = DockerRuntime()  # native
+    rt.ensure_running(
+        name="mini_cc-t1", image="img",
+        mounts=[(r"E:\data\proj", "/workspaces", "")],
+        network="none")
+    run_calls = [c for c in captured if c[:2] == ["docker", "run"]]
+    argv = run_calls[0]
+    v_idx = argv.index("-v")
+    assert argv[v_idx + 1] == r"E:\data\proj:/workspaces"
+

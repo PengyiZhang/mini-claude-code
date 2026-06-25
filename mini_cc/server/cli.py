@@ -192,14 +192,18 @@ def cmd_revoke(args) -> int:
 
 def cmd_sandbox_build_image(args) -> int:
     """python -m mini_cc.server sandbox build-image [--tag T] [--dockerfile P]"""
+    from ..sandbox.osdetect import probe_docker
     from ..sandbox.imagebuild import build_image
     from ..sandbox.config import ContainerConfig
     cfg = ContainerConfig(
         image_tag=args.tag,
         dockerfile_path=args.dockerfile,
     )
+    # Probe the argv_prefix so ``wsl docker build`` is used when Docker
+    # lives inside a WSL2 distro on Windows.
+    prefix = probe_docker(force=True).argv_prefix
     try:
-        build_image(args.tag, cfg)
+        build_image(args.tag, cfg, prefix=prefix)
     except Exception as exc:
         print(f"build failed: {exc}", file=sys.stderr)
         return 1
@@ -209,8 +213,9 @@ def cmd_sandbox_build_image(args) -> int:
 
 def cmd_sandbox_status(args) -> int:
     """python -m mini_cc.server sandbox status [--tid TID]"""
+    from ..sandbox.osdetect import probe_docker
     from ..sandbox.runtime import DockerRuntime
-    rt = DockerRuntime()
+    rt = DockerRuntime(prefix=probe_docker(force=True).argv_prefix)
     if not rt.is_available():
         print("docker unavailable", file=sys.stderr)
         return 1
@@ -227,9 +232,10 @@ def cmd_sandbox_status(args) -> int:
 
 def cmd_sandbox_stop(args) -> int:
     """python -m mini_cc.server sandbox stop TID"""
+    from ..sandbox.osdetect import probe_docker
     from ..sandbox.runtime import DockerRuntime
     from ..sandbox.manager import _container_name
-    rt = DockerRuntime()
+    rt = DockerRuntime(prefix=probe_docker(force=True).argv_prefix)
     name = _container_name(args.tenant_id)
     try:
         rt.stop(name)

@@ -38,12 +38,31 @@ class ContainerRuntime(Protocol):
 # ── DockerRuntime ─────────────────────────────────────────────────────────
 
 class DockerRuntime:
-    """All docker calls go through subprocess.run. No SDK dep."""
+    """All docker calls go through subprocess.run. No SDK dep.
+
+    ``prefix`` is prepended to every ``docker`` invocation so Docker
+    living inside a WSL2 distro is reachable as ``["wsl", "docker",
+    ...]``. Default ``()`` = native docker on PATH. The runtime does
+    NOT auto-probe — callers that know the platform (ServerRuntimeContext,
+    the CLI sandbox commands) pass the probed prefix in, which keeps
+    ``DockerRuntime()`` deterministic for tests.
+    """
+
+    def __init__(self, prefix: tuple[str, ...] | list[str] = ()):
+        self._prefix = tuple(prefix)
+
+    @property
+    def prefix(self) -> tuple[str, ...]:
+        return self._prefix
+
+    def _argv(self, *parts: str) -> list[str]:
+        from .osdetect import docker_argv
+        return docker_argv(self._prefix, *parts)
 
     def is_available(self) -> bool:
         try:
             cp = subprocess.run(
-                ["docker", "info", "--format", "{{.ServerVersion}}"],
+                self._argv("info", "--format", "{{.ServerVersion}}"),
                 capture_output=True, text=True, timeout=10)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
@@ -52,7 +71,7 @@ class DockerRuntime:
     def status(self, name: str) -> str:
         """One of 'running', 'exited', 'missing'."""
         cp = subprocess.run(
-            ["docker", "inspect", "--format", "{{.State.Status}}", name],
+            self._argv("inspect", "--format", "{{.State.Status}}", name),
             capture_output=True, text=True, timeout=10)
         if cp.returncode != 0:
             return "missing"
@@ -66,15 +85,19 @@ class DockerRuntime:
         if st == "running":
             return
         if st == "exited":
-            subprocess.run(["docker", "start", name],
+            subprocess.run(self._argv("start", name),
                            capture_output=True, text=True, timeout=30)
             return
-        argv = ["docker", "run", "-d",
+        argv = self._argv("run", "-d",
                 "--name", name,
                 "--restart=unless-stopped",
-                f"--network={network}"]
+                f"--network={network}")
         for host, container, options in mounts:
-            spec = f"{host}:{container}"
+            # When docker lives inside WSL, a Windows host path must be
+            # its /mnt/<drive>/... view or the bind mount silently fails.
+            from .osdetect import to_wsl_path
+            host_arg = to_wsl_path(host) if self._prefix else host
+            spec = f"{host_arg}:{container}"
             if options:
                 spec += f":{options}"
             argv += ["-v", spec]
@@ -88,7 +111,7 @@ class DockerRuntime:
 
     def exec(self, *, name: str, workdir: str, command: str,
              timeout: int, env: dict[str, str]) -> subprocess.CompletedProcess:
-        argv = ["docker", "exec"]
+        argv = self._argv("exec")
         if workdir:
             argv += ["-w", workdir]
         for k, v in env.items():
@@ -98,16 +121,16 @@ class DockerRuntime:
                               encoding="utf-8", errors="replace", timeout=timeout)
 
     def stop(self, name: str) -> None:
-        subprocess.run(["docker", "stop", name],
+        subprocess.run(self._argv("stop", name),
                        capture_output=True, text=True, timeout=30)
 
     def remove(self, name: str) -> None:
-        subprocess.run(["docker", "rm", "-f", name],
+        subprocess.run(self._argv("rm", "-f", name),
                        capture_output=True, text=True, timeout=30)
 
     def list_managed(self, prefix: str = "mini_cc-") -> list[str]:
         cp = subprocess.run(
-            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            self._argv("ps", "-a", "--format", "{{.Names}}"),
             capture_output=True, text=True, timeout=10)
         if cp.returncode != 0:
             return []
@@ -121,7 +144,7 @@ class DockerRuntime:
         cfg = ContainerConfig(
             image_tag=tag,
             dockerfile_path=str(dockerfile) if dockerfile else None)
-        build_image(tag, cfg)
+        build_image(tag, cfg, prefix=self._prefix)
 
 
 # ── FakeRuntime (test double) ──────────────────────────────────────────────

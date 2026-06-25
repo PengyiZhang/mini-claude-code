@@ -41,7 +41,12 @@ class ServerRuntimeContext:
 
     def __post_init__(self):
         if self._runtime is None:
-            self._runtime = DockerRuntime()
+            # Use the probed argv_prefix so Docker-inside-WSL2 is reached
+            # via ``wsl docker ...`` on Windows. The probe is cached, so
+            # this is one real subprocess call at boot.
+            from ..sandbox.osdetect import probe_docker
+            avail = probe_docker()
+            self._runtime = DockerRuntime(prefix=avail.argv_prefix)
         else:
             # Caller (CLI or test) supplied a runtime; honor docker_available
             # as the source of truth for the degrade decision so tests can
