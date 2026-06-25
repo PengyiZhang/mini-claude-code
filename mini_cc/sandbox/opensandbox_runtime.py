@@ -126,6 +126,34 @@ class OpenSandboxRuntime:
             args=["opensandbox", "exec", name, command],
             returncode=rc, stdout=out, stderr=err)
 
+    def stop(self, name: str) -> None:
+        """Idempotent stop: DELETE the tid's sandbox if it exists."""
+        sb = _find_by_tid(self.cfg, name)
+        if sb is not None:
+            _request(self.cfg, "DELETE", f"/sandboxes/{sb['id']}")
+
+    def remove(self, name: str) -> None:
+        """Idempotent remove — same as stop in OpenSandbox (no separate
+        stopped-but-not-removed state; DELETE schedules termination)."""
+        sb = _find_by_tid(self.cfg, name)
+        if sb is not None:
+            _request(self.cfg, "DELETE", f"/sandboxes/{sb['id']}")
+
+    def list_managed(self, prefix: str = "mini_cc-") -> list[str]:
+        """Return tids of all sandboxes managed by mini_cc.
+
+        ``prefix`` arg is accepted for Protocol compat with DockerRuntime
+        but ignored: OpenSandbox sandboxes are filtered by the
+        ``managed-by=mini-cc`` metadata field, not by container-name prefix.
+        """
+        qs = "?metadata=managed-by%3Dmini-cc&pageSize=200"
+        status, body = _request(self.cfg, "GET", f"/sandboxes{qs}")
+        if status != 200:
+            return []
+        return [it.get("metadata", {}).get(_TID_KEY, "")
+                for it in body.get("items", [])
+                if it.get("metadata", {}).get(_TID_KEY)]
+
     def ensure_running(self, *, name: str, image: str,
                        mounts: list, network: str,
                        cpu_quota: str | None = None,

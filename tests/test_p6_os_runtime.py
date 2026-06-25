@@ -290,3 +290,55 @@ def test_parse_sse_output_basic():
     assert rc == 7
     assert out == "line1\nline2\n"
     assert err == ""
+
+
+# ── stop / remove / list_managed ──────────────────────────────────────────
+
+def test_stop_calls_delete(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    deleted = []
+    def responder(req):
+        if "metadata=" in req.full_url and req.method == "GET":
+            return (200, json.dumps({"items":[{"id":"sbx_a"}]}).encode(), {})
+        if req.method == "DELETE":
+            deleted.append(req.full_url)
+            return (204, b'', {})
+        return (404, b'{}', {})
+    _mock_urlopen(monkeypatch, responder)
+    OpenSandboxRuntime(cfg).stop("t1")
+    assert any("/sandboxes/sbx_a" in u for u in deleted)
+
+
+def test_remove_idempotent_when_missing(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    _mock_urlopen(monkeypatch,
+        lambda req: (200, b'{"items":[]}', {}))
+    # No exception
+    OpenSandboxRuntime(cfg).remove("never-existed")
+
+
+def test_list_managed_filters_by_managed_by(monkeypatch):
+    """list_managed uses managed-by=mini-cc metadata filter, returns tids."""
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    def responder(req):
+        # Verify the call actually filters
+        assert "managed-by%3Dmini-cc" in req.full_url
+        return (200, json.dumps({"items":[
+            {"metadata":{"mini-cc-tid":"t1"}},
+            {"metadata":{"mini-cc-tid":"t2"}},
+            {"metadata":{}},  # legacy entry, no tid → skipped
+        ]}).encode(), {})
+    _mock_urlopen(monkeypatch, responder)
+    names = OpenSandboxRuntime(cfg).list_managed()
+    assert sorted(names) == ["t1", "t2"]
+
+
+def test_list_managed_returns_empty_on_error(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    _mock_urlopen(monkeypatch,
+        lambda req: (500, b'{"error":"down"}', {}))
+    assert OpenSandboxRuntime(cfg).list_managed() == []
