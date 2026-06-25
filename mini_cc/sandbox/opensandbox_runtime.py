@@ -32,6 +32,16 @@ class OpenSandboxConfig:
     poll_interval: float = 0.5
     ready_timeout: int = 60     # 等待 Pending → Running 的最长时间
 
+    @property
+    def root_url(self) -> str:
+        """``base_url`` without the ``/v1`` suffix — for ``/health`` etc.
+
+        OpenSandbox's health endpoint lives at the server root, not under
+        ``/v1``. Strip our own suffix rather than re-deriving from env so
+        callers who construct a literal ``base_url`` still work."""
+        return self.base_url[:-3] if self.base_url.endswith("/v1") \
+            else self.base_url
+
     @classmethod
     def from_env(cls) -> "OpenSandboxConfig":
         proto = os.environ.get("OPEN_SANDBOX_PROTOCOL", "http")
@@ -47,8 +57,12 @@ def _request(cfg: OpenSandboxConfig, method: str, path: str,
              ) -> tuple[int, dict]:
     """Issue an HTTP request against the lifecycle server. Returns
     (status, parsed_json). On connection error returns (-1, {}) so callers
-    can treat "server unreachable" the same as "not available"."""
-    url = f"{cfg.base_url}{path}"
+    can treat "server unreachable" the same as "not available".
+
+    ``path`` may be a relative path (joined onto ``cfg.base_url``) or an
+    absolute URL (used as-is) — needed for ``/health`` which lives at the
+    server root, not under ``/v1``."""
+    url = path if path.startswith("http") else f"{cfg.base_url}{path}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
@@ -85,7 +99,9 @@ class OpenSandboxRuntime:
         self.cfg = cfg
 
     def is_available(self) -> bool:
-        status, _ = _request(self.cfg, "GET", "/health", timeout=5)
+        # /health lives at the server root, not under /v1.
+        status, _ = _request(self.cfg, "GET",
+                             f"{self.cfg.root_url}/health", timeout=5)
         return status == 200
 
     def status(self, name: str) -> str:
@@ -106,7 +122,8 @@ class OpenSandboxRuntime:
         """Run ``command`` inside the tid's sandbox; return CompletedProcess.
 
         Three-step: resolve sandbox by tid → resolve execd endpoint → POST
-        /command/run with SSE, accumulate stdout/stderr/exit_code."""
+        /command with a JSON-per-line stream response, accumulate
+        stdout/stderr/exit_code."""
         import subprocess
         sb = _find_by_tid(self.cfg, name)
         if sb is None:
@@ -117,8 +134,8 @@ class OpenSandboxRuntime:
         url, hdrs = _get_execd_endpoint(self.cfg, sid)
         payload = json.dumps({
             "command": command,
-            "working_directory": workdir or None,
-            "env": env or {},
+            "cwd": workdir or None,
+            "envs": env or {},
         }).encode()
         raw = _stream_sse(url, hdrs, payload, timeout=timeout)
         rc, out, err = _parse_sse_output(raw)
@@ -284,7 +301,7 @@ def _get_execd_endpoint(cfg: OpenSandboxConfig, sid: str) -> tuple[str, dict]:
             f"cannot resolve execd endpoint for {sid}: HTTP {status}")
     host = body["endpoint"]
     base = host if "://" in host else f"http://{host}"
-    return f"{base}/command/run", body.get("headers") or {}
+    return f"{base}/command", body.get("headers") or {}
 
 
 def _stream_sse(url: str, headers: dict, body: bytes, timeout: int) -> bytes:
@@ -300,31 +317,30 @@ def _stream_sse(url: str, headers: dict, body: bytes, timeout: int) -> bytes:
 
 
 def _parse_sse_output(raw: bytes) -> tuple[int, str, str]:
-    """Walk an SSE byte stream, accumulate stdout/stderr text + exit code.
+    """Walk execd's response stream, accumulate stdout/stderr + exit code.
 
-    Each event is two lines: ``event: <type>`` and ``data: <json>``. We
-    care about ``stdout`` / ``stderr`` (carry ``text``) and ``complete``
-    (carries ``exit_code``). Anything else is ignored."""
+    Despite the ``text/event-stream`` content type, execd emits one JSON
+    object per line (NOT standard SSE ``event:``/``data:`` framing). Each
+    line carries a ``type`` field: ``init`` / ``ping`` / ``stdout`` /
+    ``stderr`` / ``execution_complete``. The completion event has no
+    ``exit_code`` field — non-zero exits surface as a stderr line, so we
+    default to 0 on completion. (If a future spec adds ``exit_code``, we
+    pick it up via ``.get("exit_code", 0)``.)"""
     stdout, stderr = [], []
     exit_code = 0
-    for raw_evt in raw.split(b"\n\n"):
-        event_type = None
-        data = b""
-        for line in raw_evt.split(b"\n"):
-            if line.startswith(b"event:"):
-                event_type = line[6:].strip().decode()
-            elif line.startswith(b"data:"):
-                data = line[5:].strip()
-        if not data:
+    for line in raw.split(b"\n"):
+        line = line.strip()
+        if not line:
             continue
         try:
-            payload = json.loads(data)
+            payload = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if event_type == "stdout":
+        etype = payload.get("type")
+        if etype == "stdout":
             stdout.append(payload.get("text", ""))
-        elif event_type == "stderr":
+        elif etype == "stderr":
             stderr.append(payload.get("text", ""))
-        elif event_type == "complete":
+        elif etype == "execution_complete":
             exit_code = int(payload.get("exit_code", 0))
     return exit_code, "".join(stdout), "".join(stderr)

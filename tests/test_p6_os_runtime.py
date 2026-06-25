@@ -234,7 +234,7 @@ def test_status_paused(monkeypatch):
 # ── exec ──────────────────────────────────────────────────────────────────
 
 def test_exec_returns_completed_process(monkeypatch):
-    """exec resolves execd endpoint, POSTs /command/run, parses SSE → CP."""
+    """exec resolves execd endpoint, POSTs /command, parses stream → CP."""
     from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
     cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k", execd_port=44772)
     def responder(req: Request):
@@ -250,15 +250,16 @@ def test_exec_returns_completed_process(monkeypatch):
         return (404, b'{}', {})
     _mock_urlopen(monkeypatch, responder)
 
-    sse_body = (
-        b'event: init\ndata: {"execution_id":"e1"}\n\n'
-        b'event: stdout\ndata: {"text":"hello\\n"}\n\n'
-        b'event: stderr\ndata: {"text":"warn\\n"}\n\n'
-        b'event: complete\ndata: {"exit_code":0}\n\n'
+    # execd emits one JSON object per line (NOT standard SSE event/data framing).
+    stream_body = (
+        b'{"type":"init","text":"e1","timestamp":1}\n'
+        b'{"type":"stdout","text":"hello\\n","timestamp":2}\n'
+        b'{"type":"stderr","text":"warn\\n","timestamp":3}\n'
+        b'{"type":"execution_complete","execution_time":2,"timestamp":4}\n'
     )
     monkeypatch.setattr(
         "mini_cc.sandbox.opensandbox_runtime._stream_sse",
-        lambda url, headers, body, timeout: sse_body)
+        lambda url, headers, body, timeout: stream_body)
 
     cp = OpenSandboxRuntime(cfg).exec(
         name="t1", workdir="/workspaces/p1",
@@ -283,13 +284,39 @@ def test_exec_raises_when_no_sandbox(monkeypatch):
 
 def test_parse_sse_output_basic():
     from mini_cc.sandbox.opensandbox_runtime import _parse_sse_output
-    raw = (b'event: stdout\ndata: {"text":"line1\\n"}\n\n'
-           b'event: stdout\ndata: {"text":"line2\\n"}\n\n'
-           b'event: complete\ndata: {"exit_code":7}\n\n')
+    # execd emits JSON-per-line; completion has no exit_code field (defaults to 0).
+    raw = (b'{"type":"stdout","text":"line1\\n"}\n'
+           b'{"type":"stdout","text":"line2\\n"}\n'
+           b'{"type":"execution_complete","execution_time":1}\n')
     rc, out, err = _parse_sse_output(raw)
-    assert rc == 7
+    assert rc == 0
     assert out == "line1\nline2\n"
     assert err == ""
+
+
+def test_parse_sse_output_handles_init_ping_ignored():
+    """init / ping events are valid but carry no stdout/stderr payload."""
+    from mini_cc.sandbox.opensandbox_runtime import _parse_sse_output
+    raw = (b'{"type":"init","text":"exec-id"}\n'
+           b'{"type":"ping","text":"pong"}\n'
+           b'{"type":"stderr","text":"boom"}\n'
+           b'{"type":"execution_complete","exit_code":3}\n')
+    rc, out, err = _parse_sse_output(raw)
+    assert rc == 3
+    assert out == ""
+    assert err == "boom"
+
+
+def test_parse_sse_output_skips_garbage_lines():
+    """Non-JSON lines (e.g. keepalive newlines) are ignored, not fatal."""
+    from mini_cc.sandbox.opensandbox_runtime import _parse_sse_output
+    raw = (b'{"type":"stdout","text":"hi"}\n'
+           b'\n'
+           b'not-json\n'
+           b'{"type":"execution_complete"}\n')
+    rc, out, err = _parse_sse_output(raw)
+    assert rc == 0
+    assert out == "hi"
 
 
 # ── stop / remove / list_managed ──────────────────────────────────────────
