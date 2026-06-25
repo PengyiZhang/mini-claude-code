@@ -198,3 +198,97 @@ def test_run_surfaces_connection_error(monkeypatch):
     out = OpenSandboxInterpreter("sbx", "http://x", {}).run(
         "1", language="python")
     assert out.startswith("Error:")
+
+
+# ── /repl tool backend dispatch (Task 3.2) ────────────────────────────────
+
+def _osb_ctx(monkeypatch, *, runtime_interp=None, runtime_class="OpenSandboxRuntime"):
+    """Build a ToolContext whose sandbox._mgr.runtime is a fake
+    OpenSandboxRuntime. runtime_interp is the return value of
+    interp_for(tid); if None, interp_for raises."""
+    from mini_cc.tools.base import ToolContext
+
+    class _FakeRuntime:
+        pass
+    _FakeRuntime.__name__ = runtime_class
+    rt = _FakeRuntime()
+    if runtime_interp is not None:
+        rt.interp_for = lambda tid: runtime_interp
+    else:
+        def _fail(tid):
+            from mini_cc.sandbox.runtime import RuntimeUnavailable
+            raise RuntimeUnavailable("no sandbox")
+        rt.interp_for = _fail
+
+    class _FakeMgr:
+        tid = "t1"
+        runtime = rt
+    class _FakeSandbox:
+        _mgr = _FakeMgr()
+        project_root = "/tmp/proj"
+
+    return ToolContext(
+        project_id="p1", session_id="s1",
+        sandbox=_FakeSandbox(), storage=None, todos=[])
+
+
+def test_repl_python_uses_opensandbox_when_env_set(monkeypatch):
+    """MINI_CC_REPL_BACKEND=opensandbox → /repl python goes through
+    OpenSandboxInterpreter instead of the local pickle-wrapper path."""
+    monkeypatch.setenv("MINI_CC_REPL_BACKEND", "opensandbox")
+    from mini_cc.tools.opensandbox_interp import OpenSandboxInterpreter
+    # Return a real interpreter instance; mock only its .run() method.
+    fake_interp = OpenSandboxInterpreter.__new__(OpenSandboxInterpreter)
+    fake_interp.run = lambda code, language="python": f"[osb:{code}]"
+    monkeypatch.setattr(
+        "mini_cc.tools.opensandbox_interp.OpenSandboxInterpreter.run",
+        lambda self, code, language="python": f"[osb:{code}]")
+    from mini_cc.tools.repl import _exec_code
+    ctx = _osb_ctx(monkeypatch, runtime_interp=fake_interp)
+    out = _exec_code(ctx, {"language": "python", "code": "1+1"})
+    assert out == "[osb:1+1]"
+
+
+def test_repl_python_falls_back_when_env_unset(monkeypatch):
+    """No MINI_CC_REPL_BACKEND → local pickle-wrapper path even if the
+    sandbox happens to be OpenSandbox-backed (env is the explicit gate)."""
+    monkeypatch.delenv("MINI_CC_REPL_BACKEND", raising=False)
+    from mini_cc.tools.repl import _exec_code
+    ctx = _osb_ctx(monkeypatch, runtime_interp=object())
+    # Force the local path to fail predictably so we can detect it ran.
+    monkeypatch.setattr(
+        "mini_cc.tools.repl._run_python",
+        lambda ctx, code, reset=False, timeout=60: "[local]")
+    out = _exec_code(ctx, {"language": "python", "code": "1+1"})
+    assert out == "[local]"
+
+
+def test_repl_python_falls_back_when_no_container_mgr(monkeypatch):
+    """SubprocessSandbox has no _mgr → can't reach an OS runtime even
+    if env asks for it. Fall back to local with a hint."""
+    monkeypatch.setenv("MINI_CC_REPL_BACKEND", "opensandbox")
+    from mini_cc.tools.base import ToolContext
+    from mini_cc.tools.repl import _exec_code
+    # SubprocessSandbox-shaped: has project_root but no _mgr.
+    class _Subprocess:
+        project_root = "/tmp/p"
+    ctx = ToolContext(project_id="p", session_id="s",
+                     sandbox=_Subprocess(), storage=None, todos=[])
+    monkeypatch.setattr(
+        "mini_cc.tools.repl._run_python",
+        lambda ctx, code, reset=False, timeout=60: "[local]")
+    out = _exec_code(ctx, {"language": "python", "code": "1"})
+    assert out == "[local]"
+
+
+def test_repl_python_falls_back_when_interp_unavailable(monkeypatch):
+    """runtime.interp_for raises (no sandbox yet) → fall back to local
+    rather than crashing the agent."""
+    monkeypatch.setenv("MINI_CC_REPL_BACKEND", "opensandbox")
+    from mini_cc.tools.repl import _exec_code
+    ctx = _osb_ctx(monkeypatch, runtime_interp=None)  # interp_for raises
+    monkeypatch.setattr(
+        "mini_cc.tools.repl._run_python",
+        lambda ctx, code, reset=False, timeout=60: "[local]")
+    out = _exec_code(ctx, {"language": "python", "code": "1"})
+    assert out == "[local]"

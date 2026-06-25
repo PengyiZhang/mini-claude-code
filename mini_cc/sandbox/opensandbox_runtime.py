@@ -171,6 +171,23 @@ class OpenSandboxRuntime:
                 for it in body.get("items", [])
                 if it.get("metadata", {}).get(_TID_KEY)]
 
+    def interp_for(self, tid: str):
+        """Build an OpenSandboxInterpreter bound to tid's sandbox.
+
+        Used by the ``execute_code`` tool when MINI_CC_REPL_BACKEND=
+        opensandbox. Resolves the sandbox + execd endpoint lazily so
+        ensure_running has a chance to have run first. Raises
+        RuntimeUnavailable if no sandbox exists for this tid."""
+        from ..tools.opensandbox_interp import OpenSandboxInterpreter
+        sb = _find_by_tid(self.cfg, tid)
+        if sb is None:
+            from .runtime import RuntimeUnavailable
+            raise RuntimeUnavailable(
+                f"no sandbox for tid={tid}; ensure_running first")
+        sid = sb["id"]
+        url, hdrs = _get_execd_endpoint(self.cfg, sid)
+        return OpenSandboxInterpreter(sid, url, hdrs)
+
     def build_image(self, tag: str, context_dir, dockerfile=None) -> None:
         """OpenSandbox consumes pre-built images, so building stays local.
 

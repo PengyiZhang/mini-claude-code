@@ -100,6 +100,14 @@ def _build_python_wrapper(*, user_code: str, state_file: Path) -> str:
 
 def _run_python(ctx: ToolContext, code: str, *,
                 reset: bool, timeout: int) -> str:
+    # OpenSandbox code-interpreter backend: when env opts in and the
+    # sandbox is OpenSandbox-backed, use the stateful Jupyter context
+    # instead of the local pickle-wrapper path. Falls back silently if
+    # the runtime isn't reachable (e.g. sandbox not yet started).
+    interp = _get_osb_interp(ctx)
+    if interp is not None:
+        return interp.run(code, language="python")
+
     workspace = Path(ctx.sandbox.project_root)  # type: ignore[attr-defined]
     state_file = _state_file_path(workspace, ctx.session_id, "python")
     if reset and state_file.exists():
@@ -122,6 +130,32 @@ def _run_python(ctx: ToolContext, code: str, *,
         return f"Error: {type(e).__name__}: {e}"
     out = (r.stdout or "") + (r.stderr or "")
     return out.strip() if out.strip() else "(no output)"
+
+
+def _get_osb_interp(ctx: ToolContext):
+    """Return an OpenSandboxInterpreter when env+sandbox allow it, else None.
+
+    Gated on:
+    - ``MINI_CC_REPL_BACKEND=opensandbox`` (explicit opt-in)
+    - ``ctx.sandbox`` has a ``_mgr`` (i.e. is ContainerSandbox)
+    - That manager's runtime is OpenSandboxRuntime
+    - ``runtime.interp_for(tid)`` succeeds (sandbox exists)
+
+    Any failure (no env, no container, sandbox not yet started) returns
+    None and the caller falls back to the local pickle-wrapper path."""
+    import os
+    if os.environ.get("MINI_CC_REPL_BACKEND") != "opensandbox":
+        return None
+    mgr = getattr(ctx.sandbox, "_mgr", None)
+    if mgr is None:
+        return None
+    rt = getattr(mgr, "runtime", None)
+    if rt is None or type(rt).__name__ != "OpenSandboxRuntime":
+        return None
+    try:
+        return rt.interp_for(mgr.tid)
+    except Exception:
+        return None
 
 
 def _run_javascript(ctx: ToolContext, code: str, *, timeout: int) -> str:
