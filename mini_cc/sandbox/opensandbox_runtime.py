@@ -259,30 +259,65 @@ def _wait_running(cfg: OpenSandboxConfig, sid: str) -> None:
         f"sandbox {sid} never became Running within {cfg.ready_timeout}s")
 
 
+def _mount_spec_to_volume(m: "MountSpec") -> dict:
+    """Translate one MountSpec → OpenSandbox Volume dict.
+
+    OpenSandbox's Volume shape is a discriminated union on the backend
+    key (``host`` / ``pvc`` / ``ossfs``). ``readOnly`` and ``subPath``
+    apply to any backend. Storage fields are only included when set so
+    the server applies its own defaults rather than receiving an empty
+    string."""
+    from .config import HostMount, OSSFSMount, PVCMount
+    v: dict = {"name": m.name, "mountPath": m.mount_path}
+    if isinstance(m.backend, HostMount):
+        v["host"] = {"path": m.backend.path}
+    elif isinstance(m.backend, PVCMount):
+        v["pvc"] = {
+            "claimName": m.backend.claim_name,
+            "createIfNotExists": m.backend.create_if_not_exists,
+        }
+        if m.backend.storage_class:
+            v["pvc"]["storageClass"] = m.backend.storage_class
+        if m.backend.storage:
+            v["pvc"]["storage"] = m.backend.storage
+    elif isinstance(m.backend, OSSFSMount):
+        v["ossfs"] = {
+            "bucket": m.backend.bucket,
+            "endpoint": m.backend.endpoint,
+            "accessKeyId": m.backend.access_key_id,
+            "accessKeySecret": m.backend.access_key_secret,
+        }
+    else:  # pragma: no cover — MountBackend union is closed
+        raise TypeError(f"unsupported mount backend: {type(m.backend).__name__}")
+    if m.read_only:
+        v["readOnly"] = True
+    if m.sub_path:
+        v["subPath"] = m.sub_path
+    return v
+
+
 def _build_volumes(mounts: list) -> list:
     """Translate mini_cc mount tuples/MountSpecs → OpenSandbox Volume list.
 
-    Phase 1 only supports HostMount; Phase 2 will add PVC/OSSFS via
-    MountSpec dispatch."""
-    try:
-        from .config import MountSpec
-    except ImportError:
-        MountSpec = None  # Phase 1: not yet defined
+    Accepts legacy tuples ``(host, container, options)`` for callers that
+    haven't been updated yet — they're converted via
+    ``MountSpec.from_legacy_tuple`` so the unified translation path runs
+    for both shapes. Tuples get a synthesized name (``mnt-<idx>``) to
+    keep them stable across re-creates."""
+    from .config import MountSpec
     vols = []
     for i, m in enumerate(mounts):
-        if MountSpec is not None and isinstance(m, MountSpec):
-            vols.append({
-                "name": m.name,
-                "mountPath": m.mount_path,
-                "host": {"path": m.backend.path},
-            })
-        else:  # legacy tuple (host, container, options)
-            host, container, _opts = m
-            vols.append({
-                "name": f"mnt-{i}",
-                "mountPath": container,
-                "host": {"path": host},
-            })
+        if isinstance(m, MountSpec):
+            vols.append(_mount_spec_to_volume(m))
+        else:
+            spec = MountSpec.from_legacy_tuple(m)
+            # Override the name to match Phase 1's positional naming so
+            # existing fixtures don't break.
+            spec = MountSpec(
+                name=f"mnt-{i}", mount_path=spec.mount_path,
+                backend=spec.backend, read_only=spec.read_only,
+                sub_path=spec.sub_path)
+            vols.append(_mount_spec_to_volume(spec))
     return vols
 
 

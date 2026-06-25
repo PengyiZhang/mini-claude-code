@@ -185,3 +185,84 @@ def test_docker_runtime_mount_spec_read_only(monkeypatch):
         network="none")
     run_calls = [c for c in captured if c[:2] == ["docker", "run"]]
     assert any("/host/cfg:/cfg:ro" in part for part in run_calls[0])
+
+
+# ── OpenSandboxRuntime translates MountSpec ───────────────────────────────
+
+def test_opensandbox_translates_host_mount():
+    from mini_cc.sandbox.opensandbox_runtime import _mount_spec_to_volume
+    m = MountSpec(name="w", mount_path="/workspaces",
+                  backend=HostMount(path="/host"))
+    vol = _mount_spec_to_volume(m)
+    assert vol == {
+        "name": "w", "mountPath": "/workspaces",
+        "host": {"path": "/host"},
+    }
+
+
+def test_opensandbox_translates_host_mount_read_only_and_subpath():
+    from mini_cc.sandbox.opensandbox_runtime import _mount_spec_to_volume
+    m = MountSpec(name="w", mount_path="/cfg",
+                  backend=HostMount(path="/host/cfg"),
+                  read_only=True, sub_path="subdir")
+    vol = _mount_spec_to_volume(m)
+    assert vol["readOnly"] is True
+    assert vol["subPath"] == "subdir"
+
+
+def test_opensandbox_translates_pvc_mount_defaults():
+    """PVC with just claim_name → createIfNotExists=True default."""
+    from mini_cc.sandbox.opensandbox_runtime import _mount_spec_to_volume
+    m = MountSpec(name="w", mount_path="/data",
+                  backend=PVCMount(claim_name="t1-pvc"))
+    vol = _mount_spec_to_volume(m)
+    assert vol["pvc"] == {
+        "claimName": "t1-pvc",
+        "createIfNotExists": True,
+    }
+
+
+def test_opensandbox_translates_pvc_mount_full():
+    """PVC with all options → storageClass/storage only included when set."""
+    from mini_cc.sandbox.opensandbox_runtime import _mount_spec_to_volume
+    m = MountSpec(name="w", mount_path="/data",
+                  backend=PVCMount(claim_name="t1-pvc",
+                                   storage_class="fast-ssd",
+                                   storage="5Gi",
+                                   create_if_not_exists=False))
+    vol = _mount_spec_to_volume(m)
+    assert vol["pvc"] == {
+        "claimName": "t1-pvc",
+        "createIfNotExists": False,
+        "storageClass": "fast-ssd",
+        "storage": "5Gi",
+    }
+
+
+def test_opensandbox_translates_ossfs_mount():
+    from mini_cc.sandbox.opensandbox_runtime import _mount_spec_to_volume
+    m = MountSpec(name="oss", mount_path="/bucket",
+                  backend=OSSFSMount(bucket="bkt", endpoint="oss-cn-hangzhou",
+                                     access_key_id="AKID",
+                                     access_key_secret="SECRET"))
+    vol = _mount_spec_to_volume(m)
+    assert vol["ossfs"] == {
+        "bucket": "bkt", "endpoint": "oss-cn-hangzhou",
+        "accessKeyId": "AKID", "accessKeySecret": "SECRET",
+    }
+
+
+def test_opensandbox_build_volumes_accepts_legacy_tuple():
+    """_build_volumes handles mixed lists of MountSpec and legacy tuples
+    (manager still passes tuples during the transition)."""
+    from mini_cc.sandbox.opensandbox_runtime import _build_volumes
+    vols = _build_volumes([
+        MountSpec(name="w1", mount_path="/data",
+                  backend=HostMount(path="/h1")),
+        ("/h2", "/workspaces", ""),
+    ])
+    assert vols[0] == {"name": "w1", "mountPath": "/data",
+                       "host": {"path": "/h1"}}
+    assert vols[1]["mountPath"] == "/workspaces"
+    assert vols[1]["host"] == {"path": "/h2"}
+    assert vols[1]["name"].startswith("mnt")  # synthesized
