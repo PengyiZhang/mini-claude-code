@@ -46,6 +46,74 @@ class Mount:
     options: str = ""
 
 
+# ── MountSpec: backend-agnostic mount description ─────────────────────────
+#
+# MountSpec decouples "what to mount" (manager) from "how to mount it"
+# (each runtime). The backend discriminator selects between bind-mount
+# (HostMount), k8s persistent volume claim (PVCMount), and object storage
+# (OSSFSMount — Phase 3 placeholder, kept in the union so the type is
+# total from day one).
+#
+# ``from_legacy_tuple`` accepts the original (host, container, options)
+# shape so the manager can keep returning tuples during the transition
+# without each call site needing to know about MountSpec. The options
+# string is intentionally NOT parsed into read_only/etc. — that mapping
+# is docker-specific and the caller should set the explicit fields.
+
+
+@dataclass(frozen=True)
+class HostMount:
+    path: str
+
+
+@dataclass(frozen=True)
+class PVCMount:
+    claim_name: str
+    create_if_not_exists: bool = True
+    storage_class: str | None = None
+    storage: str | None = None
+
+
+@dataclass(frozen=True)
+class OSSFSMount:
+    """Aliyun OSS (or compatible S3) filesystem mount. Phase 3+ only;
+    declared here so MountSpec's union is total and discriminated by type."""
+    bucket: str
+    endpoint: str
+    access_key_id: str
+    access_key_secret: str
+
+
+MountBackend = HostMount | PVCMount | OSSFSMount
+
+
+@dataclass(frozen=True)
+class MountSpec:
+    name: str
+    mount_path: str
+    backend: MountBackend
+    read_only: bool = False
+    sub_path: str | None = None
+
+    @classmethod
+    def from_legacy_tuple(cls, t: tuple[str, str, str]) -> "MountSpec":
+        """``(host, container, options)`` → ``MountSpec(backend=HostMount)``.
+
+        The ``options`` field (e.g. ``"ro,Z"``) is docker-specific and
+        intentionally not translated — callers that need ``read_only``
+        should construct a MountSpec directly. We synthesize a stable
+        name from the host path so repeated calls produce identical
+        volume names (OpenSandbox rejects duplicate names in one sandbox)."""
+        host, container, _opts = t
+        sanitized = re.sub(r"[^A-Za-z0-9_-]", "_", host).strip("_")
+        name = f"mnt-{sanitized}" if sanitized else "mnt"
+        return cls(
+            name=name,
+            mount_path=container,
+            backend=HostMount(path=host),
+        )
+
+
 @dataclass
 class ContainerConfig:
     enabled: bool = False
