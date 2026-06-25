@@ -8,11 +8,21 @@ closure that:
      event and returns SubprocessSandbox (auto-degrade, user requirement #2).
   3. Otherwise returns ContainerSandbox wired to the tenant's manager.
 
+Backend selection (env ``MINI_CC_SANDBOX_BACKEND``):
+  - ``opensandbox`` → OpenSandboxRuntime (HTTP, requires OPEN_SANDBOX_*)
+  - ``docker``       → DockerRuntime (subprocess, default)
+  - ``auto`` (default) → try opensandbox first (if configured), fall back to docker
+At any tier, ``_runtime=None`` means "no container backend" → callers
+(SubprocessSandbox) take over. ``docker_available`` is repurposed to mean
+"any container backend selected" — the degrade logic stays unchanged.
+
 Tests inject docker_available=False to exercise the degrade path; no
 real docker daemon is required because the runtime is also swappable.
 """
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -37,21 +47,55 @@ class ServerRuntimeContext:
     docker_available: bool
     degrades: list[DegradeEvent] = field(default_factory=list)
     _container_mgrs: dict[str, TenantContainerManager] = field(default_factory=dict)
-    _runtime: object = None  # DockerRuntime or test double
+    _runtime: object = None  # DockerRuntime / OpenSandboxRuntime / test double
 
     def __post_init__(self):
         if self._runtime is None:
-            # Use the probed argv_prefix so Docker-inside-WSL2 is reached
-            # via ``wsl docker ...`` on Windows. The probe is cached, so
-            # this is one real subprocess call at boot.
-            from ..sandbox.osdetect import probe_docker
-            avail = probe_docker()
-            self._runtime = DockerRuntime(prefix=avail.argv_prefix)
-        else:
-            # Caller (CLI or test) supplied a runtime; honor docker_available
-            # as the source of truth for the degrade decision so tests can
-            # simulate "docker missing" without unhooking the runtime.
-            pass
+            self._runtime = self._build_runtime()
+        # Caller-supplied runtime: trust their docker_available flag.
+
+    def _build_runtime(self):
+        """Three-tier fallback: opensandbox → docker → None.
+
+        ``None`` means "no container backend"; ``_sandbox_factory`` will
+        auto-degrade to SubprocessSandbox for every container tenant.
+        Explicit ``opensandbox`` that fails to init still falls through to
+        docker (with a warning) so misconfig doesn't brick the server."""
+        backend = os.environ.get("MINI_CC_SANDBOX_BACKEND", "auto")
+
+        if backend in ("opensandbox", "auto"):
+            rt = self._try_opensandbox()
+            if rt is not None:
+                return rt
+            if backend == "opensandbox":
+                logging.getLogger("mini_cc").warning(
+                    "opensandbox backend requested but unavailable; "
+                    "falling back to docker")
+
+        # Reachable from any backend tier — docker is the universal fallback.
+        from ..sandbox.osdetect import probe_docker
+        avail = probe_docker()
+        if avail.available:
+            return DockerRuntime(prefix=avail.argv_prefix)
+
+        return None
+
+    @staticmethod
+    def _try_opensandbox():
+        """Return OpenSandboxRuntime if env config + server reachable."""
+        # No env config at all → skip the probe entirely (auto mode).
+        if not (os.environ.get("OPEN_SANDBOX_DOMAIN")
+                or os.environ.get("OPEN_SANDBOX_API_KEY")):
+            return None
+        try:
+            from ..sandbox.opensandbox_runtime import (
+                OpenSandboxConfig, OpenSandboxRuntime)
+            rt = OpenSandboxRuntime(OpenSandboxConfig.from_env())
+            return rt if rt.is_available() else None
+        except Exception as exc:
+            logging.getLogger("mini_cc").warning(
+                "opensandbox backend init failed: %s", exc)
+            return None
 
     @property
     def tenants_dir(self) -> Path:

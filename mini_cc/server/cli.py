@@ -94,6 +94,13 @@ def cmd_serve(args) -> int:
         key_registry=_key_registry(),
         docker_available=avail.available,
     )
+    # ServerRuntimeContext may have selected a non-docker backend (e.g.
+    # OpenSandbox) via MINI_CC_SANDBOX_BACKEND. If so, treat that as
+    # "container backend available" even though probe_docker returned
+    # unavailable — the auto-degrade path checks this flag.
+    backend_available = avail.available or (ctx._runtime is not None)
+    ctx.docker_available = backend_available
+
     pm = ctx.build_project_manager()
     sm = SessionManager(pm)
     reg = ctx.key_registry
@@ -111,13 +118,15 @@ def cmd_serve(args) -> int:
     host = _env("MINI_CC_HOST", "127.0.0.1")
     port = int(_env("MINI_CC_PORT", "8000"))
 
+    backend_name = type(ctx._runtime).__name__ if ctx._runtime else "none"
     logging.getLogger("mini_cc").info(
         "starting server",
         extra={"host": host, "port": port,
                "rate_limit_default_rpm": default_rpm,
                "rate_limit_overrides": overrides,
                "data_dir": str(data_dir),
-               "docker_available": avail.available})
+               "docker_available": backend_available,
+               "sandbox_backend": backend_name})
     uvicorn.run(app, host=host, port=port)
     return 0
 
