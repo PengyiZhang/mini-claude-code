@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -72,3 +73,104 @@ class OpenSandboxRuntime:
     def is_available(self) -> bool:
         status, _ = _request(self.cfg, "GET", "/health", timeout=5)
         return status == 200
+
+    def ensure_running(self, *, name: str, image: str,
+                       mounts: list, network: str,
+                       cpu_quota: str | None = None,
+                       memory_limit: str | None = None) -> None:
+        """Idempotent: reuse existing Running sandbox by tid, else create.
+
+        ``name`` here is the tenant id (TenantContainerManager passes tid
+        directly — see Phase 2 refactor). Mounts may be legacy tuples
+        (host, container, options) or MountSpec; Phase 1 only supports host
+        bind mounts since OpenSandbox Docker runtime mirrors that semantic.
+        """
+        tid = name
+        sid = _find_by_tid(self.cfg, tid)
+        if sid is not None:
+            return
+        body = {
+            "image": {"uri": image},
+            "entrypoint": ["tail", "-f", "/dev/null"],  # long-lived placeholder
+            "metadata": {_TID_KEY: tid, "managed-by": "mini-cc"},
+            "resourceLimits": {
+                "cpu": cpu_quota or "1000m",
+                "memory": memory_limit or "1Gi",
+            },
+            # Manual cleanup mode: no TTL, mini_cc owns lifecycle.
+            # Note: only Docker runtime supports timeout=null. K8s providers
+            # may reject this — see plan's Lifecycle Alignment section.
+            "timeout": None,
+            "volumes": _build_volumes(mounts),
+        }
+        if network in ("none", "disabled"):
+            body["networkPolicy"] = {"defaultAction": "deny", "egress": []}
+        status, resp = _request(self.cfg, "POST", "/sandboxes", body=body)
+        if status not in (200, 202):
+            from .runtime import RuntimeUnavailable
+            raise RuntimeUnavailable(
+                f"create sandbox failed: HTTP {status} {resp}")
+        sid = resp.get("id")
+        if not sid:
+            from .runtime import RuntimeUnavailable
+            raise RuntimeUnavailable(f"create returned no id: {resp}")
+        _wait_running(self.cfg, sid)
+
+
+# ── helpers ───────────────────────────────────────────────────────────────
+
+_TID_KEY = "mini-cc-tid"  # DNS-label compliant (no underscore)
+
+
+def _find_by_tid(cfg: OpenSandboxConfig, tid: str) -> str | None:
+    """GET /sandboxes filtered by metadata → first matching id, or None."""
+    qs = f"?metadata={_TID_KEY}%3D{tid}&pageSize=1"
+    status, body = _request(cfg, "GET", f"/sandboxes{qs}")
+    if status != 200:
+        return None
+    items = body.get("items") or []
+    return items[0]["id"] if items else None
+
+
+def _wait_running(cfg: OpenSandboxConfig, sid: str) -> None:
+    """Poll GET /sandboxes/{sid} until state=Running or timeout."""
+    deadline = time.monotonic() + cfg.ready_timeout
+    while time.monotonic() < deadline:
+        status, body = _request(cfg, "GET", f"/sandboxes/{sid}")
+        if status == 200:
+            state = body.get("status", {}).get("state", "Pending")
+            if state == "Running":
+                return
+            if state in ("Failed", "Terminated"):
+                raise RuntimeError(
+                    f"sandbox {sid} entered terminal state {state}")
+        time.sleep(cfg.poll_interval)
+    raise RuntimeError(
+        f"sandbox {sid} never became Running within {cfg.ready_timeout}s")
+
+
+def _build_volumes(mounts: list) -> list:
+    """Translate mini_cc mount tuples/MountSpecs → OpenSandbox Volume list.
+
+    Phase 1 only supports HostMount; Phase 2 will add PVC/OSSFS via
+    MountSpec dispatch."""
+    try:
+        from .config import MountSpec
+    except ImportError:
+        MountSpec = None  # Phase 1: not yet defined
+    vols = []
+    for i, m in enumerate(mounts):
+        if MountSpec is not None and isinstance(m, MountSpec):
+            vols.append({
+                "name": m.name,
+                "mountPath": m.mount_path,
+                "host": {"path": m.backend.path},
+            })
+        else:  # legacy tuple (host, container, options)
+            host, container, _opts = m
+            vols.append({
+                "name": f"mnt-{i}",
+                "mountPath": container,
+                "host": {"path": host},
+            })
+    return vols
