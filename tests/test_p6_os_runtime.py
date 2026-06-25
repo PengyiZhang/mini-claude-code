@@ -48,3 +48,43 @@ def _mock_urlopen(monkeypatch, responder):
         r.headers = {"Content-Type": "application/json", **(hdrs or {})}
         return r
     monkeypatch.setattr("mini_cc.sandbox.opensandbox_runtime.urlopen", fake)
+
+
+# ── is_available ──────────────────────────────────────────────────────────
+
+def test_is_available_true(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    _mock_urlopen(monkeypatch, lambda req: (200, b'{"status":"ok"}', {}))
+    assert OpenSandboxRuntime(cfg).is_available() is True
+
+
+def test_is_available_false_on_5xx(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    _mock_urlopen(monkeypatch, lambda req: (503, b'{"error":"down"}', {}))
+    assert OpenSandboxRuntime(cfg).is_available() is False
+
+
+def test_is_available_false_on_conn_error(monkeypatch):
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    cfg = OpenSandboxConfig(base_url="http://x/v1", api_key="k")
+    def boom(req, *a, **kw):
+        raise OSError("connection refused")
+    monkeypatch.setattr("mini_cc.sandbox.opensandbox_runtime.urlopen", boom)
+    assert OpenSandboxRuntime(cfg).is_available() is False
+
+
+def test_request_sends_apikey_header(monkeypatch):
+    """OPEN-SANDBOX-API-KEY header must be attached when cfg.api_key set."""
+    from mini_cc.sandbox.opensandbox_runtime import OpenSandboxRuntime
+    seen = {}
+    def responder(req):
+        # urllib title-cases header names; look up case-insensitively
+        hdrs = {k.lower(): v for k, v in req.header_items()}
+        seen["key"] = hdrs.get("open-sandbox-api-key")
+        return (200, b'{"status":"ok"}', {})
+    _mock_urlopen(monkeypatch, responder)
+    OpenSandboxRuntime(OpenSandboxConfig(
+        base_url="http://x/v1", api_key="sk-secret")).is_available()
+    assert seen["key"] == "sk-secret"
