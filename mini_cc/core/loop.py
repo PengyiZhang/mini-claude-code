@@ -139,6 +139,7 @@ class ProjectRef:
     storage: Storage
     skills_catalog: str = ""
     skills_loader: SkillLoader | None = None
+    memory_loader: Any = None  # mini_cc.memory.MemoryLoader
     scheduler: CronScheduler | None = None
     wakeups: "WakeupScheduler | None" = None
     mcp_pool: MCPPool | None = None
@@ -593,6 +594,7 @@ class AgentLoop:
             todos=self.todos,
             mark_todos_updated=_mark,
             skills_loader=self.project.skills_loader,
+            memory_loader=self.project.memory_loader,
             scheduler=self.project.scheduler,
             mcp_pool=self.project.mcp_pool,
             teams=self.project.teams,

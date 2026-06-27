@@ -21,6 +21,7 @@ from ..mcp import MCPPool
 from ..sandbox import Policy, Sandbox, SubprocessSandbox
 from ..scheduler import CronScheduler
 from ..skills import SkillLoader
+from ..memory import MemoryLoader
 from ..storage import FSStorage, Storage
 from ..teams import TeammateSpawner
 from ..tools.background import BackgroundScheduler
@@ -68,6 +69,7 @@ class Project:
     sandbox: SubprocessSandbox
     storage: Storage
     skills_loader: SkillLoader
+    memory_loader: MemoryLoader
     scheduler: CronScheduler
     mcp_pool: MCPPool
     background: BackgroundScheduler
@@ -86,6 +88,7 @@ class Project:
             storage=self.storage,
             skills_catalog=self.skills_loader.catalog(),
             skills_loader=self.skills_loader,
+            memory_loader=self.memory_loader,
             scheduler=self.scheduler,
             mcp_pool=self.mcp_pool,
             background=self.background,
@@ -263,6 +266,8 @@ class ProjectManager:
         storage = self.storage_factory(self._state_root(meta.tenant_id))
         skills_loader = SkillLoader(
             ws, data_dir=self.data_dir, tenant_id=meta.tenant_id)
+        memory_loader = MemoryLoader(
+            ws, data_dir=self.data_dir, tenant_id=meta.tenant_id)
         scheduler = CronScheduler(project_id, storage)
         mcp_pool = MCPPool(project_id)
         background = BackgroundScheduler()
@@ -281,6 +286,7 @@ class ProjectManager:
             sandbox=sandbox,
             storage=storage,
             skills_loader=skills_loader,
+            memory_loader=memory_loader,
             scheduler=scheduler,
             mcp_pool=mcp_pool,
             background=background,

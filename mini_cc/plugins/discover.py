@@ -22,6 +22,20 @@ class Skill:
     content: str
 
 
+@dataclass
+class Memory:
+    """One declarative memory entry (project/tenant/system tier).
+
+    Mirrors Skill but lives under ``.mini_cc/memory/<name>.md`` and adds
+    an optional ``category`` field for grouping (preferences/decisions/
+    issues/...). Same merge rule as skills: later tier wins on name clash.
+    """
+    name: str
+    description: str
+    category: str
+    content: str
+
+
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     if not text.startswith("---"):
         return {}, text
@@ -73,6 +87,51 @@ def discover_skills(tier_dirs: Iterable[Path]) -> dict[str, Skill]:
         if not td.exists():
             continue
         merged.update(_scan_skill_dir(td))
+    return merged
+
+
+# ── Memory discovery ────────────────────────────────────────────────────
+#
+# Memory entries live under ``<tier>/.mini_cc/memory/<name>.md``. They are
+# like skills but meant for facts/decisions/preferences the agent should
+# remember across sessions. Optional frontmatter fields:
+#   name, description, category
+
+def _scan_memory_dir(tier_dir: Path) -> dict[str, Memory]:
+    """Return every memory declared under ``<tier_dir>/memory/``."""
+    mem_dir = tier_dir / "memory"
+    out: dict[str, Memory] = {}
+    if not mem_dir.exists():
+        return out
+    try:
+        entries = sorted(mem_dir.iterdir())
+    except OSError:
+        return out
+    for f in entries:
+        if not f.is_file() or f.suffix != ".md":
+            continue
+        try:
+            raw = f.read_text(encoding="utf-8")
+        except OSError as e:
+            _log.warning("memory %s unreadable: %s", f, e)
+            continue
+        meta, body = _parse_frontmatter(raw)
+        name = meta.get("name", f.stem)
+        desc = meta.get("description") or raw.split("\n", 1)[0].lstrip("#").strip()
+        category = meta.get("category", "general")
+        out[name] = Memory(name=name, description=desc,
+                           category=category, content=raw)
+    return out
+
+
+def discover_memories(tier_dirs: Iterable[Path]) -> dict[str, Memory]:
+    """Walk tiers in order; later tiers override earlier on name clash."""
+    merged: dict[str, Memory] = {}
+    for td in tier_dirs:
+        td = Path(td)
+        if not td.exists():
+            continue
+        merged.update(_scan_memory_dir(td))
     return merged
 
 

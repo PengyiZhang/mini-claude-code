@@ -10,6 +10,7 @@ from ..storage import Storage
 
 if TYPE_CHECKING:
     from ..core.loop import ProjectRef
+    from ..memory import MemoryLoader
     from ..mcp import MCPPool
     from ..skills import SkillLoader
     from ..scheduler import CronScheduler
@@ -27,6 +28,7 @@ class ToolContext:
     todos: list[dict]
     mark_todos_updated: Callable[[], None] | None = None
     skills_loader: Optional["SkillLoader"] = None
+    memory_loader: Optional["MemoryLoader"] = None
     scheduler: Optional["CronScheduler"] = None
     mcp_pool: Optional["MCPPool"] = None
     teams: Optional["TeammateSpawner"] = None
