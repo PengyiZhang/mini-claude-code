@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Path
 from ..deps import (check_rate_limit_scope, get_pm, require_scope,
                     validate_id)
 from ..errors import Conflict, NotFound, map_sdk_exception
+from ..projects.templates import apply_template, list_templates
 from ..schemas import CreateProjectRequest, ProjectOut
 
 router = APIRouter(prefix="/tenants/{tid}/projects", tags=["projects"])
@@ -30,11 +31,28 @@ def create_project(body: CreateProjectRequest,
             validate_id(body.project_id)
         p = pm.create(tenant_id=tid, project_id=body.project_id,
                       display_name=body.display_name or "")
+        if body.template:
+            # Copy seed files AFTER pm.create has bootstrapped the
+            # workspace + .mini_cc/ project tier.
+            if not apply_template(body.template, p.workspace):
+                raise NotFound(f"unknown template: {body.template}")
+            pm.invalidate(p.project_id)
+            p = pm.get(p.project_id)
     except Conflict:
+        raise
+    except NotFound:
         raise
     except Exception as e:
         raise map_sdk_exception(e)
     return _to_out(p)
+
+
+@router.get("/-/templates", tags=["templates"])
+def list_project_templates(tid: str = Depends(require_scope("projects:read"))) -> list[dict]:
+    """Enumerate available project templates."""
+    return [{"name": t.name, "description": t.description,
+             "display_name": t.display_name}
+            for t in list_templates()]
 
 
 @router.get("", response_model=list[ProjectOut])

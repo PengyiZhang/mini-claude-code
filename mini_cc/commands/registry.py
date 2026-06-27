@@ -1107,6 +1107,51 @@ def _loop_of(ctx: CommandContext):
     return getattr(sess, "loop", None)
 
 
+def _cmd_fork(ctx: CommandContext) -> Iterator[dict]:
+    """F3.3: branch this session into a new one with the transcript copied.
+
+    Creates a new session under the same project, copies all messages from
+    the active session into it, and warms it via SessionManager. Emits a
+    `session_resumed` event so the client rotates its active session id to
+    the fork.
+    """
+    sm = ctx.session_manager
+    storage = ctx.storage or getattr(ctx.project, "storage", None)
+    if sm is None or storage is None:
+        yield {"type": "error", "message": "project/storage unavailable"}
+        return
+    try:
+        src = storage.load_messages(ctx.project_id, ctx.session_id)
+    except Exception as e:
+        yield {"type": "error", "message": f"load source failed: {e}"}
+        return
+    if not src:
+        yield {"type": "text",
+               "text": "_source session is empty — nothing to fork. "
+                       "Send a message first._"}
+        yield {"type": "done"}
+        return
+    import uuid as _uuid
+    new_sid = f"sess_{_uuid.uuid4().hex[:8]}"
+    try:
+        storage.save_messages(ctx.project_id, new_sid, list(src))
+    except Exception as e:
+        yield {"type": "error", "message": f"persist fork failed: {e}"}
+        return
+    try:
+        sm.start_session(ctx.project_id, new_sid)
+    except Exception as e:
+        yield {"type": "error", "message": f"warm fork failed: {e}"}
+        return
+    yield {"type": "session_resumed",
+           "project_id": ctx.project_id, "session_id": new_sid}
+    yield {"type": "text",
+           "text": (f"🌱 forked `{ctx.session_id}` → `{new_sid}` "
+                    f"({len(src)} messages copied). "
+                    f"You're now in the new branch.")}
+    yield {"type": "done"}
+
+
 def _cmd_resume(ctx: CommandContext) -> Iterator[dict]:
     """Resume (or list) a session in this project.
 
@@ -1288,6 +1333,12 @@ def default_registry() -> CommandRegistry:
                      "keyword. `/search login` returns matching snippets with "
                      "session ids. Use `/resume <id>` to open one."),
         handler=_cmd_search,
+    ))
+    reg.register(SlashCommand(
+        name="fork",
+        description=("Branch this session: copy its transcript to a new "
+                     "session id and switch to it. Original is preserved."),
+        handler=_cmd_fork,
     ))
     reg.register(SlashCommand(
         name="export",

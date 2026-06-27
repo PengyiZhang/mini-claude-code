@@ -10,6 +10,11 @@ class CreateProjectRequest(BaseModel):
         description="Optional caller-supplied project_id. Must match "
                     "[A-Za-z0-9_-]+. If omitted, a random one is generated.")
     display_name: str | None = None
+    template: str | None = Field(
+        default=None,
+        description="Optional template name (see /templates). When set, "
+                    "the template's seed files are copied into the new "
+                    "project's workspace at creation time.")
 
 
 class CreateSessionRequest(BaseModel):

@@ -1,0 +1,8 @@
+[project]
+name = "my-package"
+version = "0.1.0"
+description = "Generated from mini_cc python-cli template"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
