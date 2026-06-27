@@ -32,7 +32,7 @@ from .compaction import prepare_context, compact_history
 from .hooks import Hooks
 from .permissions import PermissionInterceptor
 from .recovery import RecoveryState, is_prompt_too_long_error, retry_delay
-from .system_prompt import assemble_system_prompt
+from .system_prompt import assemble_system_prompt, load_project_guide
 
 CONTINUATION_PROMPT = ("Continue from the previous response. "
                        "Do not repeat completed work.")
@@ -341,6 +341,7 @@ class AgentLoop:
                     mcp_servers=(self.project.mcp_pool.list_connected()
                                  if self.project.mcp_pool else self.project.mcp_servers),
                     skills_catalog=self.project.skills_catalog,
+                    project_guide=load_project_guide(self.project.project_root),
                 )
 
             try:

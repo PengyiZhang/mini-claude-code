@@ -35,6 +35,43 @@ def test_system_prompt_omits_memory_when_empty(tmp_path):
     assert "Relevant memories" not in p
 
 
+def test_system_prompt_includes_project_guide_when_present(tmp_path):
+    """F1.1: .mini_cc/PROJECT.md content is injected as a labeled section."""
+    guide = "# Project conventions\n- Use 4-space indent\n- Test before commit"
+    p = assemble_system_prompt(
+        project_root=tmp_path, tools=[], memories="",
+        mcp_servers=[], skills_catalog="",
+        project_guide=guide)
+    assert "Project conventions" in p
+    assert "4-space indent" in p
+    # Labeled so the model knows it's authoritative
+    assert "Project guide" in p
+
+
+def test_system_prompt_omits_project_guide_section_when_empty(tmp_path):
+    """No guide → no section header, no extra whitespace."""
+    p = assemble_system_prompt(
+        project_root=tmp_path, tools=[], memories="",
+        mcp_servers=[], skills_catalog="",
+        project_guide="")
+    assert "Project guide" not in p
+
+
+def test_load_project_guide_reads_mini_cc_dir(tmp_path):
+    """F1.1: PROJECT.md under .mini_cc/ is loaded verbatim."""
+    from mini_cc.core.system_prompt import load_project_guide
+    g = tmp_path / ".mini_cc"
+    g.mkdir(parents=True)
+    (g / "PROJECT.md").write_text("# Rules\n- no breaking changes", encoding="utf-8")
+    out = load_project_guide(tmp_path)
+    assert "no breaking changes" in out
+
+
+def test_load_project_guide_returns_empty_when_missing(tmp_path):
+    from mini_cc.core.system_prompt import load_project_guide
+    assert load_project_guide(tmp_path) == ""
+
+
 def test_estimate_size():
     msgs = [{"role": "user", "content": "abcd"}]
     # ~4 chars per token -> 1 token
