@@ -1,5 +1,7 @@
+import { useState } from "react";
 import type { ChatActivity, ChatMessage } from "../lib/store";
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { lineDiff, diffStats } from "../lib/diff"
 
 export default function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "user") {
@@ -76,22 +78,116 @@ function Activity({
       </button>
       {activity.expanded && (
         <div className="border-t border-border p-3 space-y-2 bg-bg">
-          <div>
-            <div className="text-xs text-ink-dim mb-1">input</div>
-            <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-bg-card border border-border rounded p-2">
-              {JSON.stringify(activity.input, null, 2)}
-            </pre>
-          </div>
-          {activity.result !== undefined && (
-            <div>
-              <div className="text-xs text-ink-dim mb-1">result</div>
-              <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-bg-card border border-border rounded p-2 max-h-64 overflow-auto">
-                {activity.result}
-              </pre>
-            </div>
-          )}
+          <ActivityBody activity={activity} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Render an expanded activity's input + result.
+ *
+ * F4.1 special-cases edit_file/write_file to show a unified diff
+ * (input.old vs input.new) instead of the raw JSON. All other tools
+ * fall back to JSON input + text result.
+ *
+ * Long outputs (> COLLAPSE_THRESHOLD lines) render with a "Show more"
+ * toggle so the chat scroll doesn't get wrecked by a 10k-line log.
+ */
+const COLLAPSE_THRESHOLD = 50;
+
+function ActivityBody({ activity }: { activity: ChatActivity }) {
+  const isEdit = activity.name === "edit_file" || activity.name === "write_file";
+  if (isEdit) {
+    const oldText = String(activity.input?.old ?? "");
+    const newText = String(activity.input?.new ?? activity.input?.content ?? "");
+    const path = String(activity.input?.path ?? "");
+    const stats = diffStats(oldText, newText);
+    const lines = lineDiff(oldText, newText);
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-ink-dim">
+          {path && <span className="font-mono">{path} </span>}
+          <span className="text-ok">+{stats.adds}</span>{" "}
+          <span className="text-err">-{stats.dels}</span>
+        </div>
+        <DiffView lines={lines} />
+      </div>
+    );
+  }
+  return (
+    <>
+      <div>
+        <div className="text-xs text-ink-dim mb-1">input</div>
+        <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-bg-card border border-border rounded p-2">
+          {JSON.stringify(activity.input, null, 2)}
+        </pre>
+      </div>
+      {activity.result !== undefined && (
+        <div>
+          <div className="text-xs text-ink-dim mb-1">result</div>
+          <CollapsibleOutput text={activity.result} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function DiffView({ lines }: { lines: { op: string; text: string }[] }) {
+  const shown = lines.slice(0, COLLAPSE_THRESHOLD);
+  const hidden = lines.length - shown.length;
+  const [expanded, setExpanded] = useState(false);
+  const display = expanded ? lines : shown;
+  return (
+    <div>
+      <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-bg-card border border-border rounded p-2 max-h-96 overflow-auto">
+        {display.map((l, i) => (
+          <div key={i} className={
+            l.op === "add" ? "text-ok bg-ok/10" :
+            l.op === "del" ? "text-err bg-err/10" : ""}>
+            <span className="select-none opacity-60 pr-2">
+              {l.op === "add" ? "+" : l.op === "del" ? "−" : " "}
+            </span>
+            {l.text}
+          </div>
+        ))}
+      </pre>
+      {hidden > 0 && (
+        <button onClick={() => setExpanded(v => !v)}
+          className="text-xs text-accent hover:underline mt-1">
+          {expanded ? "Show less" : `Show ${hidden} more lines`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CollapsibleOutput({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const [expanded, setExpanded] = useState(false);
+  if (lines.length <= COLLAPSE_THRESHOLD) {
+    return (
+      <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-bg-card border border-border rounded p-2 max-h-64 overflow-auto">
+        {text}
+      </pre>
+    );
+  }
+  const shown = expanded ? text : lines.slice(0, COLLAPSE_THRESHOLD).join("\n");
+  return (
+    <div>
+      <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-bg-card border border-border rounded p-2 max-h-96 overflow-auto">
+        {shown}
+        {!expanded && (
+          <div className="text-ink-dim italic">
+            ... ({lines.length - COLLAPSE_THRESHOLD} more lines)
+          </div>
+        )}
+      </pre>
+      <button onClick={() => setExpanded(v => !v)}
+        className="text-xs text-accent hover:underline mt-1">
+        {expanded ? "Show less" : `Show all ${lines.length} lines`}
+      </button>
     </div>
   );
 }
