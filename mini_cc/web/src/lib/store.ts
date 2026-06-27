@@ -351,7 +351,7 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
         name: b.name ?? "",
         input: b.input ?? {},
         result: undefined,
-        expanded: true, // default-expanded
+        expanded: false,
       });
     }
   }

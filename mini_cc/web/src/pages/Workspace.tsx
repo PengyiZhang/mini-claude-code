@@ -292,7 +292,7 @@ export default function Workspace() {
                 id: ev.id,
                 name: ev.name,
                 input: ev.input,
-                expanded: true,
+                expanded: false,
               });
               break;
             case "tool_result":
