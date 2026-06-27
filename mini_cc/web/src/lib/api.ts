@@ -371,6 +371,24 @@ export async function getRunTableBackground(
   return (await res.json()) as BackgroundTaskOut[];
 }
 
+// F4.2: single-task status for the inline background tile. Returns
+// null when the task has been drained (404) so the caller can render
+// the original tool_use result instead.
+export async function getOneBackground(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+  bgId: string,
+): Promise<BackgroundTaskOut | null> {
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/sessions/${sid}/run-table/background/${encodeURIComponent(bgId)}`),
+    { headers: authHeaders(profile) },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) await parseErr(res);
+  return (await res.json()) as BackgroundTaskOut;
+}
+
 // ── Admin / keys (Phase F) ───────────────────────────────────────────
 // Admin uses an explicit tenantId (may differ from chat tenant profile).
 

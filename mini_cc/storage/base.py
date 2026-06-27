@@ -39,6 +39,15 @@ class SessionMeta:
     in_memory: bool = False
 
 
+@dataclass
+class SearchHit:
+    """One matching fragment from a /search query (F3.1)."""
+    session_id: str
+    role: str          # "user" | "assistant" | "system"
+    snippet: str       # windowed text around the match
+    message_index: int  # 0-based position in the session's messages
+
+
 class Storage(Protocol):
     """Per-project state persistence.
 
@@ -70,6 +79,10 @@ class Storage(Protocol):
     def save_session_meta(self, project_id: str, meta: SessionMeta) -> None: ...
     def delete_session_meta(self, project_id: str, session_id: str) -> None: ...
     def delete_session(self, project_id: str, session_id: str) -> None: ...
+
+    # Cross-session search (F3.1)
+    def search_messages(self, project_id: str, query: str,
+                        limit: int = 20) -> list["SearchHit"]: ...
 
     # Transcripts
     def write_transcript(self, project_id: str, msgs: list[dict]) -> None: ...

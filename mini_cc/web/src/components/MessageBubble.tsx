@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { ChatActivity, ChatMessage } from "../lib/store";
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { lineDiff, diffStats } from "../lib/diff"
+import BackgroundTile from "./BackgroundTile"
+import { useAuth } from "../lib/store"
 
 export default function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "user") {
@@ -78,7 +80,7 @@ function Activity({
       </button>
       {activity.expanded && (
         <div className="border-t border-border p-3 space-y-2 bg-bg">
-          <ActivityBody activity={activity} />
+          <ActivityBody activity={activity} chatKey={key} />
         </div>
       )}
     </div>
@@ -97,7 +99,10 @@ function Activity({
  */
 const COLLAPSE_THRESHOLD = 50;
 
-function ActivityBody({ activity }: { activity: ChatActivity }) {
+function ActivityBody({ activity, chatKey }: {
+  activity: ChatActivity;
+  chatKey?: string;
+}) {
   const isEdit = activity.name === "edit_file" || activity.name === "write_file";
   if (isEdit) {
     const oldText = String(activity.input?.old ?? "");
@@ -116,6 +121,12 @@ function ActivityBody({ activity }: { activity: ChatActivity }) {
       </div>
     );
   }
+  // F4.2: when the result carries a "[Background task bg_xxx started]"
+  // marker, render the live-updating tile instead of the static result.
+  const bgId = parseBgId(activity.result);
+  if (bgId) {
+    return <BackgroundTileBody activity={activity} bgId={bgId} chatKey={chatKey} />;
+  }
   return (
     <>
       <div>
@@ -131,6 +142,37 @@ function ActivityBody({ activity }: { activity: ChatActivity }) {
         </div>
       )}
     </>
+  );
+}
+
+function parseBgId(result: string | undefined): string | null {
+  if (!result) return null;
+  const m = result.match(/\[Background task (bg_[a-zA-Z0-9_-]+) started\]/);
+  return m ? m[1] : null;
+}
+
+function BackgroundTileBody({ activity, bgId, chatKey }: {
+  activity: ChatActivity;
+  bgId: string;
+  chatKey?: string;
+}) {
+  const profile = useAuth((s) => s.current());
+  // chatKey shape is `${pid}/${sid}` — see Workspace.tsx.
+  const [pid, sid] = (chatKey ?? "/").split("/");
+  if (!profile || !pid || !sid) {
+    return (
+      <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-bg-card border border-border rounded p-2">
+        {activity.result}
+      </pre>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <div className="text-xs text-ink-dim">
+        Started background task — polling for progress.
+      </div>
+      <BackgroundTile profile={profile} pid={pid} sid={sid} bgId={bgId} />
+    </div>
   );
 }
 

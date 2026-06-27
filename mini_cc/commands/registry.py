@@ -239,6 +239,134 @@ def _cmd_tools(ctx: CommandContext) -> Iterator[dict]:
     yield {"type": "done"}
 
 
+def _cmd_search(ctx: CommandContext) -> Iterator[dict]:
+    """F3.1: substring search across every session in the project."""
+    query = (ctx.args or "").strip()
+    if not query:
+        yield {"type": "text",
+               "text": "Usage: `/search <query>` — searches every session's "
+                       "messages in this project."}
+        yield {"type": "done"}
+        return
+    storage = ctx.storage
+    if storage is None and ctx.project is not None:
+        storage = ctx.project.storage
+    if storage is None:
+        yield {"type": "text", "text": "Error: storage unavailable."}
+        yield {"type": "done"}
+        return
+    try:
+        hits = storage.search_messages(ctx.project_id, query, limit=20)
+    except Exception as e:
+        yield {"type": "text", "text": f"Error: {type(e).__name__}: {e}"}
+        yield {"type": "done"}
+        return
+    if not hits:
+        yield {"type": "text", "text": f"No matches for `{query}`."}
+        yield {"type": "done"}
+        return
+    lines = [f"**Found {len(hits)} match{'es' if len(hits)!=1 else ''} "
+             f"for `{query}`:**", ""]
+    for h in hits:
+        lines.append(f"- **{h.session_id}** ({h.role}, msg #{h.message_index + 1}):")
+        lines.append(f"  > {h.snippet}")
+    lines.append("")
+    lines.append("Use `/resume <session_id>` to open a matching session.")
+    yield {"type": "text", "text": "\n".join(lines)}
+    yield {"type": "done"}
+
+
+def _cmd_export(ctx: CommandContext) -> Iterator[dict]:
+    """F3.2: export this session to markdown or JSON.
+
+    Output lands in the chat (so the user can copy) AND is persisted to
+    ``<workspace>/.mini_cc/exports/<sid>.<ext>`` so it can be retrieved
+    via the fs tools / downloaded from the file tree.
+    """
+    import json as _json
+    from pathlib import Path
+    fmt = (ctx.args or "").strip().lower() or "md"
+    if fmt not in ("md", "json"):
+        yield {"type": "text",
+               "text": f"Unknown format `{fmt}`. Use `/export md` or `/export json`."}
+        yield {"type": "done"}
+        return
+    storage = ctx.storage
+    if storage is None and ctx.project is not None:
+        storage = ctx.project.storage
+    if storage is None:
+        yield {"type": "text", "text": "Error: storage unavailable."}
+        yield {"type": "done"}
+        return
+    try:
+        msgs = storage.load_messages(ctx.project_id, ctx.session_id)
+    except Exception as e:
+        yield {"type": "text", "text": f"Error loading session: {e}"}
+        yield {"type": "done"}
+        return
+    if not msgs:
+        yield {"type": "text", "text": "Session is empty — nothing to export."}
+        yield {"type": "done"}
+        return
+    if fmt == "json":
+        body = _json.dumps(msgs, ensure_ascii=False, indent=2, default=str)
+    else:
+        body = _render_session_markdown(ctx.session_id, msgs)
+    # Persist to workspace exports dir for retrieval.
+    ws = (ctx.project.workspace if ctx.project is not None else None)
+    saved_to = ""
+    if ws is not None:
+        try:
+            exports = Path(ws) / ".mini_cc" / "exports"
+            exports.mkdir(parents=True, exist_ok=True)
+            fp = exports / f"{ctx.session_id}.{fmt}"
+            fp.write_text(body, encoding="utf-8")
+            saved_to = f"\n\nSaved to `{fp}`."
+        except OSError as e:
+            saved_to = f"\n\n(warn: could not save file: {e})"
+    preview = body if len(body) < 4000 else body[:4000] + "\n... (truncated preview)"
+    yield {"type": "text",
+           "text": f"```{fmt}\n{preview}\n```{saved_to}"}
+    yield {"type": "done"}
+
+
+def _render_session_markdown(session_id: str, msgs: list[dict]) -> str:
+    """Render an Anthropic-shaped message list as readable markdown."""
+    import json as _json
+    out = [f"# Session {session_id}", ""]
+    for m in msgs:
+        role = m.get("role", "unknown")
+        content = m.get("content")
+        if isinstance(content, str):
+            out.append(f"## {role}\n\n{content}\n")
+            continue
+        if not isinstance(content, list):
+            continue
+        chunks: list[str] = []
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text":
+                chunks.append(b.get("text", ""))
+            elif t == "tool_use":
+                inp = _json.dumps(b.get("input", {}), ensure_ascii=False)
+                chunks.append(f"**tool_use `{b.get('name', '')}`:**\n```json\n{inp}\n```")
+            elif t == "tool_result":
+                inner = b.get("content")
+                if isinstance(inner, str):
+                    text = inner
+                elif isinstance(inner, list):
+                    text = "\n".join(str(ib.get("text", "")) for ib in inner
+                                     if isinstance(ib, dict) and ib.get("type") == "text")
+                else:
+                    text = str(inner)
+                chunks.append(f"**tool_result:**\n```\n{text}\n```")
+        if chunks:
+            out.append(f"## {role}\n\n" + "\n\n".join(chunks) + "\n")
+    return "\n".join(out)
+
+
 def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
     """List MCP servers registered for this project.
 
@@ -1153,6 +1281,20 @@ def default_registry() -> CommandRegistry:
         name="tools",
         description="List all tools (builtin + MCP) the agent can call.",
         handler=_cmd_tools,
+    ))
+    reg.register(SlashCommand(
+        name="search",
+        description=("Search every session's messages in this project for a "
+                     "keyword. `/search login` returns matching snippets with "
+                     "session ids. Use `/resume <id>` to open one."),
+        handler=_cmd_search,
+    ))
+    reg.register(SlashCommand(
+        name="export",
+        description=("Export this session to markdown or JSON. `/export md` "
+                     "(default) or `/export json`. Output is appended to chat "
+                     "and saved to <workspace>/.mini_cc/exports/<sid>.<ext>."),
+        handler=_cmd_export,
     ))
     _DEFAULT = reg
     return reg

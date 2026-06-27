@@ -113,3 +113,39 @@ def get_background(sid: str = Path(...),
     except Exception:
         return []
     return [t if isinstance(t, dict) else dict(t) for t in tasks]
+
+
+@router.get("/{sid}/run-table/background/{bg_id}")
+def get_one_background(bg_id: str = Path(...),
+                      sid: str = Path(...),
+                      pid: str = Path(...),
+                      tid: str = Depends(require_scope("sessions:read")),
+                      pm=Depends(get_pm),
+                      sm=Depends(get_sm)) -> dict:
+    """F4.2: single background-task status + partial result.
+
+    Used by the inline BackgroundTile in the chat (polls every 2s while
+    ``status == "running"``, then stops). Returns 404 when the bg task
+    is unknown (e.g. already drained as a task_notification).
+    """
+    validate_id(pid)
+    validate_id(sid)
+    _check_project_tenant(pid, tid, pm)
+    from fastapi import HTTPException
+    ref = _loop_or_404(pid, sid, sm)
+    bg = getattr(ref, "background", None)
+    if bg is None or not hasattr(bg, "status"):
+        raise HTTPException(status_code=404, detail="no background scheduler")
+    status = bg.status(bg_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"bg_id {bg_id} not found")
+    result = ""
+    try:
+        result = bg.get_output(bg_id) or ""
+    except Exception:
+        pass
+    # Strip the "[bg_xxx still running]" wrapper the scheduler adds so
+    # the tile shows just the partial output.
+    if result.startswith("[") and "still running]" in result:
+        result = ""
+    return {"bg_id": bg_id, "status": status, "result": result}

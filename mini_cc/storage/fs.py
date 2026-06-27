@@ -161,6 +161,58 @@ class FSStorage:
         index = self._load_sessions_index(project_id)
         return [SessionMeta(**v) for v in index.values()]
 
+    def search_messages(self, project_id, query, limit=20):
+        """Substring search across every session's messages in a project.
+
+        Returns top-N SearchHit objects (session_id + role + windowed
+        snippet + message_index). Case-insensitive. Implementation is
+        deliberately simple linear scan — adequate for moderate scale;
+        swap to sqlite FTS5 later without changing the call site.
+        """
+        from .base import SearchHit
+        q = (query or "").lower()
+        if not q.strip():
+            return []
+        proj_dir = self._proj(project_id)
+        msgs_dir = proj_dir / "messages"
+        if not msgs_dir.exists():
+            return []
+        hits: list[SearchHit] = []
+        WINDOW = 80  # chars of context on each side of the match
+        try:
+            files = sorted(msgs_dir.glob("*.json"))
+        except OSError:
+            return []
+        for fp in files:
+            if len(hits) >= limit:
+                break
+            session_id = fp.stem
+            try:
+                msgs = json.loads(fp.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            for i, m in enumerate(msgs):
+                if len(hits) >= limit:
+                    break
+                role = m.get("role", "")
+                text = _extract_text(m.get("content"))
+                if not text:
+                    continue
+                low = text.lower()
+                pos = low.find(q)
+                if pos < 0:
+                    continue
+                start = max(0, pos - WINDOW)
+                end = min(len(text), pos + len(q) + WINDOW)
+                snippet = text[start:end]
+                if start > 0:
+                    snippet = "…" + snippet
+                if end < len(text):
+                    snippet = snippet + "…"
+                hits.append(SearchHit(session_id=session_id, role=role,
+                                      snippet=snippet, message_index=i))
+        return hits
+
     def save_session_meta(self, project_id, meta: SessionMeta) -> None:
         with self._lock(f"{project_id}:sessions"):
             fp = self._sessions_index_path(project_id)
@@ -325,3 +377,37 @@ class FSStorage:
             return True
         except FileNotFoundError:
             return False
+
+
+def _extract_text(content) -> str:
+    """Flatten a message's `content` field to plain text.
+
+    Anthropic-shaped: either a string ("hi") or a list of blocks:
+    [{"type": "text", "text": "..."}, {"type": "tool_use", ...}, ...].
+    Tool-use blocks contribute their name + input (so /search can hit
+    "edit_file" commands); tool_result blocks contribute their content.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text" and isinstance(b.get("text"), str):
+                parts.append(b["text"])
+            elif t == "tool_use":
+                parts.append(f"{b.get('name', '')} {json.dumps(b.get('input', {}), ensure_ascii=False)}")
+            elif t == "tool_result":
+                inner = b.get("content")
+                if isinstance(inner, str):
+                    parts.append(inner)
+                elif isinstance(inner, list):
+                    for ib in inner:
+                        if isinstance(ib, dict) and ib.get("type") == "text":
+                            parts.append(str(ib.get("text", "")))
+        return " ".join(parts)
+    return ""
