@@ -102,14 +102,39 @@ def _validate_webhook_url(url: str) -> None:
 
 
 def _webhook_secret() -> str:
-    """HMAC secret for signing payloads. Falls back to the share-token
-    secret so operators configure one knob for both."""
-    for name in ("MINI_CC_WEBHOOK_SECRET", "MINI_CC_SHARE_SECRET"):
-        v = os.environ.get(name)
-        if v and v.strip():
-            return v.strip()
-    # Dev fallback — same caveat as share tokens applies.
-    return "dev-webhook-secret"
+    """HMAC secret for signing webhook payloads.
+
+    P0-D: previously fell back to ``MINI_CC_SHARE_SECRET`` so "one knob
+    controls both". That coupled two unrelated failure domains — a
+    leaked webhook signing key (outgoing requests, third-party SaaS
+    endpoints) would let an attacker forge share tokens (incoming
+    read-access grants). Now reads ``MINI_CC_WEBHOOK_SECRET`` only;
+    falls back to a per-process dev secret when unset (and
+    ``warn_if_default_webhook_secret`` fires at startup to surface it).
+    """
+    v = os.environ.get("MINI_CC_WEBHOOK_SECRET")
+    if v and v.strip():
+        return v.strip()
+    return _dev_fallback_webhook_secret()
+
+
+_WEBHOOK_DEV_SECRET: str | None = None
+
+
+def _dev_fallback_webhook_secret() -> str:
+    """Per-process random secret. NOT safe for production. Exposed via
+    :func:`warn_if_default_webhook_secret` for startup-time surfacing."""
+    global _WEBHOOK_DEV_SECRET
+    if _WEBHOOK_DEV_SECRET is None:
+        _WEBHOOK_DEV_SECRET = "dev-webhook:" + uuid.uuid4().hex
+    return _WEBHOOK_DEV_SECRET
+
+
+def warn_if_default_webhook_secret() -> bool:
+    """True when ``MINI_CC_WEBHOOK_SECRET`` is unset and we're using the
+    per-process dev fallback. Surfaced at server startup."""
+    v = os.environ.get("MINI_CC_WEBHOOK_SECRET", "").strip()
+    return not v
 
 
 @dataclass

@@ -271,6 +271,67 @@ def test_health_no_auth_required(app_and_client):
     assert r.json() == {"ok": True}
 
 
+def test_startup_warns_on_dev_fallback_secrets(tmp_path, monkeypatch, caplog):
+    """P0-C: when MINI_CC_SHARE_SECRET / MINI_CC_WEBHOOK_SECRET are unset,
+    the server must surface a WARNING at startup so operators don't
+    silently run multi-tenant production on per-process dev fallbacks
+    (tokens invalidating on every restart, shared signing surface)."""
+    import logging
+    from mini_cc.auth import TenantKeyRegistry
+    from mini_cc.config import set_default_config
+    from mini_cc.projects import ProjectManager
+    from mini_cc.session import SessionManager
+    from mini_cc.server.app import build_app
+    from starlette.testclient import TestClient
+
+    monkeypatch.delenv("MINI_CC_SHARE_SECRET", raising=False)
+    monkeypatch.delenv("MINI_CC_SHARE_SECRETS", raising=False)
+    monkeypatch.delenv("MINI_CC_WEBHOOK_SECRET", raising=False)
+
+    reg = TenantKeyRegistry(tmp_path / "keys.json")
+    (tmp_path / "keys.json").write_text('{"mck_testkey": "tenant1"}')
+    pm = ProjectManager(tmp_path / "projects")
+    sm = SessionManager(pm)
+    app = build_app(data_dir=tmp_path, key_registry=reg, pm=pm, sm=sm)
+    set_default_config(_MockConfig(_MockClient([])))
+    with caplog.at_level(logging.WARNING, logger="mini_cc.server.startup"):
+        with TestClient(app) as _:
+            pass
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "MINI_CC_SHARE_SECRET not set" in msgs
+    assert "MINI_CC_WEBHOOK_SECRET not set" in msgs
+    import mini_cc.config as cfg
+    cfg._DEFAULT = None
+
+
+def test_startup_quiet_when_real_secrets_set(tmp_path, monkeypatch, caplog):
+    """Counter-test: when both secrets are configured, no dev-fallback
+    WARNING fires."""
+    import logging
+    from mini_cc.auth import TenantKeyRegistry
+    from mini_cc.projects import ProjectManager
+    from mini_cc.session import SessionManager
+    from mini_cc.server.app import build_app
+    from starlette.testclient import TestClient
+
+    monkeypatch.setenv("MINI_CC_SHARE_SECRET", "real-share-secret")
+    monkeypatch.setenv("MINI_CC_WEBHOOK_SECRET", "real-webhook-secret")
+
+    reg = TenantKeyRegistry(tmp_path / "keys.json")
+    (tmp_path / "keys.json").write_text('{"mck_testkey": "tenant1"}')
+    pm = ProjectManager(tmp_path / "projects")
+    sm = SessionManager(pm)
+    app = build_app(data_dir=tmp_path, key_registry=reg, pm=pm, sm=sm)
+    with caplog.at_level(logging.WARNING, logger="mini_cc.server.startup"):
+        with TestClient(app) as _:
+            pass
+    startup_warns = [r for r in caplog.records
+                     if "dev-fallback" in r.getMessage()
+                     or "not set" in r.getMessage()]
+    assert startup_warns == [], \
+        f"no dev-fallback warning expected, got: {startup_warns}"
+
+
 # ── Auth ─────────────────────────────────────────────────────────────
 
 def test_auth_missing_bearer_returns_401(app_and_client):

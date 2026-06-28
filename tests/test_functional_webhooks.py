@@ -185,6 +185,34 @@ def test_registry_rejects_url_with_dns_pointing_to_private(tmp_path: Path, monke
     raise AssertionError("DNS-to-private must be rejected")
 
 
+def test_webhook_secret_decoupled_from_share_secret(monkeypatch):
+    """P0-D regression: webhook HMAC secret must NOT fall back to the
+    share-token secret. Coupling them turned one leak (outgoing webhook
+    signing key, exposed in third-party SaaS endpoints) into another
+    (incoming read-access share tokens)."""
+    from mini_cc.sharing.webhooks import _webhook_secret
+    # MINI_CC_SHARE_SECRET set, MINI_CC_WEBHOOK_SECRET unset → must NOT
+    # use the share secret.
+    monkeypatch.setenv("MINI_CC_SHARE_SECRET", "share-only-secret")
+    monkeypatch.delenv("MINI_CC_WEBHOOK_SECRET", raising=False)
+    s = _webhook_secret()
+    assert s != "share-only-secret", \
+        "webhook secret must not inherit from MINI_CC_SHARE_SECRET"
+    # And it should be the dev-fallback value.
+    from mini_cc.sharing.webhooks import warn_if_default_webhook_secret
+    assert warn_if_default_webhook_secret() is True
+
+
+def test_warn_if_default_webhook_secret(monkeypatch):
+    """P0-C: surfacing the dev-fallback at startup is how operators
+    notice they forgot to set MINI_CC_WEBHOOK_SECRET in prod."""
+    from mini_cc.sharing.webhooks import warn_if_default_webhook_secret
+    monkeypatch.delenv("MINI_CC_WEBHOOK_SECRET", raising=False)
+    assert warn_if_default_webhook_secret() is True
+    monkeypatch.setenv("MINI_CC_WEBHOOK_SECRET", "real-prod-secret")
+    assert warn_if_default_webhook_secret() is False
+
+
 def test_dispatcher_deliverer_exception_is_swallowed(tmp_path: Path):
     reg = WebhookRegistry(tmp_path, "p1")
     reg.add("https://x.io", [])

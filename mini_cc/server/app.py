@@ -1,6 +1,7 @@
 """FastAPI app factory + lifespan management."""
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,6 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from ..auth import TenantKeyRegistry
 from ..projects import ProjectManager
 from ..session import SessionManager
+from ..sharing.tokens import warn_if_default_secret as share_secret_in_dev
+from ..sharing.webhooks import warn_if_default_webhook_secret
 from .errors import MiniCCError, envelope, map_sdk_exception
 from .metrics import MetricsRegistry, default_registry
 from .middleware import MetricsMiddleware, TraceIdMiddleware
@@ -28,8 +31,31 @@ from .routes import run_table as run_table_routes
 from .routes import webhooks as webhooks_routes
 
 
+log = logging.getLogger("mini_cc.server.startup")
+
+
+def _warn_insecure_defaults() -> None:
+    """P0-C: surface dev-fallback secrets at startup so operators don't
+    accidentally run a multi-tenant deployment where share tokens are
+    signed with a process-random value (invalidating every link on
+    restart) and webhook payloads share that same key. The HTTP API
+    exposes `default_secret_in_use` per-call, but a startup log line is
+    what actually gets noticed."""
+    if share_secret_in_dev():
+        log.warning(
+            "MINI_CC_SHARE_SECRET not set — using dev-fallback secret. "
+            "Share tokens will invalidate on every restart. "
+            "DO NOT run multi-tenant production this way.")
+    if warn_if_default_webhook_secret():
+        log.warning(
+            "MINI_CC_WEBHOOK_SECRET not set — using dev-fallback secret. "
+            "Webhook signatures will invalidate on every restart. "
+            "DO NOT run multi-tenant production this way.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    _warn_insecure_defaults()
     yield
     # Shutdown: stop every live session. Sessions are in-memory so they
     # die with the process anyway, but we want clean loop.stop() flags
