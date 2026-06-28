@@ -19,8 +19,12 @@ Hook event signatures (callbacks receive these args):
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from typing import Any, Callable
+
+
+logger = logging.getLogger(__name__)
 
 
 class Hooks:
@@ -45,9 +49,20 @@ class Hooks:
 
     def trigger(self, event: str, *args) -> Any:
         """Call each callback in registration order. Returns the first
-        non-None result; None if no callback returned anything."""
+        non-None result; None if no callback returned anything.
+
+        B3: each callback is wrapped in try/except so a buggy hook
+        can't take down the whole turn. The exception is logged and
+        the hook is skipped; downstream hooks still run.
+        """
         for cb in self._hooks.get(event, ()):
-            result = cb(*args)
+            try:
+                result = cb(*args)
+            except Exception as e:
+                logger.exception(
+                    "hook.exception event=%s callback=%s error=%s",
+                    event, getattr(cb, "__name__", repr(cb)), e)
+                continue
             if result is not None:
                 return result
         return None
