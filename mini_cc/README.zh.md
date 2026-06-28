@@ -5,6 +5,10 @@
 生产级多租户场景:按项目隔离、可插拔存储、无模块级全局状态、
 可选的 HTTP/SSE 传输层。
 
+> **新功能手册**:`docs/zh/2026-06-28-functional-features.zh.md` 详细记录了
+> F1/F3/F4/F5/F6/F7 六大功能块的设计动机、使用方式、后端/前端代码位置与
+> 测试覆盖。本 README 只列入口,细节请翻该文档。
+
 模型是 driver,本包是 vehicle。既可以作为 SDK 嵌入 Python 后端,
 也可以直接拉起 server,被任意语言的客户端驱动。
 
@@ -196,6 +200,13 @@ data: [DONE]\n\n
 | `POST`   | `/tenants/{tid}/projects/{pid}/files/upload?path=` | multipart 上传;可选 `rel_paths` 字段保留文件夹结构 |
 | `DELETE` | `/tenants/{tid}/projects/{pid}/files?path=`       | 删除文件或目录                             |
 | `GET`    | `/tenants/{tid}/projects/{pid}/download`          | 以 ZIP 流式下载项目工作区                  |
+| `GET`    | `/tenants/{tid}/projects/-/templates`             | 列出可用项目模板(F6.1)                    |
+| `POST`   | `/tenants/{tid}/projects/{pid}/sessions/{sid}/share` | 签发只读 share token(F7.1),需 `sessions:read` |
+| `GET`    | `/shared/{token}/messages`                        | 公开只读:返回 token 指向的会话消息(F7.1) |
+| `GET`    | `/shared/{token}/embed`                           | 公开只读:返回可嵌入 iframe 的 HTML(F7.3) |
+| `GET`    | `/tenants/{tid}/projects/{pid}/webhooks`          | 列出项目 webhook 订阅(F7.2)               |
+| `POST`   | `/tenants/{tid}/projects/{pid}/webhooks`          | 注册 webhook;body `{url, event_types[]}`  |
+| `DELETE` | `/tenants/{tid}/projects/{pid}/webhooks/{hook_id}` | 删除 webhook                               |
 
 错误信封(所有错误统一一种形状):
 
@@ -296,6 +307,10 @@ fixture 字节保持不变。
 | `MINI_CC_OTEL_EXPORTER` | (空)              | `otlp` / `jaeger` / `console`(否则仅日志)     |
 | `MINI_CC_OTEL_ENDPOINT` | `http://localhost:4317` | OTLP gRPC 端点                          |
 | `MINI_CC_OTEL_SERVICE_NAME` | `mini-cc`       | OTel resource 属性                             |
+| `MINI_CC_SHARE_SECRET`      | —                  | F7.1 share token / F7.2 webhook 的 HMAC 密钥(单值) |
+| `MINI_CC_SHARE_SECRETS`     | —                  | 同上,逗号分隔支持轮换;优先级高于单值            |
+| `MINI_CC_WEBHOOK_SECRET`    | —                  | F7.2 webhook 专用密钥;未设时回落到 SHARE_SECRET |
+| `MINI_CC_TEMPLATES_DIR`     | 包内 `templates/`  | F6.1 自定义模板包根目录(操作员可放外部 pack)   |
 
 编程式配置:
 
@@ -492,7 +507,7 @@ timeout_seconds = 300   # 可选;默认 300
 
 ## 测试
 
-本框架带 289 个通过的测试 + 24 个子测试(pytest)。s20 的 mock 模式
+本框架带 844 个通过的测试 + 24 个子测试(pytest)。s20 的 mock 模式
 镜像在 `tests/test_p0_*.py`。
 
 ```bash
@@ -562,6 +577,12 @@ cd mini_cc/web && npm run dev
     侧边栏的 session 列表为每个会话显示**冷/暖点**,悬停可看到
     "warm" 按钮触发 `/sessions/{sid}/resume` 把磁盘上的 session
     载入内存。
+    - **F4.1 差异视图**:`edit_file` / `write_file` 展开后显示 unified
+      diff(增行染绿、删行染红);差异超 50 行自动折叠。
+    - **F4.2 后台任务 tile**:后台任务启动后,活动卡内联展示实时
+      进度(每 2s 轮询),完成或被 drain 后自动停轮询。
+    - **F5.1 子 agent 抽屉**:`task` 工具调用以 🤖 + 强调色边框渲染,
+      展开后看到任务描述 + 子 agent 最终摘要。
   - **Files** —— 递归文件树,右键菜单:上传文件、上传文件夹
     (通过 `webkitdirectory` 保留结构)、新建文件夹、预览、删除。
     支持下载项目 ZIP。
@@ -584,6 +605,36 @@ key。路由前缀 `/admin/*`,使用独立的 `localStorage` 槽
   并渲染:按路由的 HTTP 请求计数、req/min 的迷你折线图、token
   分项(input / output / cache_read / cache_create)、Anthropic
   请求状态表、HTTP 与 Anthropic 延迟直方图的桶分布柱状条。
+
+### 斜杠命令(`/`)
+
+在 chat 输入框里输入 `/` 触发菜单。命令分为客户端(只切 UI)和服务器端
+(后端处理后产出 SSE 事件)两种。常用命令一览:
+
+| 命令            | 作用                                                          |
+| --------------- | ------------------------------------------------------------- |
+| `/help`         | 列出所有可用命令                                              |
+| `/clear`        | 清空当前会话内存 + 盘上的消息                                 |
+| `/sessions`     | 列出项目内所有 session                                        |
+| `/resume [sid]` | 列出 / 切到指定 session                                       |
+| `/fork`         | **F3.3** 把当前会话分叉到新 session_id 并切换                 |
+| `/search <q>`   | **F3.1** 跨 session 子串检索                                  |
+| `/export [md\|json]` | **F3.2** 导出当前会话;落盘到 `<workspace>/.mini_cc/exports/` |
+| `/tasks`        | 列出项目中持久化任务                                          |
+| `/workflow`     | 显示/管理激活的工作流(`save`/`load`/`list`/`delete`/`clear`) |
+| `/bg`           | 列出后台任务;`/bg stop <bg_id>` 取消                         |
+| `/loop`         | 列出 cron + wakeup 任务                                       |
+| `/mcp`          | 列出 MCP server(已连 / 可连 / 失败)                          |
+| `/tools`        | 列出 agent 当前能调用的所有工具(builtin + MCP)              |
+| `/skills`       | 列出当前项目发现的 skills                                     |
+| `/permissions`  | 显示沙箱策略(blocked、allowed git、env 白名单)              |
+| `/cost`         | 显示当前租户的 token 用量                                     |
+| `/agents`       | 管理 teammates(`stop`/`inbox <name>`)                        |
+| `/config`       | 显示生效配置(API key 已脱敏)                                 |
+| `/model`        | 显示当前模型 + 后端(Anthropic / LiteLLM)                    |
+| `/output-style` | 设置输出风格(`terse`/`default`/`detailed`/`streamlined`)      |
+| `/compact`      | 强制触发历史压缩(压缩前快照)                                |
+| `/logs`         | 列出 `mini_cc/logs/` 下最近的日志文件                         |
 
 ### Playwright e2e
 

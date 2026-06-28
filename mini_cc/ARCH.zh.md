@@ -622,9 +622,44 @@ servers，**project 层同名覆盖上层**。`ProjectManager.create` 会自动�
 
 ### 5.8 命令 `commands/` 与 `lsp/`
 
-- `commands/registry.py`：斜杠命令（`/agents`、`/workflow`、`/bg`、`/mcp`、`/tools` 等）。
+- `commands/registry.py`：斜杠命令（`/agents`、`/workflow`、`/bg`、`/mcp`、`/tools`、
+  `/search`、`/export`、`/fork` 等）。
 - `lsp/`：per-project 语言服务器池，提供 definition/references/hover/symbol 等 9 个
   操作，以 `LSP_TOOL` 形式加入工具集。
+
+### 5.9 公开分享 `sharing/` 与 项目模板 `templates/`（F6/F7）
+
+```mermaid
+graph LR
+    subgraph F7_sharing[sharing/ —— 公开分享 + Webhook]
+        TOKENS["tokens.py<br/>HMAC 签名 share token<br/>issue/verify + 轮换"]
+        HOOKS["webhooks.py<br/>WebhookRegistry + Dispatcher<br/>HMAC 签名 + 重试"]
+    end
+    subgraph F6_templates[templates/ + projects/templates.py]
+        TMPL["内置模板包<br/>blank / python-cli / skill-starter"]
+        APPLY["apply_template<br/>copytree 到新工作区"]
+    end
+    SESS["server/routes/sessions.py<br/>share_router"]
+    PROJ["server/routes/projects.py"]
+    WH["server/routes/webhooks.py"]
+    TOKENS --> SESS
+    HOOKS --> WH
+    TMPL --> APPLY --> PROJ
+```
+
+- **F7.1 share token**：`sharing/tokens.py` 用 HMAC-SHA256 签一个自包含 payload
+  （`{project_id, session_id, mode, iat, exp, nonce}`）。密钥走 `MINI_CC_SHARE_SECRET`
+  环境变量，逗号分隔的 `*_SECRETS` 支持优雅轮换。`sharing/tokens.py:verify_share_token`
+  遍历候选密钥做 constant-time 比较。
+- **F7.2 webhook**：`sharing/webhooks.py` 的 `WebhookRegistry` 把订阅持久化到
+  `<state_root>/<pid>/webhooks.json`；`WebhookDispatcher` 包装 `AgentLoop.on_event`，
+  匹配 `event_types` 后在独立 daemon 线程里 POST + HMAC 签名 + 指数退避重试 3 次。
+- **F7.3 embed**：`server/routes/sessions.py:shared_embed` 渲染内联 HTML（含 CSP
+  + X-Frame-Options: ALLOWALL），客户端 JS 拉 `/shared/{token}/messages`。
+- **F6.1 模板**：`projects/templates.py` 提供 `list_templates / apply_template`，
+  `templates/<name>/template.json` 描述元数据，其余文件作为种子拷进新工作区。
+  `server/routes/projects.py:create_project` 在 `pm.create` 后调用并 `invalidate`
+  缓存。操作员可通过 `MINI_CC_TEMPLATES_DIR` 放外部 pack。
 
 ---
 
@@ -689,3 +724,10 @@ graph TD
 | 工具接口与注册 | `tools/base.py`、`tools/__init__.py:builtin_tools` |
 | REPL 多后端 | `tools/repl.py:_run_python`、`_get_osb_interp`、`tools/opensandbox_interp.py` |
 | MCP 工具注入 | `mcp/client.py:MCPPool.all_tools`、`core/loop.py:_build_tools` |
+| 公开分享 token | `sharing/tokens.py:issue_share_token`、`verify_share_token` |
+| Webhook 注册 + 派发 | `sharing/webhooks.py:WebhookRegistry`、`WebhookDispatcher` |
+| 项目模板 | `projects/templates.py:list_templates`、`apply_template` |
+| 斜杠命令 | `commands/registry.py:default_registry`、`_cmd_search`/`_cmd_export`/`_cmd_fork` |
+| 跨会话检索 | `storage/fs.py:search_messages`、`storage/base.py:SearchHit` |
+| 三层 memory | `memory/__init__.py:MemoryLoader`、`tools/memory.py` |
+| 项目级系统提示 | `core/system_prompt.py:load_project_guide`、`assemble_system_prompt` |
