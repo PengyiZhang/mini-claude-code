@@ -246,7 +246,33 @@ class MCPPool:
         return False, f"MCP server '{name}': unknown type {spec_type!r}"
 
     def disconnect(self, name: str) -> bool:
-        return self._clients.pop(name, None) is not None
+        """Disconnect from a server. Calls ``client.close()`` if the
+        client exposes it (real stdio/http transports do; the in-process
+        teaching variant doesn't) so the underlying subprocess /
+        connection pool is torn down before we drop the reference.
+
+        Without the explicit close, popping the reference leaves the
+        stdio subprocess running and the http connection pool held
+        until GC happens to collect them — and on long-running servers
+        that may be never.
+        """
+        client = self._clients.pop(name, None)
+        if client is None:
+            return False
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        return True
+
+    def disconnect_all(self) -> None:
+        """Disconnect every connected client. Used at app shutdown so
+        long-running servers don't leak MCP subprocesses across process
+        restarts."""
+        for name in list(self._clients.keys()):
+            self.disconnect(name)
 
     def list_connected(self) -> list[str]:
         return sorted(self._clients.keys())

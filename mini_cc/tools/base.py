@@ -2,6 +2,7 @@
 a ToolContext that carries per-project sandbox + storage."""
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, Optional, TYPE_CHECKING
 
@@ -51,6 +52,11 @@ class ToolContext:
     # to re-enter the handler it was launched from (set by AgentLoop).
     background_scheduler: Optional["BackgroundScheduler"] = None
     background_tools: Optional[dict] = None
+    # Cancel signal for background tasks. None in foreground contexts.
+    # When set, sandbox.execute() that honors the event will terminate
+    # its subprocess and return early. BackgroundScheduler.start_bg
+    # creates one event per task and threads it through a child ctx.
+    cancel_event: Optional[threading.Event] = None
 
 
 class Tool(Protocol):

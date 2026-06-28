@@ -15,6 +15,7 @@ without going through AgentLoop's auto-detect.
 """
 from __future__ import annotations
 
+import dataclasses
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -52,6 +53,11 @@ class _BGTask:
     # The worker thread itself so stop() can join once. None before the
     # thread is launched, may remain None if the worker already exited.
     _thread: threading.Thread | None = field(default=None, repr=False)
+    # Cancel signal. Stop() sets this; sandbox.execute() polls it and
+    # terminates its subprocess when set. None only briefly between
+    # dataclass init and start_bg populating it.
+    cancel_event: threading.Event = field(
+        default_factory=threading.Event, repr=False)
 
 
 class BackgroundScheduler:
@@ -93,6 +99,11 @@ class BackgroundScheduler:
         with self._lock:
             self._tasks[bg_id] = task
 
+        # Build a child context with the task's cancel_event attached so
+        # sandbox.execute() can observe cancellation. We can't mutate
+        # the caller's ctx — it's shared with the foreground loop.
+        child_ctx = dataclasses.replace(ctx, cancel_event=task.cancel_event)
+
         def worker():
             try:
                 tool = None
@@ -107,7 +118,7 @@ class BackgroundScheduler:
                     if isinstance(handler_map, dict):
                         tool = handler_map.get(tool_name)
                 output = ("Unknown tool" if tool is None
-                          else tool.handle(ctx, tool_input or {}))
+                          else tool.handle(child_ctx, tool_input or {}))
                 status = "completed"
             except Exception as e:  # never let the worker thread die silently
                 output = f"Error: {type(e).__name__}: {e}"
@@ -145,15 +156,19 @@ class BackgroundScheduler:
             task = self._tasks.get(bg_id)
             return task.status if task is not None else None
 
-    def stop(self, bg_id: str, *, timeout: float = 2.0) -> str:
+    def stop(self, bg_id: str, *, timeout: float = 5.0) -> str:
         """Best-effort cancel of a running background task.
 
-        Python threads aren't killable, so this just marks the task as
-        ``stopped`` so the worker's write-back is suppressed and any
-        later ``collect_notifications`` will produce a stopped notice
-        instead of a completed result. The underlying subprocess (if
-        any) keeps running until it finishes on its own — document this
-        honestly in the tool description.
+        Sets the task's cancel_event; sandbox.execute() that honors the
+        event will terminate its subprocess and return early. Also
+        marks the task ``stopped`` so the worker's write-back is
+        suppressed and the next collect_notifications surfaces a
+        stopped notice rather than a completed result.
+
+        Python threads aren't killable in the hard sense, so this is a
+        cooperative cancel — long-running subprocesses observe it on
+        their next 100ms poll. ``timeout`` is how long we wait for the
+        worker to actually exit after signalling.
         """
         with self._lock:
             task = self._tasks.get(bg_id)
@@ -163,13 +178,15 @@ class BackgroundScheduler:
                 return (f"[{bg_id} already {task.status}; nothing to stop]")
             task.status = "stopped"
             thread = task._thread
-        # We can't cancel the worker thread, but we can wait briefly for
-        # it to observe the status change if it's about to finish. Don't
-        # block long — the caller wants to move on.
+            cancel_event = task.cancel_event
+        # Signal the subprocess to die. sandbox.execute polls this at
+        # 100ms intervals; the worker thread will observe the
+        # CompletedProcess and write back shortly after.
+        cancel_event.set()
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
-        return (f"[{bg_id} stop requested] The worker thread will exit "
-                f"after its current subprocess returns; output suppressed.")
+        return (f"[{bg_id} stop requested] cancel_event set; subprocess "
+                f"terminated (best-effort). Output suppressed.")
 
     def list_tasks(self) -> list[dict]:
         """Snapshot of every known task (running or completed)."""

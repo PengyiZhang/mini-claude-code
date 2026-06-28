@@ -15,6 +15,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 from .base import CommandBlockedError, PathEscapeError
@@ -23,6 +25,53 @@ from .policy import Policy, Violation
 # Cached POSIX shell probe. ``None`` until probed; the resolved path (or
 # ``""`` sentinel meaning "probed, none found") afterwards.
 _POSIX_SHELL: str | None = None
+
+
+def _terminate_proc(proc, *, grace: float = 2.0) -> None:
+    """Best-effort terminate a Popen. SIGTERM first, SIGKILL after grace.
+
+    On Windows, ``terminate()`` == ``TerminateProcess`` (forceful) but
+    only kills the direct child — bash's children (e.g. ``sleep``) keep
+    their inherited stdout/stderr pipe write-ends open, which would
+    hang ``communicate()`` forever. We use ``taskkill /T /F /PID`` to
+    tear down the whole tree. On POSIX, ``killpg`` does the equivalent.
+    """
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        # Windows: tree kill via taskkill. /T = include children, /F = force.
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True, timeout=5)
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return
+    # POSIX path: SIGTERM → grace → SIGKILL on the whole group.
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=grace)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        try:
+            os.killpg(os.getpgid(proc.pid), 9)
+        except (ProcessLookupError, PermissionError):
+            pass
+        proc.kill()
+    except Exception:
+        pass
 
 
 def _find_posix_shell() -> str | None:
@@ -161,7 +210,8 @@ class SubprocessSandbox:
             env.update(extra)
         return env
 
-    def execute(self, command, *, timeout=120, env=None, cwd=None):
+    def execute(self, command, *, timeout=120, env=None, cwd=None,
+                cancel_event=None):
         violations = self.policy.scan_command(command)
         if violations:
             raise CommandBlockedError(violations)
@@ -179,19 +229,90 @@ class SubprocessSandbox:
         # git log on a repo with non-ASCII commit messages, or any
         # Python child that prints unicode to stdout). errors="replace"
         # keeps the stream decodable even if the child mixes encodings.
-        run_kwargs = dict(
+        popen_kwargs = dict(
             cwd=str(run_cwd), env=run_env,
-            capture_output=True,
-            encoding="utf-8", errors="replace",
-            timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
         )
         # Prefer a real bash so Unix flags (mkdir -p), pipes, &&, and
         # $VAR expansion behave the same on every platform. Only fall
         # back to shell=True (cmd.exe on Windows) when no bash is found.
         shell_path = _find_posix_shell()
         if shell_path:
-            return subprocess.run([shell_path, "-c", command], **run_kwargs)
-        return subprocess.run(command, shell=True, **run_kwargs)
+            argv = [shell_path, "-c", command]
+        else:
+            argv = command
+            popen_kwargs["shell"] = True
+
+        # Foreground path: cancel_event is None — use subprocess.run,
+        # which handles its own timeout via wait(). No cancel needed.
+        if cancel_event is None:
+            return subprocess.run(argv, timeout=timeout, **popen_kwargs)
+
+        # Background path: own the Popen so cancel_event can kill it
+        # mid-flight. Polling at 0.1s keeps cancel latency low without
+        # burning CPU. On Windows TerminateProcess is forceful (no
+        # SIGTERM); on POSIX we use SIGTERM then SIGKILL after grace.
+        return self._run_cancellable(argv, popen_kwargs, timeout, cancel_event)
+
+    @staticmethod
+    def _run_cancellable(argv, popen_kwargs, timeout, cancel_event):
+        # start_new_session=True on POSIX makes the child a process
+        # group leader so we can killpg() the whole tree (bash spawns
+        # grand-children that would otherwise survive proc.kill()).
+        if os.name == "posix":
+            popen_kwargs = dict(popen_kwargs, start_new_session=True)
+        proc = subprocess.Popen(argv, **popen_kwargs)
+        deadline = time.monotonic() + timeout
+        cancelled = False
+        try:
+            while True:
+                if cancel_event.is_set():
+                    cancelled = True
+                    _terminate_proc(proc)
+                    break
+                try:
+                    proc.wait(timeout=0.1)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        _terminate_proc(proc)
+                        raise
+        except Exception:
+            try:
+                _terminate_proc(proc)
+            finally:
+                pass
+
+        # Cancelled tasks: don't wait on communicate() — child FDs may
+        # still be inherited by grand-children on Windows even after
+        # tree-kill races. Just close our pipe handles and move on; the
+        # cancelled marker in stdout is enough signal.
+        if cancelled:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+            return subprocess.CompletedProcess(
+                args=argv, returncode=-1,
+                stdout="[cancelled by task_stop]\n", stderr="")
+
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except Exception:
+            try:
+                _terminate_proc(proc)
+            finally:
+                pass
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except Exception:
+                stdout, stderr = "", ""
+        return subprocess.CompletedProcess(
+            args=argv, returncode=proc.returncode,
+            stdout=stdout or "", stderr=stderr or "")
 
     def _resolve_run_cwd(self, cwd):
         """Resolve a caller-supplied cwd against project_root.

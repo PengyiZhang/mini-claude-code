@@ -55,11 +55,11 @@ TASK_OUTPUT_TOOL = FunctionTool(
 TASK_STOP_TOOL = FunctionTool(
     name="task_stop",
     description=(
-        "Best-effort cancel of a running background task. Marks the "
-        "task as stopped so its output is suppressed. Python threads "
-        "are not killable, so the underlying subprocess (if any) keeps "
-        "running until it finishes on its own; the stop only prevents "
-        "the result from being written back to the agent."),
+        "Best-effort cancel of a running background task. Signals the "
+        "task's cancel_event so the sandbox terminates the underlying "
+        "subprocess (SIGTERM → SIGKILL on POSIX, TerminateProcess on "
+        "Windows) within ~100ms. Marks the task as stopped so its "
+        "output is suppressed in subsequent task_notification blocks."),
     input_schema={
         "type": "object",
         "properties": {

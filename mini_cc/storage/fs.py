@@ -14,6 +14,7 @@ Layout under <state_root>/<project_id>/:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -26,6 +27,20 @@ from .base import CronJob, SessionMeta, Storage, Task
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+logger = logging.getLogger(__name__)
+
+
+class StorageCorruptionError(RuntimeError):
+    """Raised when a storage file exists but cannot be parsed.
+
+    Distinguishes "session has no messages yet" (returns []) from
+    "session file is truncated / half-written" (raises). Without this
+    distinction a corrupted file looks identical to an empty session,
+    so the next save silently overwrites it with a fresh single-message
+    transcript — the user loses the prior conversation with no signal.
+    """
 
 
 class FSStorage:
@@ -66,16 +81,22 @@ class FSStorage:
         if not fp.exists():
             return []
         with self._lock(f"{project_id}:msg:{session_id}"):
+            raw = fp.read_text(encoding="utf-8")
             try:
-                return json.loads(fp.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                return []
+                return json.loads(raw)
+            except json.JSONDecodeError as e:
+                logger.error(
+                    "storage.corruption project=%s session=%s file=%s error=%s",
+                    project_id, session_id, fp, e)
+                raise StorageCorruptionError(
+                    f"messages file for session {session_id!r} is corrupted: "
+                    f"{type(e).__name__}: {e}. File: {fp}") from e
 
     def save_messages(self, project_id, session_id, msgs):
         fp = self._proj(project_id) / "messages" / f"{self._safe_session(session_id)}.json"
         with self._lock(f"{project_id}:msg:{session_id}"):
-            fp.write_text(json.dumps(msgs, ensure_ascii=False, default=str),
-                          encoding="utf-8")
+            self._atomic_write_json(
+                fp, json.loads(json.dumps(msgs, ensure_ascii=False, default=str)))
         # Keep sessions/index.json in sync so list_sessions is accurate
         # without scanning the messages dir on every call.
         self._upsert_session_meta_locked(project_id, session_id, len(msgs))
@@ -257,12 +278,17 @@ class FSStorage:
             return []
         try:
             return json.loads(fp.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return []
+        except json.JSONDecodeError as e:
+            logger.error(
+                "storage.corruption project=%s session=%s file=%s error=%s",
+                project_id, session_id, fp, e)
+            raise StorageCorruptionError(
+                f"todos file for session {session_id!r} is corrupted: "
+                f"{type(e).__name__}: {e}. File: {fp}") from e
 
     def save_todos(self, project_id, session_id, todos):
         fp = self._proj(project_id) / "todos" / f"{self._safe_session(session_id)}.json"
-        fp.write_text(json.dumps(todos, ensure_ascii=False), encoding="utf-8")
+        self._atomic_write_json(fp, todos)
 
     def load_tasks(self, project_id):
         d = self._proj(project_id) / "tasks"
@@ -271,13 +297,16 @@ class FSStorage:
             try:
                 raw = json.loads(fp.read_text(encoding="utf-8"))
                 out.append(Task(**raw))
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(
+                    "storage.corruption project=%s file=%s error=%s — skipping",
+                    project_id, fp, e)
                 continue
         return out
 
     def save_task(self, project_id, task):
         fp = self._proj(project_id) / "tasks" / f"{task.id}.json"
-        fp.write_text(json.dumps(task.__dict__, ensure_ascii=False), encoding="utf-8")
+        self._atomic_write_json(fp, task.__dict__)
 
     def delete_task(self, project_id, task_id):
         fp = self._proj(project_id) / "tasks" / f"{task_id}.json"
@@ -308,9 +337,8 @@ class FSStorage:
 
     def save_cron(self, project_id, jobs):
         fp = self._proj(project_id) / "cron" / "jobs.json"
-        fp.write_text(
-            json.dumps([j.__dict__ for j in jobs], ensure_ascii=False, indent=2),
-            encoding="utf-8")
+        self._atomic_write_json(
+            fp, [j.__dict__ for j in jobs])
 
     def write_transcript(self, project_id, msgs):
         fp = (self._proj(project_id) / "transcripts"

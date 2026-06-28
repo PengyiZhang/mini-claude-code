@@ -50,7 +50,8 @@ def _bash(ctx: ToolContext, args: dict) -> str:
                 "Result will arrive as a task_notification.")
 
     try:
-        r = ctx.sandbox.execute(command, timeout=timeout, cwd=cwd)
+        r = ctx.sandbox.execute(command, timeout=timeout, cwd=cwd,
+                                cancel_event=ctx.cancel_event)
     except CommandBlockedError as e:
         return f"Error: command blocked: {e}"
     except Exception as e:
