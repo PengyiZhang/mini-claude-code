@@ -7,12 +7,25 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mini_cc"))
 
 from mini_cc.sharing.webhooks import (  # noqa: E402
     WebhookDispatcher, WebhookRegistry, sign_payload,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns(monkeypatch):
+    """SSRF validation (P0-A) calls socket.getaddrinfo for hostname URLs.
+    Tests in this file don't exercise real DNS — stub it to a public IP
+    so the validator passes for any non-literal-IP hostname. Tests that
+    care about SSRF rejection explicitly override this fixture."""
+    monkeypatch.setattr(
+        "mini_cc.sharing.webhooks._resolve_host",
+        lambda host: "93.184.216.34")
 
 
 def test_registry_add_persists_and_lists(tmp_path: Path):
@@ -124,6 +137,52 @@ def test_dispatcher_ignores_event_without_type(tmp_path: Path):
     disp({"foo": "bar"})
     time.sleep(0.02)
     assert fired == []
+
+
+def test_registry_rejects_ssrf_targets(tmp_path: Path, monkeypatch):
+    """P0-A regression: webhook URLs must not allow internal / loopback /
+    link-local / reserved targets, otherwise a tenant could use webhook
+    delivery to scan the internal network, hit cloud metadata endpoints
+    (169.254.169.254), or probe localhost services."""
+    reg = WebhookRegistry(tmp_path, "p1")
+
+    bad_targets = [
+        "http://169.254.169.254/latest/meta-data/",  # cloud metadata
+        "http://localhost/",                          # loopback
+        "http://127.0.0.1/",                          # loopback
+        "http://10.0.0.1/",                           # private RFC1918
+        "http://192.168.1.1/",                        # private RFC1918
+        "http://172.16.0.1/",                         # private RFC1918
+        "http://[::1]/",                              # IPv6 loopback
+        "http://0.0.0.0/",                            # reserved
+    ]
+    for url in bad_targets:
+        try:
+            reg.add(url, [])
+        except ValueError:
+            continue
+        raise AssertionError(f"SSRF target must be rejected: {url}")
+
+    # Public hostname resolves to public IP → allowed.
+    monkeypatch.setattr(
+        "mini_cc.sharing.webhooks._resolve_host",
+        lambda host: "93.184.216.34")
+    h = reg.add("https://example.com/hook", [])
+    assert h.url == "https://example.com/hook"
+
+
+def test_registry_rejects_url_with_dns_pointing_to_private(tmp_path: Path, monkeypatch):
+    """Even if the hostname looks public, if DNS resolves to a private
+    range we reject — defense against DNS rebinding."""
+    reg = WebhookRegistry(tmp_path, "p1")
+    monkeypatch.setattr(
+        "mini_cc.sharing.webhooks._resolve_host",
+        lambda host: "10.1.2.3")
+    try:
+        reg.add("https://looks-public.example.com/", [])
+    except ValueError:
+        return
+    raise AssertionError("DNS-to-private must be rejected")
 
 
 def test_dispatcher_deliverer_exception_is_swallowed(tmp_path: Path):

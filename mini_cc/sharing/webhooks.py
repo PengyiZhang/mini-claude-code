@@ -18,14 +18,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
+import socket
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib.parse import urlparse
 
 try:
     import requests
@@ -37,6 +40,65 @@ except ImportError:  # pragma: no cover — requests is a hard dep elsewhere
 DEFAULT_TIMEOUT_SECONDS = 5.0
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 1.0  # seconds; doubled each retry
+
+
+def _resolve_host(host: str) -> str | None:
+    """Resolve a hostname to its first IPv4/IPv6 string. Returns None on
+    DNS failure. Indirected so tests can monkeypatch without touching the
+    network."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return None
+    for info in infos:
+        ip = info[4][0]
+        # Don't return the port tuple; just the address.
+        if ip:
+            return ip
+    return None
+
+
+def _is_blocked_ip(ip_str: str) -> bool:
+    """True if the address is internal/loopback/private/reserved. These
+    ranges are what an SSRF attacker is after (cloud metadata at
+    169.254.169.254, internal services on 10.x / 192.168.x, host services
+    on 127.0.0.1)."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True  # not a parseable IP — be conservative
+    return (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+def _validate_webhook_url(url: str) -> None:
+    """Reject URLs that target internal networks (SSRF defense). Raises
+    ValueError on any disallowed target."""
+    if not url or not url.startswith(("http://", "https://")):
+        raise ValueError(f"invalid webhook url: {url!r}")
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").strip()
+    if not host:
+        raise ValueError(f"invalid webhook url (no host): {url!r}")
+    # Reject well-known internal hostnames by name before DNS — DNS can
+    # be made to lie (rebinding) or stubbed in tests, and these names
+    # never legitimately appear in a webhook target URL.
+    if host.lower() in {"localhost", "ip6-localhost", "ip6-loopback"}:
+        raise ValueError(
+            f"webhook host {host!r} is reserved for the local machine")
+    # If host is already a literal IP, check directly; otherwise resolve.
+    try:
+        ipaddress.ip_address(host)
+        resolved = host
+    except ValueError:
+        resolved = _resolve_host(host)
+        if resolved is None:
+            raise ValueError(
+                f"webhook host could not be resolved: {host!r}")
+    if _is_blocked_ip(resolved):
+        raise ValueError(
+            f"webhook target resolves to a non-public address ({resolved}); "
+            f"internal/loopback/link-local targets are blocked")
 
 
 def _webhook_secret() -> str:
@@ -100,8 +162,7 @@ class WebhookRegistry:
             return list(self._hooks.values())
 
     def add(self, url: str, event_types: Iterable[str] = ()) -> Webhook:
-        if not url or not url.startswith(("http://", "https://")):
-            raise ValueError(f"invalid webhook url: {url!r}")
+        _validate_webhook_url(url)
         with self._lock:
             hook = Webhook(
                 id=f"wh_{uuid.uuid4().hex[:10]}",
@@ -204,10 +265,18 @@ class WebhookDispatcher:
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
             try:
+                # allow_redirects=False — the SSRF check ran at registration
+                # time, but a 302 from the receiver could redirect to an
+                # internal target. Refuse to follow; receiver-side redirects
+                # are rare for webhooks and a redirect-to-internal pattern
+                # is exactly what we want to block.
                 resp = requests.post(url, data=body, headers=headers,
-                                     timeout=DEFAULT_TIMEOUT_SECONDS)
-                # 2xx → done. 4xx → don't retry, the receiver rejected it.
-                if 200 <= resp.status_code < 300 or 400 <= resp.status_code < 500:
+                                     timeout=DEFAULT_TIMEOUT_SECONDS,
+                                     allow_redirects=False)
+                # 2xx → done. 3xx → treat as misconfigured receiver; don't
+                # follow, don't retry forever.
+                # 4xx → don't retry, the receiver rejected it.
+                if 200 <= resp.status_code < 300 or 300 <= resp.status_code < 500:
                     return
                 last_exc = RuntimeError(f"status {resp.status_code}")
             except Exception as e:
