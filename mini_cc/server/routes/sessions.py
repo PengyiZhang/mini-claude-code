@@ -252,11 +252,18 @@ def shared_embed(token: str) -> Response:
         content=body,
         media_type="text/html",
         headers={
+            # frame-ancestors '*' is the modern CSP equivalent of the
+            # deprecated X-Frame-Options: ALLOWALL. Embedding in third-
+            # party pages is the product intent (the token in the URL is
+            # the authorization, not a cookie). Publishing the directive
+            # explicitly is the audit fix — silent fallback was a smell.
+            # The watermark below is the user-facing signal that the
+            # rendered content is a frozen share.
             "Content-Security-Policy": "default-src 'self'; "
                                        "connect-src 'self'; "
                                        "style-src 'self' 'unsafe-inline'; "
-                                       "img-src 'self' data:;",
-            "X-Frame-Options": "ALLOWALL",
+                                       "img-src 'self' data:; "
+                                       "frame-ancestors *;",
             "Cache-Control": "no-store",
         },
     )
@@ -304,9 +311,14 @@ _EMBED_HTML = """<!DOCTYPE html>
   .role { font-weight: 600; font-size: 0.8rem; opacity: 0.7;
           text-transform: uppercase; margin-bottom: 0.25rem; }
   #err { color: #c00; }
+  .watermark { display: block; font-size: 0.75rem; opacity: 0.65;
+               padding: 0.4rem 0.6rem; margin-bottom: 0.5rem;
+               border-radius: 0.3rem; background: rgba(127,127,127,0.12);
+               text-transform: uppercase; letter-spacing: 0.04em; }
 </style>
 </head>
 <body>
+<div class="watermark">Shared (read-only) — frozen session view</div>
 <div id="err"></div>
 <div id="log"></div>
 <script>

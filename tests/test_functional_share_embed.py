@@ -50,6 +50,32 @@ def test_embed_returns_html_with_csp(tmp_path: Path, monkeypatch):
     assert token in r.text
 
 
+def test_embed_has_explicit_frame_ancestors_and_watermark(tmp_path: Path, monkeypatch):
+    """P0-B regression: embed page must publish an explicit frame-ancestors
+    directive and a visible watermark so users know they're reading a
+    frozen share (not their live workspace) — see sharing/tokens.py for
+    the wider threat-model note. Without explicit frame-ancestors the
+    page relied on the legacy X-Frame-Options: ALLOWALL, which 1) is
+    deprecated, 2) silently allowed arbitrary framing without making the
+    product decision visible."""
+    monkeypatch.setenv("MINI_CC_SHARE_SECRET", "dev-share-secret-x")
+    token = issue_share_token("p_test", "s_test",
+                              secret="dev-share-secret-x")
+    with _client(tmp_path) as c:
+        r = c.get("/shared/" + token + "/embed")
+    csp = r.headers.get("content-security-policy", "")
+    # frame-ancestors must be set explicitly (CSP modern equivalent of
+    # X-Frame-Options). Value is '*' because embed-by-design is the
+    # product intent — but the directive presence is what we test.
+    assert "frame-ancestors" in csp, \
+        "embed page must publish frame-ancestors explicitly"
+    # Watermark visible in the rendered HTML so a user looking at the
+    # framed content can tell it's a shared read-only view.
+    body_lower = r.text.lower()
+    assert "shared" in body_lower and "read-only" in body_lower, \
+        "embed page must show a visible shared/read-only watermark"
+
+
 def test_share_link_create_requires_auth(tmp_path: Path):
     with _client(tmp_path) as c:
         r = c.post("/tenants/t1/projects/p/sessions/s/share")
