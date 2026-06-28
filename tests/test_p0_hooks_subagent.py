@@ -323,7 +323,40 @@ def test_task_tool_dispatches_subagent(tmp_path):
         subagent_client_factory=lambda: AnthropicProvider(lambda: sub_client),
     )
     out = TASK_TOOL.handle(ctx, {"description": "do thing"})
-    assert out == "via tool"
+    # P0-6: tool_result now surfaces the subagent's session_id so the
+    # parent can correlate the summary with the subagent transcript.
+    assert out.startswith("via tool")
+    assert "[subagent_session_id: subagent-" in out
+
+
+def test_task_tool_session_id_matches_persisted_transcript(tmp_path):
+    """P0-6 regression: the session_id surfaced in the tool_result must
+    identify a real on-disk transcript for the subagent — that's the
+    whole point of including it. Verified by loading messages back from
+    storage under the surfaced id."""
+    script = [_MockResponse([_Block(type="text", text="hello sub")],
+                            stop_reason="end_turn")]
+    ref, _ = _build_ref(tmp_path, script)
+    sub_client = _MockClient(script)
+    from mini_cc.core.llm import AnthropicProvider
+    ctx = ToolContext(
+        project_id="p", session_id="s",
+        sandbox=SubprocessSandbox("p", tmp_path),
+        storage=FSStorage(tmp_path / "st"),
+        todos=[],
+        project_ref=ref,
+        subagent_client_factory=lambda: AnthropicProvider(lambda: sub_client),
+    )
+    out = TASK_TOOL.handle(ctx, {"description": "do thing"})
+    # Extract the session_id from the footer.
+    sid_line = [ln for ln in out.splitlines()
+                if ln.startswith("[subagent_session_id:")][0]
+    sid = sid_line.split(":", 1)[1].strip().rstrip("]").strip()
+    assert sid.startswith("subagent-")
+    # The subagent's transcript must exist under that id on disk.
+    msgs = ref.storage.load_messages(ref.project_id, sid)
+    assert msgs, f"no transcript persisted for subagent session {sid}"
+    assert any(m["role"] == "assistant" for m in msgs)
 
 
 # ── Project.hooks wiring ──────────────────────────────────────────────

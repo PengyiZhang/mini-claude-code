@@ -12,12 +12,21 @@ from .base import FunctionTool, ToolContext
 def _task(ctx: ToolContext, args: dict) -> str:
     if ctx.project_ref is None:
         return "Subagent dispatch requires a ProjectRef on the ToolContext"
-    return spawn_subagent(
+    # P0-6: surface the subagent's session_id in the tool_result so the
+    # parent (and observability / resume tooling) can correlate the
+    # summary with the subagent's own transcript on disk. spawn_subagent
+    # writes the id into this 1-element list as a side channel so the
+    # summary text itself stays model-friendly.
+    session_id_out: list[str] = []
+    summary = spawn_subagent(
         ctx.project_ref,
         args["description"],
         client_factory=ctx.subagent_client_factory,
         on_event=ctx.on_subagent_event,
+        session_id_out=session_id_out,
     )
+    sid = session_id_out[0] if session_id_out else "subagent-unknown"
+    return f"{summary}\n\n[subagent_session_id: {sid}]"
 
 
 TASK_TOOL = FunctionTool(

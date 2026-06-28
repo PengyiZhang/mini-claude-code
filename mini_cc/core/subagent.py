@@ -38,7 +38,8 @@ def spawn_subagent(project: "ProjectRef", description: str,
                    max_tool_calls: int = 30,
                    client_factory=None,
                    model: str | None = None,
-                   on_event=None) -> str:
+                   on_event=None,
+                   session_id_out: list[str] | None = None) -> str:
     """Run a focused subagent to completion. Returns its final text summary.
 
     The subagent uses a fresh AgentLoop with a per-call session_id and a
@@ -51,6 +52,12 @@ def spawn_subagent(project: "ProjectRef", description: str,
     them as live activities in the parent's SSE stream. Without this,
     subagent work is invisible to the user except for the final summary
     text that this function returns.
+
+    ``session_id_out`` is an optional 1-element list the caller can use
+    to receive the subagent's session_id (e.g. so the parent's `task`
+    tool result can reference it for debugging / observability). The id
+    is also embedded in the loop's storage transcript, so callers that
+    don't need it can ignore the parameter.
     """
     # Local imports to avoid a circular dependency at module load time
     # (tools imports core.subagent via tools.subagent).
@@ -64,6 +71,8 @@ def spawn_subagent(project: "ProjectRef", description: str,
     # client that tried to open it. Hyphen keeps the prefix recognizable
     # while staying URL-safe.
     session_id = f"subagent-{uuid.uuid4().hex[:8]}"
+    if session_id_out is not None:
+        session_id_out.append(session_id)
     loop = AgentLoop(
         project, session_id,
         tools=sub_tools,
