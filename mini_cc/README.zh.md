@@ -104,13 +104,25 @@ mini_cc/
 ### 作为 Python SDK(进程内调用)
 
 ```python
-from mini_cc import ProjectManager, SessionManager
+import os
+from mini_cc import (AnthropicConfig, ProjectManager, SessionManager,
+                     set_default_config)
 
+# 1. 必填:配置 LLM 凭证。SDK 不会自动发现 env,显式 set 是最稳的;
+#    路由到非 Anthropic 的模型时(如 openai/gpt-4),用 litellm_api_key。
+set_default_config(AnthropicConfig(
+    api_key=os.environ["ANTHROPIC_API_KEY"],
+    # primary_model="openai/gpt-4",                # 用 litellm 路由
+    # litellm_api_key=os.environ["LITELLM_API_KEY"],
+))
+
+# 2. 起项目 + 会话。
 pm = ProjectManager("/data/projects")
 pm.create(tenant_id="t1", project_id="demo")
 sm = SessionManager(pm)
 sess = sm.start_session("demo")
 
+# 3. 流式读取事件。
 for ev in sm.send("demo", sess.session_id, "list the files here"):
     if ev["type"] == "text":
         print(ev["text"])
@@ -121,6 +133,9 @@ for ev in sm.send("demo", sess.session_id, "list the files here"):
     elif ev["type"] == "done":
         break
 ```
+
+> **省略第 1 步会导致首条 `send` 抛 LLM provider 401**。SDK 没有隐式凭证发现 —— 这是审计 P0-5 指出的最大 SDK 痛点。
+> `AnthropicConfig.has_llm_credentials()` 返回当前是否就绪,可在 preflight 检查里用。
 
 `SessionManager.send()` 产出的事件类型:
 

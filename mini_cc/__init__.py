@@ -4,13 +4,32 @@ Multi-tenant: each project is identified by a unique project_id and isolated
 to a workspace directory. State is pluggable (default filesystem).
 
 Quick start:
-    from mini_cc import ProjectManager, SessionManager
+    import os
+    from mini_cc import (AnthropicConfig, ProjectManager, SessionManager,
+                         set_default_config)
+
+    # 1. Configure LLM credentials BEFORE the first send. The default
+    #    config reads from env at first use, but explicit is safer — and
+    #    required if you're routing to a non-default provider.
+    set_default_config(AnthropicConfig(
+        api_key=os.environ["ANTHROPIC_API_KEY"],     # or LITELLM_API_KEY
+        # primary_model="openai/gpt-4",              # litellm-routed models
+        # litellm_api_key=os.environ["LITELLM_API_KEY"],
+    ))
+
+    # 2. Stand up a project (one per tenant workspace).
     pm = ProjectManager("/data/projects")
     pm.create(tenant_id="t1", project_id="proj-a")
+
+    # 3. Start a session and stream events.
     sm = SessionManager(pm)
     sess = sm.start_session("proj-a")
     for ev in sm.send("proj-a", sess.session_id, "hello"):
         print(ev)
+
+Without step 1, the first send raises a 401 from the LLM provider; the
+SDK has no implicit credential discovery. ``AnthropicConfig.has_llm_credentials``
+returns False in that state — useful for preflight checks.
 """
 from __future__ import annotations
 
