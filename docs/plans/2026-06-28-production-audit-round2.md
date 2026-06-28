@@ -165,3 +165,28 @@
 - **多语言 SDK**(目前只 Python + HTTP)
 - **审计日志合规**(SOC2 / GDPR 维度,超出"功能审查"范围)
 - **性能基准 / load test**(功能正确性 ≠ 性能达标,需独立项目)
+
+---
+
+## 4. 大型功能升级:动态 Workflow 模块
+
+**用户反馈汇总(2026-06-28):** 现有 workflow 太简单,只是"换 prompt 的顺序流"。
+缺:检查点 / 人工 gate、step 间 schema 校验、webhook/email 触发器、Definition vs Run
+分离、专属 UI 页面、实时执行视图。
+
+这是 Phase 级升级,单独设计文档落地:
+
+👉 **`docs/plans/2026-06-28-workflow-upgrade-design.md`**
+
+要点:
+- Definition / Run 概念分离 + 持久化(依赖 A1 原子写)
+- 步骤类型扩展:`action` / `validate` / `checkpoint` / `webhook_wait` / `email_wait`
+- `WorkflowRunner` async 引擎 + 长生命周期 run(parked 不烧 CPU)
+- 触发器:webhook 入站(复用现有 `WebhookRegistry`)、email(新模块 W4)、schedule
+- 前端 Tab 重命名 `Run → Workflow`,三栏布局(导航 / chat-like 执行视图 / 步骤详情)
+- 分 6 期落地(W1-W6),每期独立可合并
+
+**与 Round 2 audit 的耦合:**
+- W1 起步依赖 A1(原子写)—— 必须先做 Batch 3
+- W2 / W3 涉及 SSE,建议 Batch 4(A5+A6 心跳 + 限流)先落地
+- 不算入 Batch 3-7 序列,作为并行的 Phase 升级单独推进
