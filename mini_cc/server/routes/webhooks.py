@@ -23,8 +23,18 @@ router = APIRouter(
 )
 
 
-def _registry_for(pm, pid: str) -> WebhookRegistry:
-    project = pm.get(pid)
+def _registry_for(pm, pid: str, tid: str) -> WebhookRegistry:
+    """Resolve the project's webhook registry. P0-1: enforces the tenant
+    boundary — without this check, any tenant with a valid key could
+    reach another tenant's project by guessing pid and silently register
+    an attacker-controlled webhook URL."""
+    try:
+        project = pm.get(pid)
+    except KeyError as e:
+        raise NotFound(str(e) or f"project {pid} not found")
+    if project.meta.tenant_id != tid:
+        # Same message as the in-project missing case — no information leak.
+        raise NotFound(f"project {pid} not found")
     # Use the registry cached on the Project so adds/removes here are
     # visible to the live WebhookDispatcher without re-warming sessions.
     reg = getattr(project, "webhooks", None)
@@ -58,7 +68,7 @@ def list_webhooks(pid: str = Path(...),
                   tid: str = Depends(require_scope("projects:read")),
                   pm=Depends(get_pm)) -> list[WebhookOut]:
     validate_id(pid)
-    reg = _registry_for(pm, pid)
+    reg = _registry_for(pm, pid, tid)
     return [_to_out(h) for h in reg.list()]
 
 
@@ -68,7 +78,7 @@ def create_webhook(body: CreateWebhookRequest,
                    tid: str = Depends(require_scope("projects:write")),
                    pm=Depends(get_pm)) -> WebhookOut:
     validate_id(pid)
-    reg = _registry_for(pm, pid)
+    reg = _registry_for(pm, pid, tid)
     try:
         hook = reg.add(body.url, body.event_types)
     except ValueError as e:
@@ -83,6 +93,6 @@ def delete_webhook(hook_id: str = Path(...),
                    tid: str = Depends(require_scope("projects:write")),
                    pm=Depends(get_pm)) -> None:
     validate_id(pid)
-    reg = _registry_for(pm, pid)
+    reg = _registry_for(pm, pid, tid)
     if not reg.remove(hook_id):
         raise NotFound(f"webhook {hook_id} not found")

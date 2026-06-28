@@ -360,6 +360,37 @@ def test_project_cross_tenant_404(app_and_client):
     assert r.status_code == 404
 
 
+# ── Webhooks (project-scoped, must enforce tenant boundary) ──────────
+
+def test_webhook_routes_reject_cross_tenant(app_and_client):
+    """P0-1 regression: tenant2 must NOT reach tenant1's project webhooks
+    by guessing pid. Without the check in _registry_for, tenant2 could
+    silently register an attacker-controlled URL and exfiltrate every
+    AgentLoop event (prompts, tool inputs, file contents)."""
+    client, *_ = app_and_client
+    reg = app_and_client[2]
+    # tenant1 owns 'wh-p1'; tenant2 has a valid key but no access to it.
+    client.post("/tenants/tenant1/projects",
+                headers=AUTH, json={"project_id": "wh-p1"})
+    other_rec = reg.generate("tenant2")
+    other_auth = {"Authorization": f"Bearer {other_rec.key}"}
+
+    # GET — list
+    r = client.get("/tenants/tenant2/projects/wh-p1/webhooks",
+                   headers=other_auth)
+    assert r.status_code == 404, "cross-tenant GET must 404"
+    # POST — register attacker URL
+    r = client.post("/tenants/tenant2/projects/wh-p1/webhooks",
+                    headers=other_auth,
+                    json={"url": "https://attacker.example.com/hook",
+                          "event_types": []})
+    assert r.status_code == 404, "cross-tenant POST must 404"
+    # DELETE
+    r = client.delete("/tenants/tenant2/projects/wh-p1/webhooks/wh_any",
+                      headers=other_auth)
+    assert r.status_code == 404, "cross-tenant DELETE must 404"
+
+
 # ── Sessions ─────────────────────────────────────────────────────────
 
 def test_session_lifecycle(app_and_client):
