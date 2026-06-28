@@ -204,6 +204,22 @@ class AgentLoop:
         self.project.storage.save_todos(
             self.project.project_id, self.session_id, self.todos)
 
+    @staticmethod
+    def _build_partial_assistant(text_parts: list[str],
+                                 tool_uses: list[dict]) -> list[dict] | None:
+        """P0-9 / P1-2: build a coherent assistant content list from
+        whatever partial state was streamed before a cancel or exception.
+        Returns None if nothing was captured (so callers can skip the
+        persist). Order matches Anthropic's text-then-tool_use layout."""
+        text = "".join(text_parts).strip()
+        if not text and not tool_uses:
+            return None
+        blocks: list[dict] = []
+        if text:
+            blocks.append({"type": "text", "text": text})
+        blocks.extend(tool_uses)
+        return blocks
+
     def _save_transcript(self, messages: list[dict]) -> None:
         """Pre-compaction snapshot. Writes the full message list to storage
         before any content is discarded, so callers can replay the original
@@ -346,6 +362,12 @@ class AgentLoop:
                 )
 
             try:
+                # P1-2: initialize partial buffers BEFORE stream open
+                # so an exception during the open retry loop (429/529
+                # exhaustion, network) still has well-defined empty
+                # state when the outer except persists the partial.
+                partial_text_parts: list[str] = []
+                partial_tool_uses: list[dict] = []
                 # Stream normalized events from whichever provider is
                 # active (Anthropic SDK or litellm). The provider yields
                 # text_delta, tool_use, and a terminal message_stop
@@ -432,13 +454,21 @@ class AgentLoop:
                                 break
                             if ev.kind == "text_delta" and ev.text:
                                 streamed_text = True
+                                partial_text_parts.append(ev.text)
                                 yield {"type": "text", "text": ev.text}
+                            elif ev.kind == "tool_use":
+                                # Litellm provider emits streaming tool_use
+                                # events; capture the partial so cancel/error
+                                # can still persist a matched-shape assistant.
+                                if ev.tool_call_id:
+                                    partial_tool_uses.append({
+                                        "type": "tool_use",
+                                        "id": ev.tool_call_id,
+                                        "name": ev.tool_name or "",
+                                        "input": ev.tool_input or {},
+                                    })
                             elif ev.kind == "message_stop":
                                 response = ev
-                            # tool_use events are emitted by the litellm
-                            # provider; we don't yield them here — the
-                            # tool dispatcher runs after message_stop,
-                            # reading from response.content_blocks.
                         if not cancelled and response is not None:
                             if response.usage:
                                 self._record_usage_dict(response.usage)
@@ -461,7 +491,30 @@ class AgentLoop:
                                     pass
 
                 if cancelled:
-                    # Exit cleanly without persisting a half-built turn.
+                    # P0-9: persist the partial assistant message so the
+                    # transcript reflects what the model actually generated
+                    # before stop(). If a tool_use was in flight, synthesize
+                    # a matching tool_result so the next turn's API call
+                    # sees balanced use/result pairs.
+                    partial = self._build_partial_assistant(
+                        partial_text_parts, partial_tool_uses)
+                    if partial is not None:
+                        self.messages.append({"role": "assistant",
+                                              "content": partial})
+                        tool_use_ids = [b["id"] for b in partial
+                                        if isinstance(b, dict)
+                                        and b.get("type") == "tool_use"]
+                        if tool_use_ids:
+                            self.messages.append({
+                                "role": "user",
+                                "content": [
+                                    {"type": "tool_result",
+                                     "tool_use_id": tid,
+                                     "content": INTERRUPTED_TOOL_RESULT,
+                                     "is_error": True}
+                                    for tid in tool_use_ids
+                                ],
+                            })
                     yield {"type": "done"}
                     self._persist()
                     return
@@ -472,6 +525,28 @@ class AgentLoop:
                         self.messages, before_compact=self._save_transcript)
                     self.state.has_attempted_reactive_compact = True
                     continue
+                # P1-2: if partial assistant content was streamed before
+                # the error, persist it as its own assistant message —
+                # separate from the [Error] note below — so resume shows
+                # the model the text it actually produced.
+                partial = self._build_partial_assistant(
+                    partial_text_parts, partial_tool_uses)
+                if partial is not None:
+                    self.messages.append({"role": "assistant", "content": partial})
+                    tool_use_ids = [b["id"] for b in partial
+                                    if isinstance(b, dict)
+                                    and b.get("type") == "tool_use"]
+                    if tool_use_ids:
+                        self.messages.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "tool_result",
+                                 "tool_use_id": tid,
+                                 "content": INTERRUPTED_TOOL_RESULT,
+                                 "is_error": True}
+                                for tid in tool_use_ids
+                            ],
+                        })
                 self.messages.append({"role": "assistant", "content": [
                     {"type": "text",
                      "text": f"[Error] {type(e).__name__}: {e}"}]})
