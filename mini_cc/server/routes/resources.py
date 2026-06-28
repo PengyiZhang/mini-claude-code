@@ -7,6 +7,7 @@ returns 404 — same model as the other routes.
 from __future__ import annotations
 
 import io
+import os
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import List
@@ -77,11 +78,15 @@ def _check(project, pid: str, tid: str):
 def list_tree(pid: str = FPath(...),
               tid: str = Depends(require_scope("files:read")),
               pm=Depends(get_pm),
-              path: str = Query(default="")) -> List[dict]:
+              path: str = Query(default=""),
+              include_hidden: bool | None = Query(default=None)) -> List[dict]:
     """List immediate children of ``path`` (relative to workspace root).
 
     Returns a list of ``{name, path, is_dir, size, modified}`` dicts.
-    Hidden entries (starting with ``.``) are hidden to keep the UI clean.
+    Hidden entries (starting with ``.``) are hidden by default to keep
+    the UI clean. Operators can flip the default server-wide via the
+    ``MINI_CC_TREE_SHOW_HIDDEN`` env var (``"1"``/``"true"`` to show),
+    and clients can override per-request with ``?include_hidden=true``.
     """
     validate_id(pid)
     try:
@@ -89,6 +94,13 @@ def list_tree(pid: str = FPath(...),
     except KeyError:
         raise NotFound(f"project {pid} not found")
     _check(project, pid, tid)
+
+    # Per-request override wins; otherwise fall back to the operator's
+    # default; otherwise hide. Truthy strings: "1", "true", "yes" (case
+    # insensitive). Empty / anything else = hide.
+    if include_hidden is None:
+        raw = os.environ.get("MINI_CC_TREE_SHOW_HIDDEN", "").strip().lower()
+        include_hidden = raw in ("1", "true", "yes", "on")
 
     rel = _safe_rel(project, path)
     full = _full_path(project, rel)
@@ -99,7 +111,7 @@ def list_tree(pid: str = FPath(...),
 
     out = []
     for child in sorted(full.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower())):
-        if child.name.startswith("."):
+        if child.name.startswith(".") and not include_hidden:
             continue
         try:
             st = child.stat()

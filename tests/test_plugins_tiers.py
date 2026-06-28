@@ -86,6 +86,47 @@ def test_discover_skills_picks_up_single_tier(tmp_path):
     assert out["alpha"].description == "system skill"
 
 
+def test_discover_skills_picks_up_nested_category_dirs(tmp_path):
+    """Regression: third-party skill packs (superpowers etc.) ship in
+    a nested layout — skills/<category>/<name>/SKILL.md. The scanner
+    previously used iterdir() one level deep and missed everything
+    under a category subdir."""
+    sys_dir = ensure_tier_dir(tmp_path, PluginTier.SYSTEM)
+    # Nested layout (the bug)
+    for path, name, desc in [
+        ("architecture/tensions", "tensions", "arch skill"),
+        ("collaboration/brainstorming", "brainstorming", "collab"),
+        ("debugging/systematic", "systematic-debugging", "debug"),
+    ]:
+        d = sys_dir / "skills" / path
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {desc}\n---\nbody\n",
+            encoding="utf-8")
+    # Flat layout still works alongside nested.
+    _write_skill(sys_dir, "flat", "flat skill")
+
+    out = discover_skills([sys_dir])
+    assert set(out) == {
+        "tensions", "brainstorming", "systematic-debugging", "flat"}
+    assert out["tensions"].description == "arch skill"
+    assert out["brainstorming"].description == "collab"
+
+
+def test_discover_skills_nested_name_defaults_to_parent_dir(tmp_path):
+    """When frontmatter omits ``name``, the skill id falls back to the
+    SKILL.md's parent directory name (NOT a higher category dir)."""
+    sys_dir = ensure_tier_dir(tmp_path, PluginTier.SYSTEM)
+    d = sys_dir / "skills" / "categoryA" / "real-name"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\ndescription: no name in frontmatter\n---\nbody\n",
+        encoding="utf-8")
+    out = discover_skills([sys_dir])
+    assert "real-name" in out
+    assert "categoryA" not in out
+
+
 def test_discover_skills_merges_tiers(tmp_path):
     sys_dir = ensure_tier_dir(tmp_path, PluginTier.SYSTEM)
     ten_dir = ensure_tier_dir(tmp_path / "tenants" / "t1",

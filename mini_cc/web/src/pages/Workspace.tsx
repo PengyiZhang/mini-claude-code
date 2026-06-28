@@ -190,8 +190,19 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatKey, sid, pid, profile.apiKey]);
 
+  // Auto-scroll to bottom when (a) a new message is appended, or (b)
+  // the last message's text grew (streaming). Tool-call expand/collapse
+  // mutates `activity.expanded` inside an existing message without
+  // changing text length — that case must NOT trigger scroll, otherwise
+  // clicking a chevron yanks the user's view to the bottom (debug.6.md #4).
+  // Signature = "<count>:<lastTextLen>".
+  const prevSigRef = useRef<string>("");
   useEffect(() => {
-    if (scrollRef.current) {
+    const last = chatMessages[chatMessages.length - 1];
+    const sig = `${chatMessages.length}:${last ? last.text.length : 0}`;
+    const prev = prevSigRef.current;
+    prevSigRef.current = sig;
+    if (sig !== prev && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [chatMessages]);

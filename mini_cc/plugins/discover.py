@@ -51,28 +51,40 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def _scan_skill_dir(tier_dir: Path) -> dict[str, Skill]:
-    """Return every skill declared under ``<tier_dir>/skills/``."""
+    """Return every skill declared under ``<tier_dir>/skills/``.
+
+    Supports two layouts:
+      - flat:     ``skills/<name>/SKILL.md``
+      - nested:   ``skills/<category>/<name>/SKILL.md``  (or deeper)
+
+    Nested layouts are how third-party packs (e.g. superpowers) ship —
+    a single tier can carry dozens of skills grouped by topic. The
+    scanner walks every subdir recursively and picks up any SKILL.md
+    it finds; the on-disk name (frontmatter ``name`` or the parent
+    directory name) wins on conflict, with later tiers still overriding
+    earlier ones via :func:`discover_skills`.
+    """
     skills_dir = tier_dir / "skills"
     out: dict[str, Skill] = {}
     if not skills_dir.exists():
         return out
     try:
-        entries = sorted(skills_dir.iterdir())
+        # rglob instead of iterdir so nested category dirs are picked
+        # up. Sorted for deterministic catalog ordering.
+        manifests = sorted(skills_dir.rglob("SKILL.md"))
     except OSError:
         return out
-    for d in entries:
-        if not d.is_dir():
-            continue
-        manifest = d / "SKILL.md"
-        if not manifest.exists():
-            continue
+    for manifest in manifests:
         try:
             raw = manifest.read_text(encoding="utf-8")
         except OSError as e:
             _log.warning("skill %s unreadable: %s", manifest, e)
             continue
         meta, body = _parse_frontmatter(raw)
-        name = meta.get("name", d.name)
+        # Parent directory name is the canonical id when frontmatter
+        # doesn't override. Walks like skills/architecture/<name>/SKILL.md
+        # resolve to <name>, not "architecture".
+        name = meta.get("name", manifest.parent.name)
         desc = (meta.get("description")
                 or raw.split("\n", 1)[0].lstrip("#").strip())
         out[name] = Skill(name=name, description=desc, content=raw)

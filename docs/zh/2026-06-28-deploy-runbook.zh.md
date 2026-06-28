@@ -178,7 +178,19 @@ trace_id 会出现在日志和响应头 `X-Trace-Id` 上,便于跨服务串联�
   走了降级路径。
 - `using default share secret` —— F7.1 / F7.2 的密钥未配置,**生产必须修掉**。
 
-### 2.5 取消(Cancel)的语义与限制
+### 2.5 文件树 dotfile 显示控制
+
+`GET /tenants/{tid}/projects/{pid}/files/tree` 默认隐藏 `.` 开头的目录/文件
+(`.mini_cc/`、`.agents/`、`.worktrees/` 等)。这避免普通用户被系统目录干扰,
+但调试或管理时可能需要看到完整结构。三种控制方式(优先级从高到低):
+
+1. **per-request**: `?include_hidden=true` / `?include_hidden=false`
+2. **环境变量(全局默认)**: `MINI_CC_TREE_SHOW_HIDDEN=1|true|yes|on`
+3. 都不设 → 隐藏
+
+建议生产保持默认(隐藏),临时排查时在请求里加 `?include_hidden=true`。
+
+### 2.6 取消(Cancel)的语义与限制
 
 `POST /projects/{pid}/sessions/{sid}/stop` 或 SDK 的 `loop.stop()` 触发取消后,
 **客户端会立刻收到 SSE `cancelled` + `done` 事件,且已流式的文本/工具调用会被
