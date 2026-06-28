@@ -29,6 +29,7 @@ from .routes import admin as admin_routes
 from .routes import commands as commands_routes
 from .routes import run_table as run_table_routes
 from .routes import webhooks as webhooks_routes
+from .routes import workflow_v2 as workflow_v2_routes
 
 
 log = logging.getLogger("mini_cc.server.startup")
@@ -167,6 +168,9 @@ def build_app(*, data_dir: Path,
     app.include_router(run_table_routes.router)
     app.include_router(sessions_routes.share_router)
     app.include_router(webhooks_routes.router)
+    # Workflow V2 — definitions + runs (W1).
+    for r in workflow_v2_routes.ALL_ROUTERS:
+        app.include_router(r)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:

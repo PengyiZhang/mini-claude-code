@@ -333,6 +333,16 @@ class ProjectManager:
         storage_root = getattr(storage, "root", None)
         if storage_root is not None:
             project.webhooks = WebhookRegistry(storage_root, project_id)
+        # Workflow V2 (W1): same pattern — one WorkflowService per
+        # project, backed by the same FSStorage, shared between the
+        # HTTP routes and any in-process driver (tests, future UI).
+        try:
+            from ..workflow_v2 import WorkflowService
+            project.workflows_v2 = WorkflowService(storage)
+        except Exception:
+            # If the import ever fails (circular dep during a refactor),
+            # the HTTP layer lazily assembles one on first request.
+            pass
         return project
 
 
