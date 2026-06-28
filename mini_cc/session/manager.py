@@ -17,8 +17,25 @@ from typing import Callable, Iterator
 
 from ..core.loop import AgentLoop, repair_dangling_tool_uses
 from ..projects import ProjectManager
+from ..projects.manager import Project
+from ..sharing.webhooks import WebhookDispatcher
 from ..storage import SessionMeta
 from ..tools import Tool
+
+
+def _wrap_on_event(project: Project, session_id: str,
+                   on_event: Callable[[dict], None] | None
+                   ) -> Callable[[dict], None] | None:
+    """F7.2: install WebhookDispatcher around on_event when the project
+    has a webhook registry. Returns the original callback unchanged when
+    there's no registry (non-FS storage) — keeps the no-webhook hot path
+    zero-overhead. Webhooks added after warm still fire because the
+    dispatcher and the HTTP routes share the same WebhookRegistry object
+    cached on the Project."""
+    reg = getattr(project, "webhooks", None)
+    if reg is None:
+        return on_event
+    return WebhookDispatcher(reg, project.project_id, session_id, inner=on_event)
 
 
 @dataclass
@@ -67,7 +84,9 @@ class SessionManager:
 
         # New session — seed an empty transcript so list_sessions sees it.
         loop = AgentLoop(project.as_ref(), session_id,
-                         tools=tools, on_event=on_event, model=model,
+                         tools=tools,
+                         on_event=_wrap_on_event(project, session_id, on_event),
+                         model=model,
                          hooks=project.hooks)
         # Persist the (currently empty) transcript to seed the index.
         project.storage.save_messages(project_id, session_id, loop.messages)
@@ -89,7 +108,9 @@ class SessionManager:
         """Construct an AgentLoop for an existing on-disk session, with
         mid-turn-crash auto-repair applied once at load time."""
         loop = AgentLoop(project.as_ref(), session_id,
-                         tools=tools, on_event=on_event, model=model,
+                         tools=tools,
+                         on_event=_wrap_on_event(project, session_id, on_event),
+                         model=model,
                          hooks=project.hooks)
         if repair_dangling_tool_uses(loop.messages):
             # Repair changed the transcript; persist so subsequent

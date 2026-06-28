@@ -25,12 +25,12 @@ router = APIRouter(
 
 def _registry_for(pm, pid: str) -> WebhookRegistry:
     project = pm.get(pid)
-    # storage.root is the FSStorage state_root. We use the same dir
-    # layout (per-project subdir) so backups sweep webhooks too.
-    storage_root = getattr(project.storage, "root", None)
-    if storage_root is None:
+    # Use the registry cached on the Project so adds/removes here are
+    # visible to the live WebhookDispatcher without re-warming sessions.
+    reg = getattr(project, "webhooks", None)
+    if reg is None:
         raise NotFound("webhook storage unavailable")
-    return WebhookRegistry(storage_root, pid)
+    return reg
 
 
 class CreateWebhookRequest(BaseModel):

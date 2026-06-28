@@ -137,3 +137,55 @@ def test_dispatcher_deliverer_exception_is_swallowed(tmp_path: Path):
     # Should not raise even though deliverer blows up.
     disp({"type": "text", "text": "x"})
     time.sleep(0.05)
+
+
+def test_session_manager_installs_dispatcher_for_project_webhooks(tmp_path: Path):
+    """F7.2 wire-up regression: starting a session must wrap on_event in
+    WebhookDispatcher when the project has a webhook registry. Before the
+    fix, the dispatcher existed but was never instantiated — the test
+    suite passed because every dispatcher test injected one directly.
+    """
+    from mini_cc.projects import ProjectManager
+    from mini_cc.session import SessionManager
+    from mini_cc.sharing.webhooks import WebhookDispatcher
+
+    pm = ProjectManager(tmp_path / "projects")
+    pm.create(tenant_id="t1", project_id="p1")
+    project = pm.get("p1")
+    # Registry must be cached on the Project (not None for FS-backed storage).
+    assert project.webhooks is not None
+    project.webhooks.add("https://hook.example.com", ["tool_use"])
+
+    captured: list[dict] = []
+    sm = SessionManager(pm)
+    sm.start_session("p1", "sess1", on_event=lambda e: captured.append(e))
+    sess = sm.get("p1", "sess1")
+    # The loop's on_event must be a WebhookDispatcher wrapping the inner
+    # callback — not the raw lambda we passed in.
+    assert isinstance(sess.loop.on_event, WebhookDispatcher)
+    # Inner callback still fires synchronously.
+    sess.loop.on_event({"type": "tool_use", "name": "x"})
+    assert captured and captured[0]["type"] == "tool_use"
+
+
+def test_session_manager_skips_dispatch_when_no_registry(tmp_path: Path):
+    """When the project has no webhook registry (e.g. non-FS storage in
+    future), on_event must be passed through unchanged — zero overhead
+    and no spurious dispatcher object."""
+    from mini_cc.projects import ProjectManager
+    from mini_cc.session import SessionManager
+    from mini_cc.sharing.webhooks import WebhookDispatcher
+
+    pm = ProjectManager(tmp_path / "projects")
+    pm.create(tenant_id="t1", project_id="p1")
+    # Simulate a non-FS backend by clearing the cached registry.
+    project = pm.get("p1")
+    project.webhooks = None
+
+    inner = lambda e: None
+    sm = SessionManager(pm)
+    sm.start_session("p1", "sess1", on_event=inner)
+    sess = sm.get("p1", "sess1")
+    # No registry → no wrapping.
+    assert sess.loop.on_event is inner
+    assert not isinstance(sess.loop.on_event, WebhookDispatcher)

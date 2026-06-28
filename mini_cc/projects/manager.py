@@ -20,6 +20,7 @@ from ..core.permissions import PermissionInterceptor
 from ..mcp import MCPPool
 from ..sandbox import Policy, Sandbox, SubprocessSandbox
 from ..scheduler import CronScheduler
+from ..sharing.webhooks import WebhookRegistry
 from ..skills import SkillLoader
 from ..memory import MemoryLoader
 from ..storage import FSStorage, Storage
@@ -79,6 +80,12 @@ class Project:
     prompt_tools: set[str] = None  # type: ignore[assignment]
     _metrics: "object | None" = None  # MetricsRegistry or None
     _sandbox_factory: object = None  # stashed for teammate reuse
+    # F7.2: project-scoped webhook registry. None when storage has no
+    # filesystem root (non-FS backends) — SessionManager then skips
+    # dispatcher installation. Cached so the API routes and the live
+    # dispatcher share one in-memory object: a webhook added via HTTP
+    # is visible to the next event without re-warming the session.
+    webhooks: "WebhookRegistry | None" = None
 
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
@@ -312,6 +319,12 @@ class ProjectManager:
         _connect_configured_mcp_servers(
             mcp_pool, data_dir=self.data_dir,
             tenant_id=meta.tenant_id, workspace=ws)
+        # F7.2: cache the project's WebhookRegistry on the Project so the
+        # HTTP routes and SessionManager's dispatcher share one in-memory
+        # object. Skip when storage has no FS root (non-FS backends).
+        storage_root = getattr(storage, "root", None)
+        if storage_root is not None:
+            project.webhooks = WebhookRegistry(storage_root, project_id)
         return project
 
 
