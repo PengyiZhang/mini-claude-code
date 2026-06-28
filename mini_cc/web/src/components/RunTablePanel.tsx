@@ -87,13 +87,24 @@ export default function RunTablePanel({
     <div className="space-y-3 text-sm">
       <div className="flex items-center justify-between">
         <span className="text-xs text-ink-dim uppercase tracking-wide">run table</span>
-        <button
-          onClick={() => void refresh()}
-          disabled={loading}
-          className="text-xs px-2 py-0.5 rounded border border-border hover:border-accent disabled:opacity-50"
-        >
-          {loading ? "…" : "↻"}
-        </button>
+        <div className="flex items-center gap-1">
+          {/* W6: link to the visual Workflow V2 editor. Stays in the
+              sidebar so users discover it without leaving the chat flow. */}
+          <a
+            href={`#/projects/${pid}/workflows`}
+            className="text-xs px-2 py-0.5 rounded border border-border hover:border-accent text-ink-dim hover:text-ink"
+            title="open Workflow V2 editor"
+          >
+            ⚑ v2
+          </a>
+          <button
+            onClick={() => void refresh()}
+            disabled={loading}
+            className="text-xs px-2 py-0.5 rounded border border-border hover:border-accent disabled:opacity-50"
+          >
+            {loading ? "…" : "↻"}
+          </button>
+        </div>
       </div>
 
       {err && (

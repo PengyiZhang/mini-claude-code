@@ -5,6 +5,68 @@ export interface TenantProfile {
   baseUrl: string;
 }
 
+// ── Workflow V2 (W1-W6) ────────────────────────────────────────────────
+
+export type WorkflowV2StepType =
+  | "action"
+  | "validate"
+  | "checkpoint"
+  | "webhook_wait"
+  | "email_wait";
+
+export interface WorkflowV2Step {
+  id: string;
+  type: WorkflowV2StepType;
+  prompt?: string;
+  inputs_schema?: Record<string, unknown>;
+  outputs_schema?: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  condition?: string | null;
+}
+
+export interface WorkflowV2Definition {
+  def_id: string;
+  name: string;
+  description: string;
+  version: number;
+  owner: string | null;
+  created_at: string;
+  updated_at: string;
+  steps: WorkflowV2Step[];
+  triggers: { type: string; config: Record<string, unknown> }[];
+  state_schema: Record<string, unknown>;
+}
+
+export type WorkflowV2RunStatus =
+  | "pending"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface WorkflowV2StepRun {
+  step_id: string;
+  status: "pending" | "running" | "paused" | "completed" | "failed" | "skipped";
+  started_at: string | null;
+  completed_at: string | null;
+  output: unknown;
+  error: string | null;
+}
+
+export interface WorkflowV2Run {
+  run_id: string;
+  def_id: string;
+  def_version: number;
+  status: WorkflowV2RunStatus;
+  current_step_idx: number;
+  started_at: string | null;
+  completed_at: string | null;
+  state: Record<string, unknown>;
+  step_runs: WorkflowV2StepRun[];
+  trigger: Record<string, unknown>;
+}
+
 export interface ProjectOut {
   project_id: string;
   tenant_id: string;

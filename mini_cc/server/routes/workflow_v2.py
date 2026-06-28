@@ -19,8 +19,8 @@ from fastapi import APIRouter, Depends, Path
 from pydantic import BaseModel, Field
 
 from ...workflow_v2 import WorkflowService
-from ..deps import (check_rate_limit_scope, get_pm, require_scope,
-                    validate_id)
+from ..deps import (check_rate_limit_scope, get_pm, get_sm,
+                    require_scope, validate_id)
 from ..errors import BadRequest, NotFound, Unauthorized
 
 
@@ -138,6 +138,13 @@ class EmailWaitIn(BaseModel):
     raw_headers: dict = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
+
+
+class DriveRunIn(BaseModel):
+    """Body for the drive endpoint (W6). Drives the run forward by
+    dispatching each action step through the bound session's AgentLoop.
+    Returns the final run state — completion, parking, or failure."""
+    session_id: str
 
 
 class StepRunOut(BaseModel):
@@ -335,6 +342,52 @@ def resolve_gate(run_id: str = Path(...),
     except ValueError as e:
         raise BadRequest(str(e))
     if run is None:
+        raise NotFound(f"run {run_id} not found")
+    return _run_to_out(run)
+
+
+# W6 — drive a run forward synchronously through a session's AgentLoop.
+# Returns the final run state (completed / paused / failed). The UI
+# calls this after start_run; the response tells it whether to show
+# Approve/Reject buttons (paused at a checkpoint) or the next-step
+# preview.
+@runs_router.post("/{run_id}/drive", response_model=RunOut)
+def drive_run(run_id: str = Path(...),
+               body: DriveRunIn = ...,
+               pid: str = Path(...),
+               tid: str = Depends(check_rate_limit_scope("projects:write")),
+               pm=Depends(get_pm),
+               sm=Depends(get_sm)) -> RunOut:
+    validate_id(pid)
+    svc = _service_for(pm, pid, tid)
+    # Resolve the bound session's AgentLoop — the workflow's action
+    # steps dispatch through it. We warm the session on demand so the
+    # caller doesn't need a separate /sessions POST first.
+    try:
+        sess = sm._ensure_warm(pid, body.session_id)
+    except KeyError:
+        raise NotFound(f"session {body.session_id} not found")
+    loop = sess.loop
+
+    def dispatch(prompt: str, r) -> str:
+        # Drive the prompt through one full turn. AgentLoop.run() yields
+        # events; we accumulate the assistant's text response. Tool-use
+        # activity lands in the transcript and is visible from the chat
+        # pane; the workflow only needs the final text.
+        chunks: list[str] = []
+        try:
+            for ev in loop.run(prompt):
+                if ev.get("type") == "text":
+                    chunks.append(ev.get("text", ""))
+                elif ev.get("type") == "error":
+                    raise RuntimeError(ev.get("message", "agent error"))
+        except Exception:
+            raise
+        return "".join(chunks).strip()
+
+    try:
+        run = svc.drive_run(pid, run_id, dispatch)
+    except KeyError:
         raise NotFound(f"run {run_id} not found")
     return _run_to_out(run)
 

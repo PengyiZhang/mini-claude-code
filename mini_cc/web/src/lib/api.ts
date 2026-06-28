@@ -478,3 +478,163 @@ export async function adminMetrics(p: AdminProfile): Promise<MetricSnapshot> {
 }
 
 export { DEFAULT_BASE };
+
+// ── Workflow V2 (W1-W6) ─────────────────────────────────────────────────
+
+import type {
+  WorkflowV2Definition,
+  WorkflowV2Run,
+  WorkflowV2Step,
+} from "./types";
+
+export type WorkflowV2DefinitionOut = WorkflowV2Definition;
+
+export interface CreateWorkflowV2DefIn {
+  name: string;
+  description?: string;
+  steps: WorkflowV2Step[];
+  triggers?: { type: string; config: Record<string, unknown> }[];
+  state_schema?: Record<string, unknown>;
+}
+
+function wfDefPath(profile: TenantProfile, pid: string, suffix = ""): string {
+  return `${profile.baseUrl}/tenants/${profile.tenantId}/projects/${pid}/workflow-definitions${suffix}`;
+}
+
+function wfRunPath(profile: TenantProfile, pid: string, suffix = ""): string {
+  return `${profile.baseUrl}/tenants/${profile.tenantId}/projects/${pid}/workflow-runs${suffix}`;
+}
+
+export async function listWorkflowV2Defs(
+  profile: TenantProfile,
+  pid: string,
+): Promise<WorkflowV2Definition[]> {
+  const res = await fetch(wfDefPath(profile, pid), { headers: authHeaders(profile) });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function createWorkflowV2Def(
+  profile: TenantProfile,
+  pid: string,
+  body: CreateWorkflowV2DefIn,
+): Promise<WorkflowV2Definition> {
+  const res = await fetch(wfDefPath(profile, pid), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(profile) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function updateWorkflowV2Def(
+  profile: TenantProfile,
+  pid: string,
+  defId: string,
+  body: Partial<CreateWorkflowV2DefIn>,
+): Promise<WorkflowV2Definition> {
+  const res = await fetch(wfDefPath(profile, pid, `/${defId}`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders(profile) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function deleteWorkflowV2Def(
+  profile: TenantProfile,
+  pid: string,
+  defId: string,
+): Promise<void> {
+  const res = await fetch(wfDefPath(profile, pid, `/${defId}`), {
+    method: "DELETE",
+    headers: authHeaders(profile),
+  });
+  if (!res.ok && res.status !== 204) await parseErr(res);
+}
+
+export async function startWorkflowV2Run(
+  profile: TenantProfile,
+  pid: string,
+  defId: string,
+  body: { initial_state?: Record<string, unknown>; trigger?: Record<string, unknown> } = {},
+): Promise<WorkflowV2Run> {
+  const res = await fetch(wfDefPath(profile, pid, `/${defId}/runs`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(profile) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function listWorkflowV2Runs(
+  profile: TenantProfile,
+  pid: string,
+  defId?: string,
+): Promise<WorkflowV2Run[]> {
+  const url = defId
+    ? wfRunPath(profile, pid, `?def_id=${encodeURIComponent(defId)}`)
+    : wfRunPath(profile, pid);
+  const res = await fetch(url, { headers: authHeaders(profile) });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function getWorkflowV2Run(
+  profile: TenantProfile,
+  pid: string,
+  runId: string,
+): Promise<WorkflowV2Run> {
+  const res = await fetch(wfRunPath(profile, pid, `/${runId}`), {
+    headers: authHeaders(profile),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function cancelWorkflowV2Run(
+  profile: TenantProfile,
+  pid: string,
+  runId: string,
+): Promise<WorkflowV2Run> {
+  const res = await fetch(wfRunPath(profile, pid, `/${runId}`), {
+    method: "DELETE",
+    headers: authHeaders(profile),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function driveWorkflowV2Run(
+  profile: TenantProfile,
+  pid: string,
+  runId: string,
+  sessionId: string,
+): Promise<WorkflowV2Run> {
+  const res = await fetch(wfRunPath(profile, pid, `/${runId}/drive`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(profile) },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function resolveWorkflowV2Gate(
+  profile: TenantProfile,
+  pid: string,
+  runId: string,
+  stepId: string,
+  body: { approver?: string; decision: "approve" | "reject"; feedback?: string },
+): Promise<WorkflowV2Run> {
+  const res = await fetch(wfRunPath(profile, pid, `/${runId}/steps/${stepId}/resolve`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(profile) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
