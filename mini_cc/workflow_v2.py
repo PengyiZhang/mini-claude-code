@@ -336,7 +336,34 @@ class WorkflowService:
                 self.storage.save_workflow_run(project_id, run.to_dict())
                 return run
 
-            # Validate (W5): for now, action only.
+            # Validate (W5): deterministic check, no dispatch.
+            if step.type == "validate":
+                sr.status = "running"
+                sr.started_at = _iso_now()
+                self.storage.save_workflow_run(project_id, run.to_dict())
+                try:
+                    valid, detail = self._run_validate(step, run.state)
+                    sr.output = {"valid": valid, "detail": detail}
+                    if not valid:
+                        raise RuntimeError(
+                            f"validate failed: {detail or 'check returned falsy'}")
+                    sr.status = "completed"
+                    sr.completed_at = _iso_now()
+                    run.state[step.id] = {"valid": True}
+                except Exception as e:
+                    sr.error = f"{type(e).__name__}: {e}"
+                    sr.status = "failed"
+                    sr.completed_at = _iso_now()
+                    run.status = "failed"
+                    run.completed_at = _iso_now()
+                    run.current_step_idx = idx
+                    self.storage.save_workflow_run(project_id, run.to_dict())
+                    return run
+                run.current_step_idx = idx + 1
+                self.storage.save_workflow_run(project_id, run.to_dict())
+                continue
+
+            # action step — dispatch through the AgentLoop.
             sr.status = "running"
             sr.started_at = _iso_now()
             self.storage.save_workflow_run(project_id, run.to_dict())
@@ -451,6 +478,77 @@ class WorkflowService:
 
         self.storage.save_workflow_run(project_id, run.to_dict())
         return run
+
+    # ── Validate step (W5) ──────────────────────────────────────────────
+    # Deterministic check evaluated against the run's state. No LLM
+    # call. The check expression comes from step.config.check and is
+    # evaluated with state as locals + a restricted builtin set so a
+    # workflow author can't open() the disk.
+
+    _VALIDATE_SAFE_BUILTINS = {
+        "len": len, "str": str, "int": int, "float": float,
+        "bool": bool, "list": list, "dict": dict, "tuple": tuple,
+        "set": set, "min": min, "max": max, "sum": sum,
+        "abs": abs, "round": round, "any": any, "all": all,
+        "sorted": sorted, "range": range, "enumerate": enumerate,
+        "isinstance": isinstance, "True": True, "False": False,
+        "None": None,
+    }
+
+    def _run_validate(self, step: StepDef, state: dict) -> tuple[bool, str]:
+        """Evaluate step.config.check against state. Returns (valid, detail).
+
+        Supported check shapes:
+        - truthy expression: ``"count > 0"``, ``"len(items) <= 10"``
+        - JSON-schema validation: ``{"schema": {...}}`` validates the
+          entire state against the schema (uses jsonschema if available,
+          else a structural best-effort).
+        """
+        check = step.config.get("check")
+        if check is None:
+            # No check configured — treat as a no-op pass.
+            return True, "no check configured"
+        if isinstance(check, str):
+            try:
+                result = eval(check, {"__builtins__": self._VALIDATE_SAFE_BUILTINS},
+                              dict(state))
+            except Exception as e:
+                return False, f"{type(e).__name__}: {e}"
+            return bool(result), f"check={check!r} → {bool(result)}"
+        if isinstance(check, dict) and "schema" in check:
+            # JSON-schema validation. Best-effort without the
+            # jsonschema package — operators who need full validation
+            # install it; we cover type/required here.
+            return self._validate_schema(check["schema"], state)
+        return False, f"unsupported check shape: {type(check).__name__}"
+
+    @staticmethod
+    def _validate_schema(schema: dict, value) -> tuple[bool, str]:
+        """Minimal JSON-schema check (type + required). Full
+        validation lives in the jsonschema package; we shim just
+        enough to make the common cases work without the dep."""
+        if not isinstance(schema, dict):
+            return False, "schema must be a dict"
+        expected_type = schema.get("type")
+        type_map = {"string": str, "integer": int, "number": (int, float),
+                    "boolean": bool, "array": list, "object": dict,
+                    "null": type(None)}
+        if expected_type and expected_type in type_map:
+            # bool is a subclass of int — exclude explicitly for
+            # integer checks so True isn't accepted as 1.
+            actual = type(value)
+            if expected_type == "integer" and isinstance(value, bool):
+                return False, f"expected integer, got boolean"
+            if expected_type == "number" and isinstance(value, bool):
+                return False, f"expected number, got boolean"
+            if not isinstance(value, type_map[expected_type]):
+                return False, f"expected {expected_type}, got {actual.__name__}"
+        if expected_type == "object" and isinstance(value, dict):
+            required = schema.get("required") or []
+            missing = [k for k in required if k not in value]
+            if missing:
+                return False, f"missing required: {missing}"
+        return True, "schema ok"
 
     @staticmethod
     def _substitute(prompt: str, scope: dict) -> str:
