@@ -81,6 +81,83 @@ def test_repair_handles_multiple_dangling_tool_uses():
     assert ids == {"tu_a", "tu_b"}
 
 
+# ── reverse direction (P1-9): orphan tool_result ─────────────────────────────
+
+
+def test_repair_strips_orphan_tool_result_with_no_prior_assistant():
+    """Tail user message references tool_use_ids that don't exist
+    anywhere — all blocks are orphans. Replace with a text note."""
+    msgs = [
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "ghost",
+             "content": "nope"},
+        ]},
+    ]
+    assert repair_dangling_tool_uses(msgs) is True
+    assert msgs[-1]["role"] == "user"
+    assert isinstance(msgs[-1]["content"], list)
+    assert msgs[-1]["content"][0]["type"] == "text"
+    assert "Orphan" in msgs[-1]["content"][0]["text"]
+
+
+def test_repair_strips_orphan_tool_result_against_mismatched_assistant():
+    """Prior assistant has tu_a; trailing user has results for tu_a and
+    tu_ghost. Only the orphan is stripped — the matched result stays."""
+    msgs = [
+        {"role": "user", "content": "do thing"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu_a", "name": "bash",
+             "input": {"command": "ls"}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu_a",
+             "content": "ok"},
+            {"type": "tool_result", "tool_use_id": "tu_ghost",
+             "content": "phantom"},
+        ]},
+    ]
+    assert repair_dangling_tool_uses(msgs) is True
+    results = [b for b in msgs[-1]["content"]
+               if isinstance(b, dict) and b.get("type") == "tool_result"]
+    assert len(results) == 1
+    assert results[0]["tool_use_id"] == "tu_a"
+
+
+def test_repair_noop_when_all_tool_results_match():
+    """Regression guard: matched tool_results must not be stripped."""
+    msgs = [
+        {"role": "user", "content": "do thing"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu_a", "name": "bash",
+             "input": {"command": "ls"}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu_a",
+             "content": "file1"},
+        ]},
+    ]
+    assert repair_dangling_tool_uses(msgs) is False
+    assert len(msgs[-1]["content"]) == 1
+
+
+def test_repair_keeps_non_result_blocks_when_all_results_orphan():
+    """If a user message has text + tool_result and the result is an
+    orphan, the text block must survive the repair."""
+    msgs = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "context note"},
+            {"type": "tool_result", "tool_use_id": "ghost",
+             "content": "nope"},
+        ]},
+    ]
+    assert repair_dangling_tool_uses(msgs) is True
+    content = msgs[-1]["content"]
+    assert isinstance(content, list)
+    types = [b.get("type") for b in content]
+    assert "text" in types
+    assert "tool_result" not in types
+
+
 # ── SessionManager resume ────────────────────────────────────────────────────
 
 def _make(tmp_path):

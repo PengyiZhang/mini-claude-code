@@ -95,6 +95,14 @@ def repair_dangling_tool_uses(messages: list[dict]) -> bool:
     blocks that have no matching tool_result, append a synthetic user
     turn marking each tool as '[interrupted by server restart]'.
 
+    Also handles the reverse direction (P1-9): if the tail is a user
+    message carrying tool_result blocks whose tool_use_id does not
+    match any tool_use in the preceding assistant message, those
+    results are orphans — the Anthropic API rejects them with 400.
+    Strip the orphans; if all results were orphans, replace the user
+    message with a plain-text note so strict user/assistant alternation
+    still holds.
+
     Used at session warm-load so a server crash mid-turn doesn't leave
     the model staring at a tool_use it can never see answered. Returns
     True if a repair happened, False otherwise. Mutates `messages` in
@@ -103,8 +111,15 @@ def repair_dangling_tool_uses(messages: list[dict]) -> bool:
     if not messages:
         return False
     last = messages[-1]
-    if last.get("role") != "assistant":
-        return False
+    if last.get("role") == "assistant":
+        return _repair_forward_dangling_tool_use(messages)
+    if last.get("role") == "user":
+        return _repair_reverse_orphan_tool_result(messages)
+    return False
+
+
+def _repair_forward_dangling_tool_use(messages: list[dict]) -> bool:
+    last = messages[-1]
     content = last.get("content")
     if not isinstance(content, list):
         return False
@@ -126,6 +141,70 @@ def repair_dangling_tool_uses(messages: list[dict]) -> bool:
             for tid in dangling_ids
         ],
     })
+    return True
+
+
+def _repair_reverse_orphan_tool_result(messages: list[dict]) -> bool:
+    """P1-9: strip user-message tool_result blocks whose tool_use_id has
+    no matching tool_use in the immediately preceding assistant message.
+    Such orphans make the Anthropic API return 400 on the next turn."""
+    last = messages[-1]
+    content = last.get("content")
+    if not isinstance(content, list):
+        return False
+    result_blocks = [b for b in content
+                     if isinstance(b, dict)
+                     and b.get("type") == "tool_result"]
+    if not result_blocks:
+        return False
+
+    # Collect tool_use IDs from the preceding assistant message (if any).
+    valid_ids: set[str] = set()
+    if len(messages) >= 2:
+        prev = messages[-2]
+        if prev.get("role") == "assistant":
+            prev_content = prev.get("content")
+            if isinstance(prev_content, list):
+                for b in prev_content:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        bid = b.get("id")
+                        if bid:
+                            valid_ids.add(bid)
+
+    orphans = [b for b in result_blocks
+               if b.get("tool_use_id") not in valid_ids]
+    if not orphans:
+        return False
+
+    if len(orphans) == len(result_blocks):
+        # Every tool_result is an orphan. If the user message also has
+        # non-tool_result blocks (rare — text + results), keep them;
+        # otherwise replace the whole message with a text note so the
+        # transcript still has a valid user turn.
+        non_results = [b for b in content
+                       if not (isinstance(b, dict)
+                               and b.get("type") == "tool_result")]
+        if non_results:
+            messages[-1] = {"role": "user", "content": non_results}
+        else:
+            messages[-1] = {
+                "role": "user",
+                "content": [
+                    {"type": "text",
+                     "text": ("[Orphan tool_result blocks stripped at "
+                              "warm-load — referenced tool_use ids were "
+                              "missing from the prior assistant turn.]")}
+                ],
+            }
+        return True
+
+    # Partial: drop just the orphan result blocks, keep matched ones.
+    orphan_ids = {b.get("tool_use_id") for b in orphans}
+    new_content = [b for b in content
+                   if not (isinstance(b, dict)
+                           and b.get("type") == "tool_result"
+                           and b.get("tool_use_id") in orphan_ids)]
+    messages[-1] = {"role": "user", "content": new_content}
     return True
 
 
