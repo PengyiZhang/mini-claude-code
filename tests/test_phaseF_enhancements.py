@@ -326,6 +326,21 @@ def test_cost_without_metrics_returns_friendly_message():
     assert "not configured" in text.lower()
 
 
+def test_cost_on_real_project_without_metrics_does_not_crash(tmp_path):
+    """Regression: real ``Project`` previously raised
+    ``AttributeError: 'Project' object has no attribute 'metrics'``
+    because the dataclass field is ``_metrics`` but ``/cost`` read
+    ``project.metrics``. Tests using a mock ``_P`` class hid the bug —
+    exercise the real type here."""
+    from mini_cc.projects import ProjectManager
+    pm = ProjectManager(tmp_path / "pm")
+    project = pm.create(tenant_id="t1", project_id="proj-real")
+    events = _run_cmd("cost", project=project)
+    text = next(e["text"] for e in events if e["type"] == "text")
+    # No metrics registry wired → friendly fallback, NOT AttributeError.
+    assert "not configured" in text.lower()
+
+
 def test_cost_reports_token_totals():
     """With a metrics registry populated, /cost shows the numbers."""
     from mini_cc.server.metrics import default_registry as _metrics_factory, record_tokens

@@ -87,6 +87,14 @@ class Project:
     # is visible to the next event without re-warming the session.
     webhooks: "WebhookRegistry | None" = None
 
+    @property
+    def metrics(self):
+        """Public alias for ``_metrics`` — exposes MetricsRegistry on the
+        Project surface so command handlers (e.g. ``/cost``) and tests
+        can read it without reaching past the underscore-private convention.
+        ProjectRef already mirrors this as ``ProjectRef.metrics``."""
+        return self._metrics
+
     def as_ref(self) -> ProjectRef:
         return ProjectRef(
             project_id=self.project_id,
