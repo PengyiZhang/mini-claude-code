@@ -178,6 +178,34 @@ trace_id 会出现在日志和响应头 `X-Trace-Id` 上,便于跨服务串联�
   走了降级路径。
 - `using default share secret` —— F7.1 / F7.2 的密钥未配置,**生产必须修掉**。
 
+### 2.5 取消(Cancel)的语义与限制
+
+`POST /projects/{pid}/sessions/{sid}/stop` 或 SDK 的 `loop.stop()` 触发取消后,
+**客户端会立刻收到 SSE `cancelled` + `done` 事件,且已流式的文本/工具调用会被
+落盘**(P0-9)。但需要清楚以下限制:
+
+- **token 不会立刻停止计费**。取消只是设置了一个 `threading.Event`,loop 在下一次
+  `next(stream_iter)` 返回时才会跳出。Anthropic SDK / LiteLLM 的 HTTP 流仍然在
+  网络读阻塞中,直到下一个 chunk 到达。极端情况下,如果模型正在生成长 chunk,
+  取消延迟可能达到数秒。
+- 取消后 loop 会调用 `stream_iter.close()`,触发 SDK 关闭底层 HTTP 连接。但**服务端
+  已经生成的 token 仍然计入账单**——这是 Anthropic API 的固有限制,不是 mini_cc
+  能规避的。
+- 如果取消发生在 tool_use 已发出但 tool_result 还未生成时,会写入一个
+  `[interrupted by server restart]` 的合成 tool_result,以保证 transcript 的 use/result
+  配对完整,下一轮 API 调用不会 400。
+
+**可观测性**:
+
+- `anthropic_request_total{status="cancelled"}` counter —— 取消次数(Prometheus)。
+- SSE 事件序列:`... text/tool_use ... -> cancelled -> done`。前端可据此把"完成"
+  与"被取消"区分开。
+- 日志 `anthropic_request` 事件中 `status=cancel` 标记每次取消的请求。
+
+排查"用户反馈取消没生效"时:先看 metrics 里 `status=cancelled` 是否增长(否 →
+stop 信号没传到 loop),再看 `status=error` 是否同步上升(是 → 取消时 stream
+抛了异常,通常是网络关闭竞争)。
+
 ---
 
 ## 三、密钥管理

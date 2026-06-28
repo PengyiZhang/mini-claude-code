@@ -131,6 +131,13 @@ def test_cancel_persists_streamed_text(tmp_path):
                    if isinstance(b, dict) and b.get("type") == "text"]
     blob = " ".join(b["text"] for b in text_blocks)
     assert "hello" in blob and "world" in blob, blob
+    # P0-2: SSE must surface a distinct `cancelled` event so consumers
+    # can distinguish "turn finished" from "user clicked stop" — done
+    # alone is ambiguous.
+    types = [e.get("type") for e in events]
+    assert "cancelled" in types, f"no cancelled event in {types}"
+    # cancelled must precede done (order matters for UI state machines).
+    assert types.index("cancelled") < types.index("done")
 
 
 def test_exception_persists_streamed_text_and_tool_use(tmp_path):

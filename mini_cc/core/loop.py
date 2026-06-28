@@ -594,6 +594,11 @@ class AgentLoop:
                                     for tid in tool_use_ids
                                 ],
                             })
+                    # P0-2: emit a `cancelled` event BEFORE `done` so SSE
+                    # consumers can distinguish "turn finished cleanly"
+                    # from "user clicked stop". The metric counter below
+                    # already exists; this is the per-stream signal.
+                    yield {"type": "cancelled"}
                     yield {"type": "done"}
                     self._persist()
                     return
