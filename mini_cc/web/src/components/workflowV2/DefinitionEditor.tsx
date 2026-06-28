@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { TenantProfile, WorkflowV2Step, WorkflowV2StepType } from "../../lib/types";
-import { ApiError, createWorkflowV2Def, updateWorkflowV2Def } from "../../lib/api";
+import { ApiError, createWorkflowV2Def, deleteWorkflowV2Def, updateWorkflowV2Def } from "../../lib/api";
 
 /**
  * Definition editor — modal form for authoring / editing a workflow
@@ -133,6 +133,21 @@ export default function DefinitionEditor({ profile, pid, target, onClose, onSave
     }
   }
 
+  async function remove() {
+    if (target.mode !== "edit") return;
+    if (!confirm(`delete ${target.def.name} (v${target.def.version})? runs are preserved but can no longer be restarted.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteWorkflowV2Def(profile, pid, target.def.def_id);
+      onSaved();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex justify-center items-center bg-black/40"
@@ -216,6 +231,16 @@ export default function DefinitionEditor({ profile, pid, target, onClose, onSave
 
         {/* Footer */}
         <div className="border-t border-border px-4 py-3 flex justify-end gap-2">
+          {target.mode === "edit" && (
+            <button
+              onClick={remove}
+              disabled={busy}
+              className="text-xs px-3 py-1.5 rounded border border-err/40 text-err hover:bg-err/10 disabled:opacity-50 mr-auto"
+              title="delete this definition (runs are preserved)"
+            >
+              {busy ? "…" : "delete"}
+            </button>
+          )}
           <button
             onClick={onClose}
             className="text-xs px-3 py-1.5 rounded border border-border hover:border-ink-dim text-ink-dim"
