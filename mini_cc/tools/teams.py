@@ -68,6 +68,16 @@ def _spawn(ctx: ToolContext, args: dict) -> str:
     spawner = ctx.teams
     if spawner is None:
         return "Teams subsystem not configured for this project"
+    # P0-7: depth-1 recursion cap. Teammates are built with the same
+    # builtin_tools() set as the lead, so without this guard a teammate
+    # could spawn its own teammates, each of which could spawn more,
+    # fanning out unboundedly. The session_id prefix ("teammate-...")
+    # is set by TeammateSpawner._runner and reliably identifies threads
+    # running inside a teammate loop — refuse the call there and ask the
+    # lead to spawn instead.
+    if _name_from_session(ctx) is not None:
+        return ("Teammates cannot spawn their own teammates (recursion "
+                "cap). Ask the lead to spawn instead.")
     # Pass the parent loop's event sink through so the lead's UI sees the
     # teammate's tool_use / tool_result activities stream in as they run.
     # TeammateSpawner.spawn already accepts on_event; the previous lead

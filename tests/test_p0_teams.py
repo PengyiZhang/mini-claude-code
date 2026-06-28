@@ -279,6 +279,34 @@ def test_submit_plan_tool_rejects_non_teammate(tmp_path):
     assert "only available to teammates" in out
 
 
+def test_spawn_teammate_rejects_calls_from_teammate_session(tmp_path):
+    """P0-7: a teammate session_id must not be able to spawn its own
+    teammates — that would fan out unboundedly (each spawned teammate
+    gets the same tool set and could recurse again)."""
+    spawner = TeammateSpawner(
+        tmp_path / "ws", loop_factory=lambda sid: None)
+    ctx = _ctx_with_session(tmp_path, spawner,
+                            session_id="teammate-alice")
+    tools = dispatch(builtin_tools())
+    out = tools["spawn_teammate"].handle(
+        ctx, {"name": "eve", "prompt": "do evil"})
+    assert "recursion cap" in out.lower()
+    # And no thread was started.
+    assert not spawner.list_alive()
+
+
+def test_spawn_teammate_allows_lead_session(tmp_path):
+    """Regression guard: the recursion cap must NOT block the lead from
+    spawning — only teammate-originated calls are refused."""
+    spawner = TeammateSpawner(
+        tmp_path / "ws", loop_factory=lambda sid: None)
+    ctx = _ctx_with_session(tmp_path, spawner, session_id="lead-sess")
+    tools = dispatch(builtin_tools())
+    out = tools["spawn_teammate"].handle(
+        ctx, {"name": "alice", "prompt": "do work"})
+    assert "spawned" in out
+
+
 def test_submit_plan_tool_registers_and_notifies_lead(tmp_path):
     spawner = TeammateSpawner(
         tmp_path / "ws", loop_factory=lambda sid: None)
