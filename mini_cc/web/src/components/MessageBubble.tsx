@@ -63,14 +63,21 @@ function Activity({
   // (See store.ts — toggleActivity takes a key.)
   const key = (msg as unknown as { __key?: string }).__key;
   const toggle = useChat((s) => s.toggleActivity);
+  // F5.1: distinct icon/badge for the `task` tool so the user can tell
+  // at a glance that this turn delegated to a subagent.
+  const isSubagent = activity.name === "task";
+  const icon = isSubagent ? "🤖" : "🔧";
+  const label = isSubagent ? "Subagent" : activity.name;
   return (
-    <div className="border border-border bg-bg-card rounded-md text-sm overflow-hidden">
+    <div className={"border rounded-md text-sm overflow-hidden " +
+                    (isSubagent ? "border-accent/40 bg-accent/5"
+                                : "border-border bg-bg-card")}>
       <button
         onClick={() => key && toggle(key, activity.id)}
         className="w-full flex items-center gap-2 px-3 py-2 hover:bg-bg-hover text-left"
       >
         <span className="text-xs text-ink-dim">{activity.expanded ? "▼" : "▶"}</span>
-        <span className="text-accent">🔧 {activity.name}</span>
+        <span className="text-accent">{icon} {label}</span>
         <span className="text-ink-dim text-xs truncate">{summarize(activity.input)}</span>
         {activity.result === undefined ? (
           <span className="ml-auto text-xs text-warn animate-pulse">running…</span>
@@ -103,6 +110,12 @@ function ActivityBody({ activity, chatKey }: {
   activity: ChatActivity;
   chatKey?: string;
 }) {
+  // F5.1: subagent dispatch via the `task` tool. Render as a "drawer"
+  // with a distinct Subagent badge and a description-first layout so
+  // the user can tell at a glance that this turn delegated work.
+  if (activity.name === "task") {
+    return <SubagentDrawer activity={activity} />;
+  }
   const isEdit = activity.name === "edit_file" || activity.name === "write_file";
   if (isEdit) {
     const oldText = String(activity.input?.old ?? "");
@@ -142,6 +155,47 @@ function ActivityBody({ activity, chatKey }: {
         </div>
       )}
     </>
+  );
+}
+
+function SubagentDrawer({ activity }: { activity: ChatActivity }) {
+  // F5.1: drawer-style render for subagent dispatches.
+  // - description is the headline (that's the task the parent handed off)
+  // - result is the subagent's final summary
+  // Sibling tool_use/tool_result activities emitted by the subagent
+  // are still rendered as their own activity cards in the parent
+  // bubble; this drawer is just the wrapper for the dispatch itself.
+  const description = String(activity.input?.description ?? "");
+  const result = activity.result;
+  const isRunning = result === undefined;
+  return (
+    <div className="border border-accent/40 bg-accent/5 rounded-md overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-accent/30 bg-accent/10">
+        <span className="text-xs">🤖</span>
+        <span className="text-xs font-semibold uppercase tracking-wide text-accent">
+          Subagent
+        </span>
+        {isRunning && (
+          <span className="ml-auto text-xs text-warn animate-pulse">dispatching…</span>
+        )}
+      </div>
+      <div className="p-3 space-y-2">
+        {description && (
+          <div>
+            <div className="text-xs text-ink-dim mb-1">task</div>
+            <div className="text-sm text-ink whitespace-pre-wrap break-words">
+              {description}
+            </div>
+          </div>
+        )}
+        {result !== undefined && (
+          <div>
+            <div className="text-xs text-ink-dim mb-1">summary</div>
+            <CollapsibleOutput text={result} />
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
