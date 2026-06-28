@@ -140,6 +140,15 @@ class AnthropicConfig:
         from .core.llm import select_provider
         return select_provider(self.primary_model, self)
 
+    def has_llm_credentials(self) -> bool:
+        """P0-3: True when the credentials needed for the selected
+        primary provider are set. Used by /health and startup warning
+        so misconfigured deployments aren't silently broken (the old
+        /health returned {ok:true} no matter what)."""
+        if "/" in self.primary_model:
+            return bool(self.litellm_api_key)
+        return bool(self.api_key)
+
 
 _DEFAULT: Optional[AnthropicConfig] = None
 

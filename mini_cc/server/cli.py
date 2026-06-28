@@ -127,6 +127,15 @@ def cmd_serve(args) -> int:
                "data_dir": str(data_dir),
                "docker_available": backend_available,
                "sandbox_backend": backend_name})
+    # P0-3: warn loudly when LLM credentials are missing. Server starts
+    # anyway (so operators can debug config) but /health reflects the
+    # state and the first /send will 401.
+    from ..config import default_config
+    if not default_config().has_llm_credentials():
+        logging.getLogger("mini_cc").warning(
+            "LLM credentials not configured — /send will fail with 401. "
+            "Set ANTHROPIC_API_KEY (or LITELLM_API_KEY for provider-prefixed "
+            "models). /health will report llm_configured=false until then.")
     uvicorn.run(app, host=host, port=port)
     return 0
 

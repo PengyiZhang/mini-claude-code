@@ -148,7 +148,13 @@ def build_app(*, data_dir: Path,
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:
-        return {"ok": True}
+        # P0-3: surface LLM credential state so readiness probes can
+        # distinguish "process alive" from "process can serve traffic".
+        # A static {ok:true} hid every "started but unusable" config.
+        from ..config import default_config
+        cfg = default_config()
+        configured = bool(getattr(cfg, "has_llm_credentials", lambda: False)())
+        return {"ok": True, "llm_configured": configured}
 
     @app.get("/metrics", tags=["meta"])
     def metrics_text() -> PlainTextResponse:

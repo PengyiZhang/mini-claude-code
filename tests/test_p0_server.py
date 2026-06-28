@@ -268,7 +268,10 @@ def test_health_no_auth_required(app_and_client):
     client, *_ = app_and_client
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    body = r.json()
+    assert body["ok"] is True
+    # llm_configured field exists (P0-3); value depends on mock config.
+    assert "llm_configured" in body
 
 
 def test_startup_warns_on_dev_fallback_secrets(tmp_path, monkeypatch, caplog):
@@ -330,6 +333,60 @@ def test_startup_quiet_when_real_secrets_set(tmp_path, monkeypatch, caplog):
                      or "not set" in r.getMessage()]
     assert startup_warns == [], \
         f"no dev-fallback warning expected, got: {startup_warns}"
+
+
+def test_health_reports_llm_configured_state(monkeypatch, tmp_path):
+    """P0-3: /health must surface whether LLM credentials are configured
+    so SREs can wire readiness probes that actually mean something. A
+    static {ok:true} hid every "started but unusable" state."""
+    from mini_cc.auth import TenantKeyRegistry
+    from mini_cc.projects import ProjectManager
+    from mini_cc.session import SessionManager
+    from mini_cc.server.app import build_app
+    from mini_cc.config import AnthropicConfig, set_default_config
+    from starlette.testclient import TestClient
+
+    # No API key set → /health reports llm_configured=False.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("MINI_CC_ANTHROPIC_API_KEY", raising=False)
+    set_default_config(AnthropicConfig(api_key=None))
+    reg = TenantKeyRegistry(tmp_path / "keys.json")
+    pm = ProjectManager(tmp_path / "projects")
+    sm = SessionManager(pm)
+    app = build_app(data_dir=tmp_path, key_registry=reg, pm=pm, sm=sm)
+    with TestClient(app) as c:
+        r = c.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["llm_configured"] is False
+
+    # With key set → True.
+    set_default_config(AnthropicConfig(api_key="sk-real"))
+    with TestClient(app) as c:
+        r = c.get("/health")
+    assert r.json()["llm_configured"] is True
+    import mini_cc.config as cfg_mod
+    cfg_mod._DEFAULT = None
+
+
+def test_anthropic_config_has_llm_credentials_routes_by_model():
+    """P0-3 unit: has_llm_credentials must inspect the right backend —
+    ANTHROPIC_API_KEY for claude-* models, LITELLM_API_KEY for
+    provider-prefixed (openai/, deepseek/, ...) routes."""
+    from mini_cc.config import AnthropicConfig
+    # Default model routes to Anthropic.
+    assert AnthropicConfig(api_key=None).has_llm_credentials() is False
+    assert AnthropicConfig(api_key="sk-ant").has_llm_credentials() is True
+    # litellm route: only litellm_api_key matters.
+    litellm = AnthropicConfig(api_key=None, litellm_api_key="sk-lite",
+                              primary_model="openai/gpt-4")
+    assert litellm.has_llm_credentials() is True
+    litellm_no_key = AnthropicConfig(api_key="sk-ant",
+                                     litellm_api_key=None,
+                                     primary_model="openai/gpt-4")
+    assert litellm_no_key.has_llm_credentials() is False, \
+        "litellm-routed model must ignore ANTHROPIC_API_KEY"
 
 
 # ── Auth ─────────────────────────────────────────────────────────────
