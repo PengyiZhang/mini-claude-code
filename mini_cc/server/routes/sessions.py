@@ -222,7 +222,7 @@ def create_share_link(sid: str = Path(...),
     project = pm.get(pid)
     if sid not in {m.session_id for m in project.storage.list_sessions(pid)}:
         raise NotFound(f"session {sid} not found")
-    from ..sharing.tokens import issue_share_token, warn_if_default_secret
+    from ...sharing.tokens import issue_share_token, warn_if_default_secret
     token = issue_share_token(pid, sid, mode="read")
     return {
         "token": token,
@@ -231,12 +231,43 @@ def create_share_link(sid: str = Path(...),
     }
 
 
+@share_router.get("/shared/{token}/embed")
+def shared_embed(token: str) -> Response:
+    """F7.3: minimal read-only embed page. Renders the transcript as
+    static HTML so it can be iframed into docs / external sites. The
+    page itself contains no secrets — it fetches /shared/{token}/messages
+    client-side using the token in the URL.
+
+    Returns ``Content-Disposition: inline`` so the iframe renders
+    rather than downloading. CSP is intentionally restrictive: no
+    external origins, no inline event handlers."""
+    from ...sharing.tokens import BadShareToken, verify_share_token
+    try:
+        verify_share_token(token)
+    except BadShareToken as e:
+        from ..errors import Unauthorized
+        raise Unauthorized(f"invalid share token: {e}")
+    body = _EMBED_HTML.replace("__TOKEN__", token)
+    return Response(
+        content=body,
+        media_type="text/html",
+        headers={
+            "Content-Security-Policy": "default-src 'self'; "
+                                       "connect-src 'self'; "
+                                       "style-src 'self' 'unsafe-inline'; "
+                                       "img-src 'self' data:;",
+            "X-Frame-Options": "ALLOWALL",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @share_router.get("/shared/{token}/messages")
 def shared_messages(token: str, request: Request) -> list[dict]:
     """Public read-only endpoint: return the transcript referenced by a
     signed share token. No API key required — the token IS the
     authorization."""
-    from ..sharing.tokens import BadShareToken, verify_share_token
+    from ...sharing.tokens import BadShareToken, verify_share_token
     try:
         claims = verify_share_token(token)
     except BadShareToken as e:
@@ -254,3 +285,77 @@ def shared_messages(token: str, request: Request) -> list[dict]:
         raise NotFound("session not found")
     msgs = project.storage.load_messages(claims.project_id, claims.session_id)
     return [_to_jsonable(m) for m in msgs]
+
+
+_EMBED_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mini_cc shared session</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         margin: 0; padding: 1rem; line-height: 1.5; }
+  .msg { margin: 0.5rem 0; padding: 0.75rem; border-radius: 0.4rem;
+         white-space: pre-wrap; word-break: break-word; }
+  .user { background: rgba(127,127,127,0.12); }
+  .assistant { background: rgba(80,140,220,0.12); }
+  .role { font-weight: 600; font-size: 0.8rem; opacity: 0.7;
+          text-transform: uppercase; margin-bottom: 0.25rem; }
+  #err { color: #c00; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<div id="log"></div>
+<script>
+const TOKEN = "__TOKEN__";
+function fail(msg) {
+  document.getElementById("err").textContent = String(msg);
+}
+async function main() {
+  try {
+    const r = await fetch("/shared/" + TOKEN + "/messages",
+                          { headers: { "Accept": "application/json" } });
+    if (!r.ok) { fail("Failed to load: " + r.status); return; }
+    const msgs = await r.json();
+    const log = document.getElementById("log");
+    if (!Array.isArray(msgs) || msgs.length === 0) {
+      log.textContent = "(session is empty)";
+      return;
+    }
+    for (const m of msgs) {
+      const wrap = document.createElement("div");
+      wrap.className = "msg " + (m.role === "user" ? "user" : "assistant");
+      const role = document.createElement("div");
+      role.className = "role";
+      role.textContent = m.role || "?";
+      const body = document.createElement("div");
+      body.textContent = flatten(m.content);
+      wrap.appendChild(role);
+      wrap.appendChild(body);
+      log.appendChild(wrap);
+    }
+  } catch (e) { fail(e); }
+}
+function flatten(c) {
+  if (c == null) return "";
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) {
+    return c.map(b => {
+      if (!b || typeof b !== "object") return "";
+      if (b.type === "text") return b.text || "";
+      if (b.type === "tool_use")
+        return "[" + (b.name || "tool") + "]";
+      if (b.type === "tool_result") return "(tool result)";
+      return "";
+    }).join("\n");
+  }
+  return JSON.stringify(c);
+}
+main();
+</script>
+</body>
+</html>
+"""
