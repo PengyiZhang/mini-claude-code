@@ -116,6 +116,7 @@ def build_app(*, data_dir: Path,
     app.include_router(admin_routes.router)
     app.include_router(commands_routes.router)
     app.include_router(run_table_routes.router)
+    app.include_router(sessions_routes.share_router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:

@@ -1,7 +1,7 @@
 """Session routes: start / list / remove / resume / send (SSE)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Path, Response
+from fastapi import APIRouter, Depends, Path, Request, Response
 from fastapi.responses import StreamingResponse
 
 from ..deps import (check_rate_limit_scope, get_pm, get_sm, require_scope,
@@ -199,3 +199,58 @@ def send_message(body: SendMessageRequest,
             "X-Accel-Buffering": "no",  # disable proxy buffering
         },
     )
+
+
+# ── F7.1 Share links (read-only, signed-token) ───────────────────────
+
+share_router = APIRouter(tags=["share"])
+
+
+@share_router.post(
+    "/tenants/{tid}/projects/{pid}/sessions/{sid}/share")
+def create_share_link(sid: str = Path(...),
+                      pid: str = Path(...),
+                      tid: str = Depends(require_scope("sessions:read")),
+                      pm=Depends(get_pm),
+                      sm=Depends(get_sm)) -> dict:
+    """Mint a signed share token granting read-only access to this
+    session's transcript + future assistant turns. The token is
+    self-contained — no DB lookup required at verify time."""
+    validate_id(pid)
+    validate_id(sid)
+    _check_project_tenant(pid, tid, pm)
+    project = pm.get(pid)
+    if sid not in {m.session_id for m in project.storage.list_sessions(pid)}:
+        raise NotFound(f"session {sid} not found")
+    from ..sharing.tokens import issue_share_token, warn_if_default_secret
+    token = issue_share_token(pid, sid, mode="read")
+    return {
+        "token": token,
+        "expires_in": 7 * 24 * 3600,
+        "default_secret_in_use": warn_if_default_secret(),
+    }
+
+
+@share_router.get("/shared/{token}/messages")
+def shared_messages(token: str, request: Request) -> list[dict]:
+    """Public read-only endpoint: return the transcript referenced by a
+    signed share token. No API key required — the token IS the
+    authorization."""
+    from ..sharing.tokens import BadShareToken, verify_share_token
+    try:
+        claims = verify_share_token(token)
+    except BadShareToken as e:
+        from ..errors import Unauthorized
+        raise Unauthorized(f"invalid share token: {e}")
+    pm = request.app.state.pm
+    try:
+        project = pm.get(claims.project_id)
+    except KeyError as e:
+        from ..errors import NotFound
+        raise NotFound(str(e) or "project not found")
+    if claims.session_id not in {m.session_id
+                                  for m in project.storage.list_sessions(claims.project_id)}:
+        from ..errors import NotFound
+        raise NotFound("session not found")
+    msgs = project.storage.load_messages(claims.project_id, claims.session_id)
+    return [_to_jsonable(m) for m in msgs]

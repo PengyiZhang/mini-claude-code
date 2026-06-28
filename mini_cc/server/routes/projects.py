@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Path
 from ..deps import (check_rate_limit_scope, get_pm, require_scope,
                     validate_id)
 from ..errors import Conflict, NotFound, map_sdk_exception
-from ..projects.templates import apply_template, list_templates
+from ...projects.templates import apply_template, list_templates
 from ..schemas import CreateProjectRequest, ProjectOut
 
 router = APIRouter(prefix="/tenants/{tid}/projects", tags=["projects"])
