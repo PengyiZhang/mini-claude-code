@@ -13,12 +13,20 @@
 | `workflow_v2_resolvers.spec.ts`            | W5: validate step passes on truthy check                           | W5          | ✓      |
 | `workflow_v2_def_crud.spec.ts`             | edit a definition and bump its version                             | W6          | ✓      |
 | `workflow_v2_def_crud.spec.ts`             | delete a definition removes it from the left pane                  | W6          | ✓      |
+| `workflow_v2_email.spec.ts`                | W4: matching email advances the step                               | W4          | ✓      |
+| `workflow_v2_email.spec.ts`                | W4: non-matching email rejected (400), step stays paused           | W4          | ✓      |
+| `workflow_v2_email.spec.ts`                | W4: resolving a non-paused step is rejected (400)                  | W4          | ✓      |
+| `workflow_v2_w1_api.spec.ts`               | W1: create → get → list → update (version bump) → delete           | W1          | ✓      |
+| `workflow_v2_w1_api.spec.ts`               | W1: list with no defs returns empty array                          | W1          | ✓      |
+| `workflow_v2_w1_api.spec.ts`               | W1: update on a missing def returns 404                            | W1          | ✓      |
+| `workflow_v2_polling.spec.ts`              | W6: UI picks up external webhook resolution without refresh        | W6          | ✓      |
 | `round2_hardening.spec.ts`                 | a workflow def in one tenant is invisible to another               | R2 / P0-1   | ✓*     |
 | `round2_hardening.spec.ts`                 | a single authenticated GET is allowed (smoke)                      | R2 / B6     | ✓      |
+| `round2_sse.spec.ts`                       | /send accepts Last-Event-Id header and returns text/event-stream   | R2 / B8     | ✓      |
 
 ✓* requires `E2E_ALT_TENANT_KEY` / `E2E_ALT_TENANT_ID` / `E2E_ALT_TENANT_PID` env vars; skipped otherwise.
 
-Total: **11 passing**, 0 skipped (when fully provisioned), 0 flaky.
+Total: **19 passing**, 0 skipped (when fully provisioned), 0 flaky.
 
 ## Setup
 
@@ -64,10 +72,11 @@ npx playwright test --project=chromium
 ## Leftover issues / not covered
 
 - **Drive endpoint with action steps**: action steps dispatch through the AgentLoop, which needs a working LLM. The dev backend has `llm_configured: true` but real LLM calls are flaky in CI. Specs are designed so action-step dispatch is never the *first* thing exercised (gates/webhook/validate come first), and where an action step is the second step (e.g., W2 approve test) only gate resolution is asserted, not action completion.
-- **W4 email_wait inbound**: no SMTP/IMAP server in the dev environment. Coverage lives in `tests/test_round2_w4.py` at the unit level.
+- **W4 IMAP poll loop**: the inbound email resolver is exercised via direct HTTP POST (matching/rejecting/state errors). The actual `EmailService.poll_once` IMAP path needs a real IMAP server; covered in `tests/test_round2_w4.py`.
 - **Round 2 Batch 3–5 backend** (atomic writes, SSE queue bound, loop run guard, etc.): all covered by `tests/test_round2_b*.py`. No e2e because they need fault injection (kill -9, network partition, etc.).
 - **Pre-existing `setup.spec.ts` flakiness**: chat test asserts `body.length > 50`, but the LLM sometimes returns <50 chars. Unrelated to this round; left alone.
-- **SSE reconnect (B4 Last-Event-Id)**: would need to kill the SSE connection mid-stream and verify replay. Not yet covered — candidate for the next round.
+- **SSE mid-stream reconnect (B4 Last-Event-Id replay)**: the endpoint accepts the header (smoke in `round2_sse.spec.ts`), but verifying replay-from-disk requires a live LLM stream + mid-stream disconnect. The storage layer (`append_session_event` / `read_session_events_since`) is covered in `tests/test_round2_b4.py`.
+- **Client-side SSE auto-reconnect**: `lib/sse.ts` does NOT auto-reconnect on drop — it just calls `onError`. The server supports replay, but the client never resumes. Real gap; candidate for a future UX round.
 
 ## Cron / scheduling
 
