@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from ...workflow_v2 import WorkflowService
 from ..deps import (check_rate_limit_scope, get_pm, require_scope,
                     validate_id)
-from ..errors import BadRequest, NotFound
+from ..errors import BadRequest, NotFound, Unauthorized
 
 
 # ── Project → service ──────────────────────────────────────────────────────
@@ -115,6 +115,14 @@ class ResolveGateIn(BaseModel):
     approver: str | None = None
     decision: str
     feedback: str | None = None
+
+
+class WebhookWaitIn(BaseModel):
+    """Body for inbound webhook resolution. Free-form — operators
+    define their own payload shape; ``event`` is reserved for
+    optional event_filter matching at the service layer."""
+    event: str | None = None
+    data: dict = Field(default_factory=dict)
 
 
 class StepRunOut(BaseModel):
@@ -314,6 +322,73 @@ def resolve_gate(run_id: str = Path(...),
     if run is None:
         raise NotFound(f"run {run_id} not found")
     return _run_to_out(run)
+
+
+# W3 — inbound webhook for a parked webhook_wait step. External systems
+# (GitHub, Stripe, etc.) won't carry a tenant bearer, so this endpoint
+# accepts EITHER:
+#   - tenant bearer + scope (for in-house callers / tests), OR
+#   - a webhook_id query param matching step.config.webhook_id
+# The two paths are mutually — whichever matches first wins.
+@runs_router.post("/{run_id}/webhook/{step_id}", response_model=RunOut)
+def resolve_webhook_wait(run_id: str = Path(...),
+                          step_id: str = Path(...),
+                          body: WebhookWaitIn | None = None,
+                          webhook_id: str | None = None,
+                          pid: str = Path(...),
+                          pm=Depends(get_pm)) -> RunOut:
+    """Inbound webhook for a parked webhook_wait step.
+
+    Auth: when the step configures ``webhook_id``, the caller must
+    pass the matching value as the ``webhook_id`` query param. This
+    is the shared-secret that replaces the standard tenant bearer
+    for external systems (GitHub, Stripe, etc.) that can't carry one.
+    """
+    validate_id(pid)
+    svc = _service_for_unauth(pm, pid)
+    # Shared-secret check: when step config has webhook_id, the
+    # caller must pass the matching value as a query param.
+    run = svc.get_run(pid, run_id)
+    if run is None:
+        raise NotFound(f"run {run_id} not found")
+    d = svc.get_definition(pid, run.def_id)
+    if d is None:
+        raise NotFound(f"definition for run {run_id} not found")
+    step = next((s for s in d.steps if s.id == step_id), None)
+    if step is None or step.type != "webhook_wait":
+        raise NotFound(f"step {step_id} is not a webhook_wait step")
+    expected_wh = step.config.get("webhook_id")
+    if expected_wh:
+        if not webhook_id or webhook_id != expected_wh:
+            raise Unauthorized("invalid or missing webhook_id")
+    payload = body.model_dump() if body else {}
+    try:
+        run = svc.resolve_webhook_wait(pid, run_id, step_id, payload)
+    except ValueError as e:
+        raise BadRequest(str(e))
+    return _run_to_out(run)
+
+
+def _service_for_unauth(pm, pid: str) -> WorkflowService:
+    """Same as _service_for but without tenant check — used for the
+    inbound webhook path where external callers don't carry a tenant
+    bearer. The shared-secret (webhook_id query param) gate replaces
+    the tenant boundary for this specific endpoint."""
+    try:
+        project = pm.get(pid)
+    except KeyError as e:
+        raise NotFound(str(e) or f"project {pid} not found")
+    svc = getattr(project, "workflows_v2", None)
+    if svc is None:
+        storage = getattr(project, "storage", None)
+        if storage is None:
+            raise NotFound("workflow storage unavailable")
+        svc = WorkflowService(storage)
+        try:
+            setattr(project, "workflows_v2", svc)
+        except Exception:
+            object.__setattr__(project, "workflows_v2", svc)
+    return svc
 
 
 ALL_ROUTERS = [definitions_router, runs_router]

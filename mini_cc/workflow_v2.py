@@ -461,6 +461,70 @@ class WorkflowService:
             return str(v) if v is not None else m.group(0)
         return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", repl, prompt)
 
+    # ── Webhook inbound resolver (W3) ────────────────────────────────────
+    # A webhook_wait step parks the run until an external system posts
+    # to the workflow's inbound webhook URL. ``resolve_webhook_wait``
+    # is the entry point the HTTP handler calls — payload becomes the
+    # gate's output, the run resumes from the next step.
+
+    def resolve_webhook_wait(self, project_id: str, run_id: str,
+                              step_id: str, payload: dict) -> WorkflowRun | None:
+        """Advance a parked ``webhook_wait`` step with the posted payload.
+
+        Validates that the step is a webhook_wait gate and currently
+        paused, applies an optional ``event_filter`` from step config
+        (if set, ``payload['event']`` must match), then marks the step
+        completed with the payload as output. Returns the updated run
+        or ``None`` if the run is missing.
+        """
+        run = self.get_run(project_id, run_id)
+        if run is None:
+            return None
+        d = self.get_definition(project_id, run.def_id)
+        if d is None:
+            return None
+        step = next((s for s in d.steps if s.id == step_id), None)
+        if step is None or step.type != "webhook_wait":
+            raise ValueError(
+                f"step {step_id} is not a webhook_wait step")
+        sr = next((s for s in run.step_runs if s.step_id == step_id), None)
+        if sr is None:
+            raise ValueError(f"step {step_id} not in run")
+        if sr.status != "paused":
+            raise ValueError(
+                f"step {step_id} is {sr.status}, not paused")
+        # Optional event_filter: when configured, the payload's 'event'
+        # field must match. Lets one webhook URL serve multiple wait
+        # steps with different event types.
+        event_filter = step.config.get("event_filter")
+        if event_filter:
+            actual = (payload or {}).get("event")
+            if actual != event_filter:
+                raise ValueError(
+                    f"event {actual!r} does not match filter "
+                    f"{event_filter!r}")
+
+        now = _iso_now()
+        gate_output = {
+            "decision": "approve",  # webhook = implicit approve
+            "payload": payload,
+            "resolved_at": now,
+            "resolver": "webhook",
+        }
+        sr.status = "completed"
+        sr.completed_at = now
+        sr.output = gate_output
+        run.state[step_id] = gate_output
+        idx = next((i for i, s in enumerate(d.steps) if s.id == step_id), 0)
+        run.current_step_idx = idx + 1
+        if run.current_step_idx >= len(d.steps):
+            run.status = "completed"
+            run.completed_at = now
+        else:
+            run.status = "paused"
+        self.storage.save_workflow_run(project_id, run.to_dict())
+        return run
+
 
 __all__ = [
     "StepDef", "TriggerDef",
