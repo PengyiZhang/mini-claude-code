@@ -24,6 +24,7 @@ def _task(ctx: ToolContext, args: dict) -> str:
         client_factory=ctx.subagent_client_factory,
         on_event=ctx.on_subagent_event,
         session_id_out=session_id_out,
+        allow_mcp=bool(args.get("allow_mcp", False)),
     )
     sid = session_id_out[0] if session_id_out else "subagent-unknown"
     return f"{summary}\n\n[subagent_session_id: {sid}]"
@@ -32,10 +33,20 @@ def _task(ctx: ToolContext, args: dict) -> str:
 TASK_TOOL = FunctionTool(
     name="task",
     description=("Launch a focused subagent to complete a described task. "
-                 "Returns only its final summary."),
+                 "Returns only its final summary. Set allow_mcp=true to "
+                 "give the subagent access to the project's MCP tools "
+                 "(default off — keeps the subagent's blast radius "
+                 "minimal)."),
     input_schema={
         "type": "object",
-        "properties": {"description": {"type": "string"}},
+        "properties": {
+            "description": {"type": "string"},
+            "allow_mcp": {
+                "type": "boolean",
+                "description": "If true, expose MCP tools (mcp__*) to "
+                               "the subagent. Default false.",
+            },
+        },
         "required": ["description"],
     },
     fn=_task,

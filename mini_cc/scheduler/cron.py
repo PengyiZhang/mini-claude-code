@@ -103,6 +103,10 @@ class CronScheduler:
     """Per-project cron scheduler. Stateless across restarts except for
     durable jobs (persisted via Storage)."""
 
+    # B12: how far back we look for missed fires on startup. Caps the
+    # catch-up scan so a long outage doesn't enqueue a flood of fires.
+    MAX_CATCHUP_WINDOW_SECONDS = 24 * 3600
+
     def __init__(self, project_id: str, storage: Storage):
         self.project_id = project_id
         self.storage = storage
@@ -111,6 +115,9 @@ class CronScheduler:
         self._fired_queue: list[CronJob] = []
         self._last_fired: dict[str, str] = {}
         self._loaded = False
+        # Persisted tick timestamp (ISO). On restart, jobs whose cron
+        # matched between this and now are re-fired once each.
+        self._last_tick_at: datetime | None = None
 
     def _ensure_loaded(self) -> None:
         if self._loaded:
@@ -119,6 +126,9 @@ class CronScheduler:
         for job in self.storage.load_cron(self.project_id):
             if validate_cron(job.cron) is None:
                 self._jobs[job.job_id] = job
+        # Read the last tick marker; if missing (first run / older
+        # version), skip catch-up.
+        self._last_tick_at = self._load_last_tick()
 
     def _persist_durable(self) -> None:
         durable = [j for j in self._jobs.values() if j.durable]
@@ -161,6 +171,13 @@ class CronScheduler:
         now = now or datetime.now()
         marker = now.strftime("%Y-%m-%d %H:%M")
         with self._lock:
+            # B12: on the first tick after a restart, scan the missed
+            # window for fires that should have happened while we were
+            # down. We fire each missed job at most once (the most
+            # recent matching minute) to avoid queueing hundreds of
+            # fires after a long outage.
+            if self._last_tick_at is not None:
+                self._catch_up_missed_locked(self._last_tick_at, now)
             for job in list(self._jobs.values()):
                 try:
                     if (cron_matches(job.cron, now)
@@ -173,6 +190,65 @@ class CronScheduler:
                                 self._persist_durable()
                 except Exception:
                     continue
+            self._last_tick_at = now
+            self._persist_last_tick(now)
+
+    def _catch_up_missed_locked(self, since: datetime,
+                                now: datetime) -> None:
+        """Re-fire jobs whose cron matched any minute in [since, now).
+
+        Walks minute-by-minute, capped at MAX_CATCHUP_WINDOW_SECONDS.
+        For each job, the most recent match in the window is fired
+        (rather than every match) — recurring jobs don't benefit from
+        N duplicates of the same prompt, and one-time jobs that fired
+        while down shouldn't be missed entirely.
+        """
+        if now <= since:
+            return
+        window_seconds = min(
+            (now - since).total_seconds(),
+            self.MAX_CATCHUP_WINDOW_SECONDS)
+        # Walk backwards from now minute-by-minute so we can stop early
+        # once we've found one match per job.
+        from datetime import timedelta
+        cursor = now.replace(second=0, microsecond=0)
+        end = now - timedelta(seconds=window_seconds)
+        matched: set[str] = set()
+        while cursor > end:
+            for job in list(self._jobs.values()):
+                if job.job_id in matched:
+                    continue
+                try:
+                    if cron_matches(job.cron, cursor):
+                        self._fired_queue.append(job)
+                        matched.add(job.job_id)
+                        marker = cursor.strftime("%Y-%m-%d %H:%M")
+                        self._last_fired[job.job_id] = marker
+                except Exception:
+                    continue
+            cursor -= timedelta(minutes=1)
+
+    def _load_last_tick(self) -> datetime | None:
+        """Read the persisted last-tick timestamp for this project.
+
+        Stored alongside durable jobs in a sidecar file so the same
+        Storage instance can host it without a schema migration.
+        """
+        try:
+            raw = self.storage.read_tool_result(
+                self.project_id, "_cron_last_tick")
+            if raw:
+                return datetime.fromisoformat(raw)
+        except Exception:
+            pass
+        return None
+
+    def _persist_last_tick(self, ts: datetime) -> None:
+        try:
+            self.storage.write_tool_result(
+                self.project_id, "_cron_last_tick", ts.isoformat())
+        except Exception:
+            pass
 
     def consume_fired(self) -> list[CronJob]:
         """Drain the fire queue. AgentLoop calls this each iteration."""

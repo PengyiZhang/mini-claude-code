@@ -162,7 +162,8 @@ class TeammateSpawner:
                  project_id: str | None = None,
                  storage: "Storage | None" = None,
                  idle_poll_interval: float = 5.0,
-                 idle_timeout: float = 60.0):
+                 idle_timeout: float = 60.0,
+                 plan_approval_timeout: float = 600.0):
         self.bus = MessageBus(workspace)
         self.protocol = ProtocolTracker()
         self._loop_factory = loop_factory
@@ -170,6 +171,10 @@ class TeammateSpawner:
         self.storage = storage
         self.idle_poll_interval = idle_poll_interval
         self.idle_timeout = idle_timeout
+        # B5: cap for _wait_for_plan_verdict. Default 10 min — long
+        # enough for a human review during work hours, short enough
+        # that a dead lead doesn't lock the teammate forever.
+        self.plan_approval_timeout = plan_approval_timeout
         self._lock = threading.Lock()
         self._teammates: dict[str, TeammateInfo] = {}
         # name -> request_id the teammate is currently blocked on
@@ -346,10 +351,31 @@ class TeammateSpawner:
             self.bus.send(info.name, "lead", "Done.", "result")
 
     def _wait_for_plan_verdict(self, info: TeammateInfo,
-                               request_id: str) -> str | None:
+                               request_id: str,
+                               *,
+                               timeout: float | None = None) -> str | None:
         """Block until plan_approval_response arrives. Returns the verdict
-        prompt, or None if a shutdown_request was seen instead."""
+        prompt, or None if a shutdown_request was seen instead.
+
+        B5: ``timeout`` (seconds) caps how long we wait. If the lead
+        never responds, the teammate exits rather than polling forever.
+        Defaults to ``self.plan_approval_timeout`` (10 min) when None.
+        """
+        if timeout is None:
+            timeout = getattr(self, "plan_approval_timeout", 600.0)
+        deadline = time.time() + timeout
         while True:
+            if time.time() >= deadline:
+                with self._lock:
+                    self._waiting_plan.pop(info.name, None)
+                # Mark the plan request as expired so the lead's later
+                # review doesn't find a live teammate to deliver to.
+                try:
+                    self.protocol.update_status(request_id, "expired")
+                except Exception:
+                    pass
+                return ("[Plan approval timed out after "
+                        f"{int(timeout)}s — exiting turn]")
             time.sleep(self.idle_poll_interval)
             inbox = self.bus.read_inbox(info.name)
             for msg in inbox:

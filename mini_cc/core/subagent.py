@@ -39,7 +39,8 @@ def spawn_subagent(project: "ProjectRef", description: str,
                    client_factory=None,
                    model: str | None = None,
                    on_event=None,
-                   session_id_out: list[str] | None = None) -> str:
+                   session_id_out: list[str] | None = None,
+                   allow_mcp: bool = False) -> str:
     """Run a focused subagent to completion. Returns its final text summary.
 
     The subagent uses a fresh AgentLoop with a per-call session_id and a
@@ -58,6 +59,10 @@ def spawn_subagent(project: "ProjectRef", description: str,
     tool result can reference it for debugging / observability). The id
     is also embedded in the loop's storage transcript, so callers that
     don't need it can ignore the parameter.
+
+    B10: ``allow_mcp`` (default False) includes MCP tools exposed by
+    ``project.mcp_pool`` in the subagent's toolset. Off by default so
+    a subagent's blast radius stays minimal unless the caller opts in.
     """
     # Local imports to avoid a circular dependency at module load time
     # (tools imports core.subagent via tools.subagent).
@@ -66,6 +71,13 @@ def spawn_subagent(project: "ProjectRef", description: str,
 
     sub_tools = [t for t in builtin_tools()
                  if t.name in SUBAGENT_TOOL_NAMES]
+    if allow_mcp:
+        mcp_pool = getattr(project, "mcp_pool", None)
+        if mcp_pool is not None and hasattr(mcp_pool, "all_tools"):
+            try:
+                sub_tools = sub_tools + mcp_pool.all_tools()
+            except Exception:
+                pass
     # Hyphen, not colon: HTTP path validation (server/deps.py validate_id)
     # only accepts [A-Za-z0-9_-]+, so a "subagent:xxx" id would 400 any
     # client that tried to open it. Hyphen keeps the prefix recognizable

@@ -10,15 +10,36 @@ State model: one *active* workflow per ToolContext (stored on the
 project). The agent creates one, steps through it, and reads its
 state as it goes. Concurrent workflows aren't supported — keep it
 simple.
+
+B11: per-wf reentrant lock guards workflow_run_all so two parallel
+calls against the same wf_id serialize rather than corrupting the
+state bag mid-write.
 """
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any
 
 from .base import FunctionTool, ToolContext
 from ..workflow import (Workflow, WorkflowStep, run_workflow,
                         workflow_from_dict, workflow_from_markdown)
+
+
+# B11: per-wf-id reentrant locks. Reentrant so a workflow can re-enter
+# its own dispatcher (e.g. a step that triggers another workflow tool)
+# without deadlocking.
+_WF_LOCKS_GUARD = threading.Lock()
+_WF_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _wf_lock(wf_id: str) -> threading.RLock:
+    with _WF_LOCKS_GUARD:
+        lk = _WF_LOCKS.get(wf_id)
+        if lk is None:
+            lk = threading.RLock()
+            _WF_LOCKS[wf_id] = lk
+        return lk
 
 
 # ── workflow_create ──────────────────────────────────────────────────────
@@ -138,11 +159,19 @@ def _workflow_run_all(ctx: ToolContext, args: dict) -> str:
                 "this tool only works inside a running loop.")
     from ..workflow import run_workflow
 
-    # Use the shared runner with our dispatcher. Events are summarized
-    # into the returned text — the agent doesn't get a stream of SSE
-    # events from a tool result, just a digest.
-    events = list(run_workflow(wf, dispatcher,
-                               initial_state=wf.state))
+    # B11: serialize concurrent run_all against the same wf_id. Without
+    # this, two parallel calls would race on wf.state and step results,
+    # potentially corrupting the persisted JSON.
+    lock = _wf_lock(getattr(wf, "id", "_global"))
+    if not lock.acquire(blocking=False):
+        return (f"Error: workflow `{wf.id}` is already running in "
+                "another call. Wait for it to finish before retrying.")
+    try:
+        events = list(run_workflow(wf, dispatcher,
+                                   initial_state=wf.state))
+    finally:
+        lock.release()
+
     summary_lines: list[str] = []
     aborted = False
     for ev in events:
