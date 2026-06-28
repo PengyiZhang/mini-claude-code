@@ -28,8 +28,10 @@ test.describe("workflow v2", () => {
     // Page shell rendered.
     await expect(page.locator("text=/definitions/i").first()).toBeVisible({ timeout: 10_000 });
 
-    // Open the new-definition editor.
-    await page.getByRole("button", { name: /new definition/i }).click();
+    // Open the new-definition editor. The button has only "＋" as visible text
+    // — its accessible name comes from the title attribute, so getByRole
+    // name-match doesn't find it. Use getByTitle instead.
+    await page.getByTitle("new definition").click();
     await expect(page.locator("text=/new workflow definition/i")).toBeVisible();
 
     // Author: name + description + one action step + one checkpoint.
@@ -48,7 +50,11 @@ test.describe("workflow v2", () => {
     // Definition appears in the left pane after save.
     await expect(page.locator("text=/v1 · 2 steps/i").first()).toBeVisible({ timeout: 10_000 });
 
-    // Select the definition (auto-selected, but be explicit) and start a run.
+    // Def is auto-selected on creation; with no runs yet the middle pane
+    // shows a "start new run" affordance (added after the W6 UX gap where
+    // the empty state had no start button). Click it to start a run.
+    await page.getByRole("button", { name: /start new run/i }).click();
+
     // The right-pane run timeline should show "run started".
     await expect(page.locator("text=/run started/i")).toBeVisible({ timeout: 10_000 });
   });

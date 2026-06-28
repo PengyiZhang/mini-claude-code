@@ -13,10 +13,14 @@ export async function signIn(page: Page): Promise<Page> {
   await page.goto("/");
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await page.getByLabel("Base URL").fill(BASE);
-  await page.getByLabel("Tenant ID").fill(TENANT);
-  await page.getByLabel("API key").fill(apiKey);
-  await page.getByLabel("Label (optional)").fill("e2e");
+  // Login.tsx wraps each input in a <label> with the visible text in a <div>,
+  // which Playwright's getByLabel doesn't reliably match. Use placeholders,
+  // which are stable across the form (DEFAULT_BASE / "tenant1" / "mck_..." /
+  // "prod / dev / local").
+  await page.getByPlaceholder(/^https?:\/\//).fill(BASE);
+  await page.getByPlaceholder("tenant1").fill(TENANT);
+  await page.getByPlaceholder("mck_...").fill(apiKey);
+  await page.getByPlaceholder(/prod\s*\/\s*dev/i).fill("e2e");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/#\/projects$/);
   return page;

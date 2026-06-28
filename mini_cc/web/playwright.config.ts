@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const FRONT = "http://localhost:5173/";
+// 5173 is occupied on this machine by another vite app; mini_cc dev runs on
+// 5174 (started separately). Override via E2E_FRONT_BASE if needed.
+const FRONT = process.env.E2E_FRONT_BASE ?? "http://127.0.0.1:5174/";
 const API = "http://127.0.0.1:8002";
 
 export default defineConfig({

@@ -7,6 +7,7 @@ import WorkflowV2StepInspector from "../components/workflowV2/StepInspector";
 import DefinitionEditor from "../components/workflowV2/DefinitionEditor";
 import { useAuth } from "../lib/store";
 import { useWorkflowV2 } from "../lib/workflowV2Store";
+import { startWorkflowV2Run } from "../lib/api";
 import type { WorkflowV2Definition } from "../lib/types";
 
 /**
@@ -75,6 +76,22 @@ export default function WorkflowV2() {
     setEditorOpen(true);
   }
 
+  // Start a fresh run for the selected def. Used from the empty-state
+  // placeholder (when a def exists but no run is selected yet — without
+  // this affordance the user has no way to start their first run).
+  async function startNewRunForSelectedDef() {
+    if (!selectedDef) return;
+    try {
+      const newRun = await startWorkflowV2Run(profile, pid, selectedDef.def_id);
+      useWorkflowV2.getState().selectRun(newRun.run_id);
+      await useWorkflowV2.getState().refreshRuns(profile, pid);
+    } catch (e) {
+      useWorkflowV2.getState().setError(
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+
   return (
     <div className="h-screen overflow-hidden flex flex-col">
       <TopBar title={`${pid} · workflow`} />
@@ -112,10 +129,22 @@ export default function WorkflowV2() {
                 onError={(msg) => useWorkflowV2.getState().setError(msg)}
               />
             ) : (
-              <div className="flex-1 flex items-center justify-center text-sm text-ink-dim p-8">
-                {defs.length === 0
-                  ? "no workflow definitions yet — click ＋ new definition to author one"
-                  : "select a run from the left to inspect its execution"}
+              <div className="flex-1 flex flex-col items-center justify-center text-sm text-ink-dim p-8 gap-3">
+                {defs.length === 0 ? (
+                  <span>no workflow definitions yet — click ＋ new definition to author one</span>
+                ) : selectedDef ? (
+                  <>
+                    <span>no runs for {selectedDef.name} yet</span>
+                    <button
+                      onClick={startNewRunForSelectedDef}
+                      className="text-xs px-3 py-1.5 rounded bg-accent text-white hover:bg-accent-hover"
+                    >
+                      ▶ start new run
+                    </button>
+                  </>
+                ) : (
+                  <span>select a run from the left to inspect its execution</span>
+                )}
               </div>
             )}
           </section>
