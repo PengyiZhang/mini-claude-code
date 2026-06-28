@@ -25,6 +25,7 @@ from .routes import permissions as permissions_routes
 from .routes import admin as admin_routes
 from .routes import commands as commands_routes
 from .routes import run_table as run_table_routes
+from .routes import webhooks as webhooks_routes
 
 
 @asynccontextmanager
@@ -117,6 +118,7 @@ def build_app(*, data_dir: Path,
     app.include_router(commands_routes.router)
     app.include_router(run_table_routes.router)
     app.include_router(sessions_routes.share_router)
+    app.include_router(webhooks_routes.router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:

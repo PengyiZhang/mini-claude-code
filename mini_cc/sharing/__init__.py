@@ -6,6 +6,7 @@ from .tokens import (
     verify_share_token,
     warn_if_default_secret,
 )
+from .webhooks import Webhook, WebhookDispatcher, WebhookRegistry, sign_payload
 
 __all__ = [
     "BadShareToken",
@@ -13,4 +14,8 @@ __all__ = [
     "issue_share_token",
     "verify_share_token",
     "warn_if_default_secret",
+    "Webhook",
+    "WebhookDispatcher",
+    "WebhookRegistry",
+    "sign_payload",
 ]

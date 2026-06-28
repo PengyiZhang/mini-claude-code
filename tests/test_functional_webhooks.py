@@ -1,0 +1,139 @@
+"""F7.2 — WebhookRegistry persistence + WebhookDispatcher fan-out."""
+from __future__ import annotations
+
+import json
+import sys
+import threading
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "mini_cc"))
+
+from mini_cc.sharing.webhooks import (  # noqa: E402
+    WebhookDispatcher, WebhookRegistry, sign_payload,
+)
+
+
+def test_registry_add_persists_and_lists(tmp_path: Path):
+    reg = WebhookRegistry(tmp_path, "p1")
+    h = reg.add("https://example.com/hook", ["tool_use", "text"])
+    assert h.id.startswith("wh_")
+    assert h.url == "https://example.com/hook"
+    # Reload from disk → persistence works.
+    reg2 = WebhookRegistry(tmp_path, "p1")
+    assert len(reg2.list()) == 1
+    assert reg2.list()[0].id == h.id
+
+
+def test_registry_remove(tmp_path: Path):
+    reg = WebhookRegistry(tmp_path, "p1")
+    h = reg.add("https://x.io/h", [])
+    assert reg.remove(h.id) is True
+    assert reg.remove(h.id) is False
+    assert reg.list() == []
+
+
+def test_registry_rejects_bad_url(tmp_path: Path):
+    reg = WebhookRegistry(tmp_path, "p1")
+    try:
+        reg.add("not-a-url", [])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError")
+    try:
+        reg.add("ftp://nope", [])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for non-http scheme")
+
+
+def test_matches_filters_by_event_type(tmp_path: Path):
+    reg = WebhookRegistry(tmp_path, "p1")
+    all_hook = reg.add("https://a.io", [])
+    tool_hook = reg.add("https://b.io", ["tool_use"])
+    text_hook = reg.add("https://c.io", ["text"])
+    m = reg.matches("tool_use")
+    urls = {h.url for h in m}
+    assert urls == {all_hook.url, tool_hook.url}
+    m2 = reg.matches("todos_updated")
+    assert {h.url for h in m2} == {all_hook.url}
+    m3 = reg.matches("text")
+    assert {h.url for h in m3} == {all_hook.url, text_hook.url}
+
+
+def test_sign_payload_roundtrip():
+    secret = "abc"
+    body = b'{"x":1}'
+    sig = sign_payload(body, secret)
+    # 64-char hex string for SHA256
+    assert len(sig) == 64
+    assert all(c in "0123456789abcdef" for c in sig)
+
+
+def test_dispatcher_fires_only_for_matching_hooks(tmp_path: Path):
+    reg = WebhookRegistry(tmp_path, "p1")
+    fired: list[tuple[str, bytes, str]] = []
+    lock = threading.Lock()
+
+    def fake_deliverer(url: str, body: bytes, secret: str) -> None:
+        with lock:
+            fired.append((url, body, secret))
+
+    reg.add("https://tool.io", ["tool_use"])
+    reg.add("https://all.io", [])
+
+    inner_calls: list[dict] = []
+    disp = WebhookDispatcher(reg, "p1", "s1",
+                             inner=lambda e: inner_calls.append(e),
+                             deliverer=fake_deliverer)
+    disp({"type": "text", "text": "hello"})
+    # Allow background threads to run.
+    time.sleep(0.05)
+    urls_fired = {f[0] for f in fired}
+    # 'text' event → only the all-events hook matches.
+    assert urls_fired == {"https://all.io"}
+    # Inner callback was still invoked synchronously.
+    assert inner_calls and inner_calls[0]["type"] == "text"
+    # Body envelope shape.
+    body = json.loads(fired[0][1].decode("utf-8"))
+    assert body["project_id"] == "p1"
+    assert body["session_id"] == "s1"
+    assert body["event"]["type"] == "text"
+    assert "ts" in body
+
+
+def test_dispatcher_no_hooks_skips_delivery(tmp_path: Path):
+    reg = WebhookRegistry(tmp_path, "p1")
+    fired: list = []
+    disp = WebhookDispatcher(reg, "p1", "s1",
+                             deliverer=lambda u, b, s: fired.append((u, b, s)))
+    disp({"type": "text", "text": "x"})
+    time.sleep(0.02)
+    assert fired == []
+
+
+def test_dispatcher_ignores_event_without_type(tmp_path: Path):
+    reg = WebhookRegistry(tmp_path, "p1")
+    reg.add("https://x.io", [])
+    fired: list = []
+    disp = WebhookDispatcher(reg, "p1", "s1",
+                             deliverer=lambda u, b, s: fired.append(u))
+    disp({"foo": "bar"})
+    time.sleep(0.02)
+    assert fired == []
+
+
+def test_dispatcher_deliverer_exception_is_swallowed(tmp_path: Path):
+    reg = WebhookRegistry(tmp_path, "p1")
+    reg.add("https://x.io", [])
+
+    def boom(url, body, secret):
+        raise RuntimeError("network down")
+
+    disp = WebhookDispatcher(reg, "p1", "s1", deliverer=boom)
+    # Should not raise even though deliverer blows up.
+    disp({"type": "text", "text": "x"})
+    time.sleep(0.05)
