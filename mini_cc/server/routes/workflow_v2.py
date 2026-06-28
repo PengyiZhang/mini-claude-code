@@ -125,6 +125,21 @@ class WebhookWaitIn(BaseModel):
     data: dict = Field(default_factory=dict)
 
 
+class EmailWaitIn(BaseModel):
+    """Body for inbound email resolution (W4). Accepts either
+    from_addr/from (and to_addr/to) — both forms common in real
+    inbound-parse webhooks."""
+    from_addr: str | None = None
+    from_field: str | None = Field(default=None, alias="from")
+    to_addr: str | None = None
+    to_field: str | None = Field(default=None, alias="to")
+    subject: str = ""
+    body: str = ""
+    raw_headers: dict = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
 class StepRunOut(BaseModel):
     step_id: str
     status: str
@@ -389,6 +404,40 @@ def _service_for_unauth(pm, pid: str) -> WorkflowService:
         except Exception:
             object.__setattr__(project, "workflows_v2", svc)
     return svc
+
+
+# W4 — inbound email for a parked email_wait step. Operators wire an
+# inbound email router (SendGrid Inbound Parse, Postmark, procmail →
+# curl, etc.) to POST here; the body is the parsed email. The route
+# has no tenant bearer gate so external routers can hit it — the
+# matching step_id + filters in step.config provide the gate.
+@runs_router.post("/{run_id}/email/{step_id}", response_model=RunOut)
+def resolve_email_wait(run_id: str = Path(...),
+                        step_id: str = Path(...),
+                        body: EmailWaitIn | None = None,
+                        pid: str = Path(...),
+                        pm=Depends(get_pm)) -> RunOut:
+    validate_id(pid)
+    svc = _service_for_unauth(pm, pid)
+    # Build the email dict, honoring both from_addr and from aliases.
+    if body is None:
+        email = {}
+    else:
+        d = body.model_dump(by_alias=False)
+        email = {
+            "from_addr": d.get("from_addr") or d.get("from_field"),
+            "to_addr": d.get("to_addr") or d.get("to_field"),
+            "subject": d.get("subject") or "",
+            "body": d.get("body") or "",
+            "raw_headers": d.get("raw_headers") or {},
+        }
+    try:
+        run = svc.resolve_email_wait(pid, run_id, step_id, email)
+    except ValueError as e:
+        raise BadRequest(str(e))
+    if run is None:
+        raise NotFound(f"run {run_id} not found")
+    return _run_to_out(run)
 
 
 ALL_ROUTERS = [definitions_router, runs_router]

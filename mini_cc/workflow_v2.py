@@ -623,6 +623,85 @@ class WorkflowService:
         self.storage.save_workflow_run(project_id, run.to_dict())
         return run
 
+    # ── Email inbound resolver (W4) ──────────────────────────────────────
+    # An email_wait step parks the run until a matching email lands.
+    # Operators wire up inbound email routing (SendGrid Inbound Parse,
+    # Postmark, procmail, an IMAP poll loop) to POST to the HTTP route,
+    # which calls this resolver. Filters live in step.config.
+
+    def resolve_email_wait(self, project_id: str, run_id: str,
+                            step_id: str, email: dict) -> WorkflowRun | None:
+        """Advance a parked ``email_wait`` step with the received email.
+
+        Validates the step is an email_wait gate, currently paused,
+        and that the email matches the step's ``from_filter`` /
+        ``subject_filter`` config (substring, case-insensitive). Marks
+        the step completed with the email as output.
+        """
+        # Imported lazily so workflow_v2 doesn't drag the email module
+        # (and its smtplib / imaplib imports) at module load time —
+        # only needed when an email_wait step is actually resolved.
+        from .email import matches_filters, InboundEmail
+
+        run = self.get_run(project_id, run_id)
+        if run is None:
+            return None
+        d = self.get_definition(project_id, run.def_id)
+        if d is None:
+            return None
+        step = next((s for s in d.steps if s.id == step_id), None)
+        if step is None or step.type != "email_wait":
+            raise ValueError(
+                f"step {step_id} is not an email_wait step")
+        sr = next((s for s in run.step_runs if s.step_id == step_id), None)
+        if sr is None:
+            raise ValueError(f"step {step_id} not in run")
+        if sr.status != "paused":
+            raise ValueError(
+                f"step {step_id} is {sr.status}, not paused")
+
+        inbound = InboundEmail(
+            from_addr=email.get("from_addr") or email.get("from") or "",
+            to_addr=email.get("to_addr") or email.get("to") or "",
+            subject=email.get("subject") or "",
+            body=email.get("body") or "",
+            raw_headers=email.get("raw_headers") or {},
+        )
+        if not matches_filters(
+                inbound,
+                from_filter=step.config.get("from_filter"),
+                subject_filter=step.config.get("subject_filter")):
+            raise ValueError(
+                "email does not match step filters "
+                f"(from_filter={step.config.get('from_filter')!r}, "
+                f"subject_filter={step.config.get('subject_filter')!r})")
+
+        now = _iso_now()
+        gate_output = {
+            "decision": "approve",
+            "email": {
+                "from": inbound.from_addr,
+                "to": inbound.to_addr,
+                "subject": inbound.subject,
+                "body": inbound.body,
+            },
+            "resolved_at": now,
+            "resolver": "email",
+        }
+        sr.status = "completed"
+        sr.completed_at = now
+        sr.output = gate_output
+        run.state[step_id] = gate_output
+        idx = next((i for i, s in enumerate(d.steps) if s.id == step_id), 0)
+        run.current_step_idx = idx + 1
+        if run.current_step_idx >= len(d.steps):
+            run.status = "completed"
+            run.completed_at = now
+        else:
+            run.status = "paused"
+        self.storage.save_workflow_run(project_id, run.to_dict())
+        return run
+
 
 __all__ = [
     "StepDef", "TriggerDef",
