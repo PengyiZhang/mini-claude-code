@@ -368,6 +368,90 @@ class WorkflowService:
         self.storage.save_workflow_run(project_id, run.to_dict())
         return run
 
+    # ── Gate resolution (W2) ─────────────────────────────────────────────
+    # Parking steps — checkpoint, webhook_wait, email_wait — flip the run
+    # to ``paused``. ``resolve_gate`` is the entry point an approver /
+    # webhook / inbound email hits to either advance or fail the run.
+    GATE_STEP_TYPES = ("checkpoint", "webhook_wait", "email_wait")
+
+    def resolve_gate(self, project_id: str, run_id: str,
+                     step_id: str, *, decision: str,
+                     approver: str | None = None,
+                     feedback: str | None = None) -> WorkflowRun | None:
+        """Resolve a parked gate step.
+
+        ``decision`` is ``"approve"`` or ``"reject"``. Approve marks the
+        step completed with the approver's feedback recorded as output
+        and bumps ``current_step_idx`` past the gate so the next
+        ``drive_run`` call resumes from the following step. Reject
+        fails the step and the run.
+
+        Returns the updated run, or ``None`` when the run / step
+        doesn't exist. Raises ``ValueError`` when the step isn't a
+        gate, isn't currently paused, or the approver isn't in the
+        step's configured approvers list.
+        """
+        run = self.get_run(project_id, run_id)
+        if run is None:
+            return None
+        d = self.get_definition(project_id, run.def_id)
+        if d is None:
+            return None
+        step = next((s for s in d.steps if s.id == step_id), None)
+        if step is None or step.type not in self.GATE_STEP_TYPES:
+            raise ValueError(
+                f"step {step_id} is not a gate step")
+        sr = next((s for s in run.step_runs if s.step_id == step_id), None)
+        if sr is None:
+            raise ValueError(f"step {step_id} not in run")
+        if sr.status != "paused":
+            raise ValueError(
+                f"step {step_id} is {sr.status}, not paused")
+        if decision not in ("approve", "reject"):
+            raise ValueError(f"decision must be approve|reject, got {decision!r}")
+        # Approver authorization: when the step configures an explicit
+        # approvers list, the caller must match. Empty/missing list is
+        # "anyone with workflow:approve scope" — enforced by the HTTP layer.
+        approvers = step.config.get("approvers") or []
+        if approvers and approver not in approvers:
+            raise ValueError(
+                f"approver {approver!r} not in step's approvers list")
+
+        now = _iso_now()
+        gate_output = {
+            "decision": decision,
+            "approver": approver,
+            "feedback": feedback,
+            "resolved_at": now,
+        }
+        if decision == "approve":
+            sr.status = "completed"
+            sr.completed_at = now
+            sr.output = gate_output
+            run.state[step_id] = gate_output
+            # Walk forward — drive_run will skip the completed gate
+            # and resume from the next step.
+            idx = next((i for i, s in enumerate(d.steps) if s.id == step_id), 0)
+            run.current_step_idx = idx + 1
+            # If the next step doesn't exist, the run is complete.
+            if run.current_step_idx >= len(d.steps):
+                run.status = "completed"
+                run.completed_at = now
+            else:
+                # Leave the run paused so the caller can decide when
+                # to call drive_run again. The first action step on
+                # resume will flip it to "running".
+                run.status = "paused"
+        else:  # reject
+            sr.status = "failed"
+            sr.completed_at = now
+            sr.error = (feedback or "rejected by approver")
+            run.status = "failed"
+            run.completed_at = now
+
+        self.storage.save_workflow_run(project_id, run.to_dict())
+        return run
+
     @staticmethod
     def _substitute(prompt: str, scope: dict) -> str:
         import re

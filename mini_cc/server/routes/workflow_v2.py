@@ -111,6 +111,12 @@ class StartRunIn(BaseModel):
     trigger: dict = Field(default_factory=dict)
 
 
+class ResolveGateIn(BaseModel):
+    approver: str | None = None
+    decision: str
+    feedback: str | None = None
+
+
 class StepRunOut(BaseModel):
     step_id: str
     status: str
@@ -278,6 +284,33 @@ def cancel_run(run_id: str = Path(...),
     validate_id(pid)
     svc = _service_for(pm, pid, tid)
     run = svc.cancel_run(pid, run_id)
+    if run is None:
+        raise NotFound(f"run {run_id} not found")
+    return _run_to_out(run)
+
+
+# W2 — gate resolution (checkpoint / webhook_wait / email_wait).
+# Mounted on the runs router so the approver only needs the run_id
+# and step_id to advance a parked gate.
+@runs_router.post("/{run_id}/steps/{step_id}/resolve",
+                   response_model=RunOut)
+def resolve_gate(run_id: str = Path(...),
+                 step_id: str = Path(...),
+                 body: ResolveGateIn = ...,
+                 pid: str = Path(...),
+                 tid: str = Depends(check_rate_limit_scope("projects:write")),
+                 pm=Depends(get_pm)) -> RunOut:
+    validate_id(pid)
+    if body.decision not in ("approve", "reject"):
+        raise BadRequest("decision must be approve|reject")
+    svc = _service_for(pm, pid, tid)
+    try:
+        run = svc.resolve_gate(pid, run_id, step_id,
+                                decision=body.decision,
+                                approver=body.approver,
+                                feedback=body.feedback)
+    except ValueError as e:
+        raise BadRequest(str(e))
     if run is None:
         raise NotFound(f"run {run_id} not found")
     return _run_to_out(run)
