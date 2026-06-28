@@ -309,6 +309,44 @@ class FSStorage:
         fp = self._proj(project_id) / "tasks" / f"{task.id}.json"
         self._atomic_write_json(fp, task.__dict__)
 
+    def claim_task_atomic(self, project_id, task_id, owner: str) -> tuple[bool, str]:
+        """Compare-and-swap task claim. Returns (ok, message).
+
+        Atomically: load task → verify status=pending & owner=None →
+        set owner + status=in_progress → save. The whole read-modify-
+        write is serialized on a per-task lock, so two teammates
+        idling in parallel can't both succeed against the same task.
+
+        Without this, the load/save sequence in TeammateManager.
+        _claim_task races: both see pending, both write owner=self,
+        the second write wins silently.
+        """
+        with self._lock(f"{project_id}:task:{task_id}"):
+            fp = self._proj(project_id) / "tasks" / f"{task_id}.json"
+            if not fp.exists():
+                return False, f"Error: task {task_id} not found"
+            try:
+                raw = json.loads(fp.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                logger.error(
+                    "storage.corruption project=%s task=%s file=%s error=%s",
+                    project_id, task_id, fp, e)
+                return False, (
+                    f"Error: task {task_id} file is corrupted: "
+                    f"{type(e).__name__}")
+            try:
+                t = Task(**raw)
+            except TypeError as e:
+                return False, f"Error: task {task_id} schema: {e}"
+            if t.status != "pending":
+                return False, f"Task {task_id} is {t.status}, cannot claim"
+            if t.owner:
+                return False, f"Task {task_id} already owned by {t.owner}"
+            t.owner = owner
+            t.status = "in_progress"
+            self._atomic_write_json(fp, t.__dict__)
+            return True, f"Claimed {t.id} ({t.subject})"
+
     def delete_task(self, project_id, task_id):
         fp = self._proj(project_id) / "tasks" / f"{task_id}.json"
         if fp.exists():

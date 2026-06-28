@@ -260,6 +260,12 @@ class AgentLoop:
         self._stop = threading.Event()
         self._rounds_since_todo = 0
         self._client = None
+        # B2: guard against two threads entering run() concurrently. The
+        # SDK direct-use path doesn't always take the SessionManager
+        # project lock — without this guard, two parallel run() calls
+        # would race on self.messages and corrupt the transcript.
+        self._running_lock = threading.RLock()
+        self._running = False
 
     # ── Tool pool ───────────────────────────────────────────────────────
     def _build_tools(self) -> list[Tool]:
@@ -411,6 +417,25 @@ class AgentLoop:
         If user_input is None, the caller is responsible for having appended
         the user message already (used by the s20 shim).
         """
+        # B2: detect concurrent run() — the messages array isn't safe
+        # against two threads appending / iterating at once. The
+        # SessionManager path serializes per-project already, but SDK
+        # direct-use callers can race. Fail fast with a clear error.
+        with self._running_lock:
+            if self._running:
+                raise RuntimeError(
+                    "AgentLoop.run() already in progress on this loop — "
+                    "concurrent calls would corrupt the transcript. "
+                    "Use separate loops for parallel sessions.")
+            self._running = True
+
+        try:
+            yield from self._run_impl(user_input)
+        finally:
+            with self._running_lock:
+                self._running = False
+
+    def _run_impl(self, user_input: str | None = None) -> Iterator[dict]:
         if user_input is not None:
             if self.hooks is not None and self.hooks.has(Hooks.UserPromptSubmit):
                 replaced = self.hooks.trigger(

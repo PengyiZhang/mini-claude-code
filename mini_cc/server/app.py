@@ -66,6 +66,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             sess.stop()
         except Exception:
             pass
+    # B6: gracefully shutdown teammates so mailbox writes aren't mid-
+    # flight when the process exits. Each TeammateSpawner sends a
+    # shutdown_request via the bus and joins the worker threads.
+    pm: ProjectManager = app.state.pm
+    for pid in list(pm._projects.keys()) if hasattr(pm, "_projects") else []:
+        try:
+            project = pm.get(pid)
+            spawner = getattr(project, "teams", None)
+            if spawner is not None and hasattr(spawner, "shutdown"):
+                spawner.shutdown(timeout=5.0)
+        except Exception:
+            pass
+    # A3: disconnect MCP clients so stdio subprocesses / HTTP pools
+    # don't leak across restarts.
+    for pid in list(pm._projects.keys()) if hasattr(pm, "_projects") else []:
+        try:
+            project = pm.get(pid)
+            pool = getattr(project, "mcp_pool", None)
+            if pool is not None and hasattr(pool, "disconnect_all"):
+                pool.disconnect_all()
+        except Exception:
+            pass
     # Stop every per-tenant container the runtime context owns.
     ctx = getattr(app.state, "server_runtime", None)
     if ctx is not None:

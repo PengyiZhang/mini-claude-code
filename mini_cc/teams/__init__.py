@@ -209,6 +209,35 @@ class TeammateSpawner:
                       {"request_id": req_id})
         return f"Shutdown request sent to {name}"
 
+    def shutdown(self, *, timeout: float = 5.0) -> None:
+        """Best-effort graceful shutdown of all teammates.
+
+        For each alive teammate: send a shutdown_request via the bus
+        (same protocol as request_shutdown), wait up to ``timeout``
+        for the thread to exit naturally. Threads that don't exit in
+        time are abandoned (they're daemon threads, so process exit
+        will reap them — but mailbox writes mid-flight may be lost).
+
+        Wire this into FastAPI lifespan shutdown so SIGTERM doesn't
+        leave teammates mid-write.
+        """
+        with self._lock:
+            infos = list(self._teammates.values())
+        for info in infos:
+            if not info.alive:
+                continue
+            try:
+                self.request_shutdown(info.name)
+            except Exception:
+                pass
+        deadline = time.monotonic() + timeout
+        for info in infos:
+            if info.thread is None:
+                continue
+            remaining = max(0.0, deadline - time.monotonic())
+            if info.thread.is_alive():
+                info.thread.join(timeout=remaining)
+
     def submit_plan(self, teammate_name: str, plan: str) -> str:
         """Teammate-side: register a pending plan, notify lead, block."""
         req_id = self.protocol.new_request_id()
@@ -395,6 +424,16 @@ class TeammateSpawner:
     def _claim_task(self, task_id: str, owner: str) -> str:
         if self.storage is None or self.project_id is None:
             return "Storage not configured"
+        # B4: use atomic CAS so parallel idle teammates can't both
+        # claim the same task. Falls back to per-task load/save if the
+        # storage backend doesn't expose claim_task_atomic (e.g. a
+        # custom Storage implementation that hasn't been updated).
+        claim = getattr(self.storage, "claim_task_atomic", None)
+        if callable(claim):
+            ok, msg = claim(self.project_id, task_id, owner)
+            return msg
+        # Legacy path (race-prone but functionally equivalent for
+        # single-process deployments).
         for t in self.storage.load_tasks(self.project_id):
             if t.id == task_id:
                 if t.status != "pending":
