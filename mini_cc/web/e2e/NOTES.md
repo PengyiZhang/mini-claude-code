@@ -23,10 +23,12 @@
 | `round2_hardening.spec.ts`                 | a workflow def in one tenant is invisible to another               | R2 / P0-1   | ✓*     |
 | `round2_hardening.spec.ts`                 | a single authenticated GET is allowed (smoke)                      | R2 / B6     | ✓      |
 | `round2_sse.spec.ts`                       | /send accepts Last-Event-Id header and returns text/event-stream   | R2 / B8     | ✓      |
+| `round2_sse_resume.spec.ts`                | resume=true skips dispatch and replays from event log              | R2 / B8     | ✓      |
+| `round2_sse_resume.spec.ts`                | client reconnects with Last-Event-Id after a mid-stream drop       | R2 / B8     | ✓      |
 
 ✓* requires `E2E_ALT_TENANT_KEY` / `E2E_ALT_TENANT_ID` / `E2E_ALT_TENANT_PID` env vars; skipped otherwise.
 
-Total: **19 passing**, 0 skipped (when fully provisioned), 0 flaky.
+Total: **21 passing**, 0 skipped (when fully provisioned), 0 flaky.
 
 ## Setup
 
@@ -68,6 +70,7 @@ npx playwright test --project=chromium
 | `workflow_v2.spec.ts` used `getByRole('button', { name: /new definition/ })` but the button has only `title="new definition"` (visible text is `＋`) — switched to `getByTitle` | `7aa4fab`     |
 | **UX gap**: after creating a def, the middle pane said "select a run from the left" with no way to create the first run (the `↻ new run` button only renders inside `RunView`, which only mounts once a run exists). Added a `▶ start new run` button to the empty-state placeholder in `WorkflowV2.tsx`. | `7aa4fab`     |
 | **UX gap**: `DefinitionEditor` had no delete button — the only way to remove a def was a direct `DELETE` API call. Added a 🗑 delete button to the editor footer (edit-mode only, with `window.confirm`). | `15685e6`     |
+| **Functional gap**: SSE reconnect (B8) — the server supported `Last-Event-Id` replay but every reconnect re-triggered the LLM dispatch (duplicate run). Added a `resume: bool` flag to `SendMessageRequest`; when true, `/send` skips the lock + dispatch and just replays from the per-session log. Client `sse.ts` now parses `id:` lines and auto-reconnects on mid-stream drop with `Last-Event-Id` + `resume=true`, exponential backoff (1s→2s→4s), max 3 attempts. | `aaa5793`     |
 
 ## Leftover issues / not covered
 
@@ -75,8 +78,7 @@ npx playwright test --project=chromium
 - **W4 IMAP poll loop**: the inbound email resolver is exercised via direct HTTP POST (matching/rejecting/state errors). The actual `EmailService.poll_once` IMAP path needs a real IMAP server; covered in `tests/test_round2_w4.py`.
 - **Round 2 Batch 3–5 backend** (atomic writes, SSE queue bound, loop run guard, etc.): all covered by `tests/test_round2_b*.py`. No e2e because they need fault injection (kill -9, network partition, etc.).
 - **Pre-existing `setup.spec.ts` flakiness**: chat test asserts `body.length > 50`, but the LLM sometimes returns <50 chars. Unrelated to this round; left alone.
-- **SSE mid-stream reconnect (B4 Last-Event-Id replay)**: the endpoint accepts the header (smoke in `round2_sse.spec.ts`), but verifying replay-from-disk requires a live LLM stream + mid-stream disconnect. The storage layer (`append_session_event` / `read_session_events_since`) is covered in `tests/test_round2_b4.py`.
-- **Client-side SSE auto-reconnect**: `lib/sse.ts` does NOT auto-reconnect on drop — it just calls `onError`. The server supports replay, but the client never resumes. Real gap; candidate for a future UX round.
+- **SSE mid-stream reconnect (B8 resume)**: closed this round — server has a resume-only path (`body.resume=true`), client (`sse.ts`) parses `id:` lines and reconnects with `Last-Event-Id`. Covered by `round2_sse_resume.spec.ts` (server contract + client wiring via Playwright route interception).
 
 ## Cron / scheduling
 
