@@ -24,6 +24,11 @@ class CreateSessionRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     user_input: str = Field(..., description="The user's turn text.")
+    # B8 resume mode: when true, the handler skips the LLM dispatch and
+    # only replays events from the per-session log starting after
+    # ``Last-Event-Id``. Used by clients that dropped mid-stream and
+    # want to recover missed events without triggering a duplicate run.
+    resume: bool = Field(default=False, description="Replay-only mode.")
 
 
 class ProjectOut(BaseModel):

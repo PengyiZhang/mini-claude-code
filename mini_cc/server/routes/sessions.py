@@ -173,11 +173,6 @@ def send_message(body: SendMessageRequest,
     except KeyError as e:
         raise NotFound(str(e) or f"session {sid} not found")
 
-    # 409 if another send is currently holding the project lock.
-    if not sm.try_lock(pid):
-        raise Conflict(f"project {pid} is busy",
-                       details={"code": "project_busy"})
-
     # B8 reconnect: if the client supplied Last-Event-Id, replay events
     # they missed before streaming fresh ones. The event log is
     # per-session, append-only, persisted to disk on every emit.
@@ -193,6 +188,31 @@ def send_message(body: SendMessageRequest,
             pid, sid, last_seq)
     except Exception:
         replay = []
+
+    # B8 resume-only mode: client dropped mid-stream and wants to
+    # recover missed events without triggering a duplicate LLM run.
+    # Skip the lock + dispatch — just replay from disk and close.
+    # No project lock needed: this is a pure read.
+    if body.resume:
+        def _replay_only_iter():
+            for ev in replay:
+                yield ev
+        return StreamingResponse(
+            sse_stream(_replay_only_iter(),
+                       last_event_id=last_seq or None,
+                       replay=None),  # already fed via the iterator
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-mini_cc-Resume": "1",
+            },
+        )
+
+    # 409 if another send is currently holding the project lock.
+    if not sm.try_lock(pid):
+        raise Conflict(f"project {pid} is busy",
+                       details={"code": "project_busy"})
 
     def sync_iter():
         try:

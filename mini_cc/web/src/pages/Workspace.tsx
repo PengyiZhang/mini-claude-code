@@ -290,6 +290,10 @@ export default function Workspace() {
         apiKey: profile.apiKey,
         body: { user_input: text },
         signal: controller.signal,
+        // B8: auto-resume from the per-session event log if the
+        // connection drops mid-stream. Server-side resume-only path
+        // replays missed events without triggering a duplicate run.
+        reconnect: true,
       },
       {
         onEvent: (ev) => {
