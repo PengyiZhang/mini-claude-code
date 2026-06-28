@@ -259,13 +259,14 @@ class FSStorage:
                 self._atomic_write_json(fp, index)
 
     def delete_session(self, project_id, session_id) -> None:
-        """Remove everything for a session: messages, todos, and the
-        sessions-index entry. Used by SessionManager.remove so deleted
-        sessions don't resurface via the back-compat scan."""
+        """Remove everything for a session: messages, todos, events log,
+        and the sessions-index entry. Used by SessionManager.remove so
+        deleted sessions don't resurface via the back-compat scan."""
         safe = self._safe_session(session_id)
         proj = self._proj(project_id)
         for fp in (proj / "messages" / f"{safe}.json",
-                   proj / "todos" / f"{safe}.json"):
+                   proj / "todos" / f"{safe}.json",
+                   proj / "sessions" / f"{safe}.events.jsonl"):
             try:
                 fp.unlink()
             except FileNotFoundError:
@@ -346,6 +347,66 @@ class FSStorage:
         with fp.open("a", encoding="utf-8") as f:
             for m in msgs:
                 f.write(json.dumps(m, ensure_ascii=False, default=str) + "\n")
+
+    # ── Session event log (for SSE Last-Event-Id replay) ───────────────
+    def _session_events_path(self, project_id, session_id) -> Path:
+        return (self._proj(project_id) / "sessions"
+                / f"{self._safe_session(session_id)}.events.jsonl")
+
+    def append_session_event(self, project_id, session_id, event: dict) -> int:
+        """Append one event to the session's event log, returning the
+        assigned sequence id (1-based monotonic per session).
+
+        The event is written as a single JSON line: ``{"seq": N, "payload": ...}``.
+        Reads scan from the start, so this is adequate for sessions up to
+        ~10k events; beyond that, swap to a sqlite-backed implementation
+        without changing the call site.
+        """
+        fp = self._session_events_path(project_id, session_id)
+        with self._lock(f"{project_id}:evt:{session_id}"):
+            current = self._session_event_count_locked(fp)
+            seq = current + 1
+            with fp.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(
+                    {"seq": seq, "payload": event},
+                    ensure_ascii=False, default=str) + "\n")
+            return seq
+
+    @staticmethod
+    def _session_event_count_locked(fp: Path) -> int:
+        if not fp.exists():
+            return 0
+        try:
+            with fp.open("r", encoding="utf-8") as f:
+                return sum(1 for _ in f)
+        except OSError:
+            return 0
+
+    def read_session_events_since(self, project_id, session_id,
+                                  last_seq: int) -> list[dict]:
+        """Return payloads for all events with seq > last_seq, in order."""
+        fp = self._session_events_path(project_id, session_id)
+        if not fp.exists():
+            return []
+        out: list[dict] = []
+        with self._lock(f"{project_id}:evt:{session_id}"):
+            try:
+                with fp.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if rec.get("seq", 0) > last_seq:
+                            out.append(rec.get("payload", {}))
+            except OSError:
+                return []
+        return out
+
+    def session_event_count(self, project_id, session_id) -> int:
+        fp = self._session_events_path(project_id, session_id)
+        with self._lock(f"{project_id}:evt:{session_id}"):
+            return self._session_event_count_locked(fp)
 
     def write_tool_result(self, project_id, tool_use_id, text):
         fp = self._proj(project_id) / "tool_results" / f"{tool_use_id}.txt"

@@ -110,9 +110,10 @@ def test_sse_stream_yields_events_as_data_lines():
         return out
 
     out = asyncio.run(runner())
-    # Each chunk is one `data: <payload>\n\n` unit; the last is the sentinel
-    assert out[0] == f'data: {json.dumps(events[0])}\n\n'
-    assert out[1] == f'data: {json.dumps(events[1])}\n\n'
+    # Each chunk is one SSE unit; the new format prepends ``id: N`` so
+    # clients can resume via Last-Event-Id. The last chunk is the sentinel.
+    assert out[0] == f'id: 1\ndata: {json.dumps(events[0])}\n\n'
+    assert out[1] == f'id: 2\ndata: {json.dumps(events[1])}\n\n'
     assert out[-1] == "data: [DONE]\n\n"
     # The `done` event itself is also forwarded
     joined = "".join(out)

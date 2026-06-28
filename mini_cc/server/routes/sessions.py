@@ -1,7 +1,7 @@
 """Session routes: start / list / remove / resume / send (SSE)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Path, Request, Response
+from fastapi import APIRouter, Depends, Header, Path, Request, Response
 from fastapi.responses import StreamingResponse
 
 from ..deps import (check_rate_limit_scope, get_pm, get_sm, require_scope,
@@ -159,6 +159,7 @@ def send_message(body: SendMessageRequest,
                  sid: str = Path(...),
                  pid: str = Path(...),
                  tid: str = Depends(check_rate_limit_scope("sessions:write")),
+                 last_event_id: str | None = Header(default=None, alias="Last-Event-Id"),
                  pm=Depends(get_pm),
                  sm=Depends(get_sm)) -> StreamingResponse:
     validate_id(pid)
@@ -177,12 +178,42 @@ def send_message(body: SendMessageRequest,
         raise Conflict(f"project {pid} is busy",
                        details={"code": "project_busy"})
 
+    # B8 reconnect: if the client supplied Last-Event-Id, replay events
+    # they missed before streaming fresh ones. The event log is
+    # per-session, append-only, persisted to disk on every emit.
+    replay: list[dict] = []
+    last_seq = 0
+    if last_event_id:
+        try:
+            last_seq = int(last_event_id)
+        except (TypeError, ValueError):
+            last_seq = 0
+    try:
+        replay = sess.loop.project.storage.read_session_events_since(
+            pid, sid, last_seq)
+    except Exception:
+        replay = []
+
     def sync_iter():
         try:
-            yield from sm.send(pid, sid, body.user_input)
+            for ev in sm.send(pid, sid, body.user_input):
+                # Persist every emitted event so a reconnecting client
+                # can replay from disk. Best-effort: a write failure
+                # doesn't break the live stream.
+                try:
+                    sess.loop.project.storage.append_session_event(
+                        pid, sid, ev)
+                except Exception:
+                    pass
+                yield ev
         except Exception as e:
-            yield {"type": "error",
+            err = {"type": "error",
                    "message": f"{type(e).__name__}: {e}"}
+            try:
+                sess.loop.project.storage.append_session_event(pid, sid, err)
+            except Exception:
+                pass
+            yield err
 
     def _on_cancel():
         # Client disconnect: tell the loop to stop at the next iteration.
@@ -192,7 +223,10 @@ def send_message(body: SendMessageRequest,
             pass
 
     return StreamingResponse(
-        sse_stream(sync_iter(), on_cancel=_on_cancel),
+        sse_stream(sync_iter(),
+                   on_cancel=_on_cancel,
+                   last_event_id=last_seq or None,
+                   replay=replay),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
