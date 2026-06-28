@@ -10,6 +10,8 @@ Layout under <state_root>/<project_id>/:
     transcripts/transcript_<ts>.jsonl
     tool_results/<tool_use_id>.txt
     workflows/<wf_id>.json
+    workflow_defs/<def_id>.json
+    workflow_runs/<run_id>.json
 """
 from __future__ import annotations
 
@@ -70,6 +72,8 @@ class FSStorage:
         (p / "transcripts").mkdir(parents=True, exist_ok=True)
         (p / "tool_results").mkdir(parents=True, exist_ok=True)
         (p / "workflows").mkdir(parents=True, exist_ok=True)
+        (p / "workflow_defs").mkdir(parents=True, exist_ok=True)
+        (p / "workflow_runs").mkdir(parents=True, exist_ok=True)
         return p
 
     @staticmethod
@@ -504,6 +508,83 @@ class FSStorage:
             return True
         except FileNotFoundError:
             return False
+
+    # ── Workflow V2 — definitions + runs ────────────────────────────────
+    # Separated from the legacy workflows/ bag: defs are versioned
+    # templates, runs are execution instances. Kept in their own
+    # subdirs so the legacy tools/workflow.py state isn't disturbed.
+
+    @staticmethod
+    def _safe_v2_id(id_str: str) -> str:
+        return "".join(c if c.isalnum() or c in "-_" else "_" for c in id_str)
+
+    def save_workflow_def(self, project_id, def_dict) -> None:
+        def_id = self._safe_v2_id(def_dict.get("def_id") or "wfdef_unknown")
+        with self._lock(f"{project_id}:wfdef:{def_id}"):
+            fp = self._proj(project_id) / "workflow_defs" / f"{def_id}.json"
+            self._atomic_write_json(fp, def_dict)
+
+    def load_workflow_def(self, project_id, def_id) -> dict | None:
+        fp = self._proj(project_id) / "workflow_defs" / f"{self._safe_v2_id(def_id)}.json"
+        if not fp.exists():
+            return None
+        with self._lock(f"{project_id}:wfdef:{def_id}"):
+            try:
+                return json.loads(fp.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return None
+
+    def list_workflow_defs(self, project_id) -> list[dict]:
+        d = self._proj(project_id) / "workflow_defs"
+        out: list[dict] = []
+        for fp in d.glob("*.json"):
+            try:
+                raw = json.loads(fp.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    out.append(raw)
+            except (json.JSONDecodeError, OSError):
+                continue
+        out.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+        return out
+
+    def delete_workflow_def(self, project_id, def_id) -> bool:
+        fp = self._proj(project_id) / "workflow_defs" / f"{self._safe_v2_id(def_id)}.json"
+        if not fp.exists():
+            return False
+        try:
+            fp.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def save_workflow_run(self, project_id, run_dict) -> None:
+        run_id = self._safe_v2_id(run_dict.get("run_id") or "wfrun_unknown")
+        with self._lock(f"{project_id}:wfrun:{run_id}"):
+            fp = self._proj(project_id) / "workflow_runs" / f"{run_id}.json"
+            self._atomic_write_json(fp, run_dict)
+
+    def load_workflow_run(self, project_id, run_id) -> dict | None:
+        fp = self._proj(project_id) / "workflow_runs" / f"{self._safe_v2_id(run_id)}.json"
+        if not fp.exists():
+            return None
+        with self._lock(f"{project_id}:wfrun:{run_id}"):
+            try:
+                return json.loads(fp.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return None
+
+    def list_workflow_runs(self, project_id) -> list[dict]:
+        d = self._proj(project_id) / "workflow_runs"
+        out: list[dict] = []
+        for fp in d.glob("*.json"):
+            try:
+                raw = json.loads(fp.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    out.append(raw)
+            except (json.JSONDecodeError, OSError):
+                continue
+        out.sort(key=lambda x: x.get("started_at") or "", reverse=True)
+        return out
 
 
 def _extract_text(content) -> str:
