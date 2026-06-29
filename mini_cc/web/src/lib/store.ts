@@ -394,3 +394,20 @@ export const useTodos = create<TodosState>((set) => ({
       return { byKey: next };
     }),
 }));
+
+// ── Session navigation ─────────────────────────────────────────────
+// Tiny one-shot channel for deep components (e.g. SubagentDrawer) to
+// ask the Workspace to switch the active session without prop-drilling
+// setSid through every intermediate. Workspace watches `jumpTarget` and
+// applies it, then clears via `consumeJump`.
+interface SessionNavState {
+  jumpTarget: string | null;
+  jumpTo: (sid: string) => void;
+  consumeJump: () => void;
+}
+
+export const useSessionNav = create<SessionNavState>((set) => ({
+  jumpTarget: null,
+  jumpTo: (sid) => set({ jumpTarget: sid }),
+  consumeJump: () => set({ jumpTarget: null }),
+}));

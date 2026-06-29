@@ -22,7 +22,7 @@ import {
   listSessionMetas,
   startSession,
 } from "../lib/api";
-import { useAuth, useChat, useTodos, rawToChatMessages } from "../lib/store";
+import { useAuth, useChat, useTodos, useSessionNav, rawToChatMessages } from "../lib/store";
 import type { ChatMessage } from "../lib/store";
 import { streamSend } from "../lib/sse";
 import { fetchCommands, streamRunCommand } from "../lib/commands";
@@ -245,6 +245,18 @@ export default function Workspace() {
       setBusySid(false);
     }
   }
+
+  // Cross-component "jump to session" channel — SubagentDrawer and
+  // other deep children call useSessionNav.jumpTo(sid); we apply it
+  // here and clear the request.
+  const jumpTarget = useSessionNav((s) => s.jumpTarget);
+  const consumeJump = useSessionNav((s) => s.consumeJump);
+  useEffect(() => {
+    if (jumpTarget) {
+      setSid(jumpTarget);
+      consumeJump();
+    }
+  }, [jumpTarget, consumeJump]);
 
   async function removeSession(s: string) {
     if (!confirm(`remove session ${s}?`)) return;

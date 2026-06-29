@@ -209,6 +209,74 @@ def test_agents_command_error_paths_emit_done():
     assert types[-1] == "done", f"unknown-teammate must end with done; got {types}"
 
 
+def test_agents_command_spawn_delegates_to_spawner():
+    """`/agents spawn <name> <role> --prompt <text>` calls spawner.spawn
+    deterministically — previously the only spawn path was the
+    `spawn_teammate` tool, which required burning LLM tokens to invoke.
+    Testers (and the e2e suite) need a deterministic shell entry.
+    """
+    captured = {}
+
+    @dataclass
+    class _Info:
+        name: str = ""
+        role: str = ""
+        alive: bool = True
+    class _Spawner:
+        _teammates = {}
+        def list_alive(self): return []
+        def spawn(self, name, role, prompt, on_event=None):
+            captured.update(name=name, role=role, prompt=prompt,
+                            on_event=on_event)
+            return None  # success
+    class _P:
+        teams = _Spawner()
+        tenant_id = "t1"
+    events = _run_cmd(
+        "agents", project=_P(),
+        args='spawn bob researcher --prompt "find the bug"',
+    )
+    text = next(e["text"] for e in events if e["type"] == "text")
+    assert "Teammate 'bob' spawned" in text
+    assert captured["name"] == "bob"
+    assert captured["role"] == "researcher"
+    assert captured["prompt"] == "find the bug"
+
+
+def test_agents_command_spawn_reports_conflict():
+    """Spawn with an in-use name returns the spawner's error string."""
+    class _Spawner:
+        _teammates = {}
+        def list_alive(self): return []
+        def spawn(self, name, role, prompt, on_event=None):
+            return f"Teammate '{name}' already exists"
+    class _P:
+        teams = _Spawner()
+        tenant_id = "t1"
+    events = _run_cmd(
+        "agents", project=_P(),
+        args="spawn dup r --prompt x",
+    )
+    err = next((e for e in events if e.get("type") == "error"), None)
+    # Either an error event or text containing the conflict message.
+    text = "".join(e.get("text", "") for e in events if e.get("type") == "text")
+    assert err is not None or "already exists" in text
+
+
+def test_agents_command_spawn_missing_args_errors():
+    class _Spawner:
+        _teammates = {}
+        def list_alive(self): return []
+        def spawn(self, *a, **kw): raise AssertionError("must not spawn")
+    class _P:
+        teams = _Spawner()
+        tenant_id = "t1"
+    events = _run_cmd("agents", project=_P(), args="spawn only_name")
+    types = [e["type"] for e in events]
+    assert "error" in types
+    assert types[-1] == "done"
+
+
 def test_agents_command_inbox_unknown_teammate():
     class _Bus:
         def peek_inbox(self, name):

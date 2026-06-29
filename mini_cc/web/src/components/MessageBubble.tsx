@@ -3,7 +3,7 @@ import type { ChatActivity, ChatMessage } from "../lib/store";
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { lineDiff, diffStats } from "../lib/diff"
 import BackgroundTile from "./BackgroundTile"
-import { useAuth } from "../lib/store"
+import { useAuth, useSessionNav } from "../lib/store"
 
 export default function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "user") {
@@ -161,13 +161,26 @@ function ActivityBody({ activity, chatKey }: {
 function SubagentDrawer({ activity }: { activity: ChatActivity }) {
   // F5.1: drawer-style render for subagent dispatches.
   // - description is the headline (that's the task the parent handed off)
-  // - result is the subagent's final summary
+  // - result is the subagent's final summary, including a trailing
+  //   `[subagent_session_id: <sid>]` marker emitted by tools/subagent.py
   // Sibling tool_use/tool_result activities emitted by the subagent
   // are still rendered as their own activity cards in the parent
   // bubble; this drawer is just the wrapper for the dispatch itself.
+  const jumpTo = useSessionNav((s) => s.jumpTo);
   const description = String(activity.input?.description ?? "");
-  const result = activity.result;
-  const isRunning = result === undefined;
+  const rawResult = activity.result;
+  const isRunning = rawResult === undefined;
+  // Split the trailing [subagent_session_id: ...] marker off the
+  // summary so we can render it as a clickable chip instead of plain
+  // text (P0-6 goal: surface subagent session_id; this completes it
+  // by making it actionable, not just visible).
+  const m = (typeof rawResult === "string")
+    ? rawResult.match(/\[subagent_session_id:\s*([^\]\s]+)\s*\]/)
+    : null;
+  const sid = m?.[1] ?? null;
+  const summary = (typeof rawResult === "string" && m)
+    ? rawResult.slice(0, m.index).replace(/\s+$/, "")
+    : rawResult;
   return (
     <div className="border border-accent/40 bg-accent/5 rounded-md overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-accent/30 bg-accent/10">
@@ -177,6 +190,16 @@ function SubagentDrawer({ activity }: { activity: ChatActivity }) {
         </span>
         {isRunning && (
           <span className="ml-auto text-xs text-warn animate-pulse">dispatching…</span>
+        )}
+        {sid && (
+          <button
+            type="button"
+            onClick={() => jumpTo(sid!)}
+            className="ml-auto text-xs font-mono px-2 py-0.5 rounded border border-accent/40 hover:bg-accent/15 text-accent"
+            title={`jump to subagent transcript ${sid}`}
+          >
+            ↗ {sid}
+          </button>
         )}
       </div>
       <div className="p-3 space-y-2">
@@ -188,10 +211,10 @@ function SubagentDrawer({ activity }: { activity: ChatActivity }) {
             </div>
           </div>
         )}
-        {result !== undefined && (
+        {summary !== undefined && (
           <div>
             <div className="text-xs text-ink-dim mb-1">summary</div>
-            <CollapsibleOutput text={result} />
+            <CollapsibleOutput text={summary} />
           </div>
         )}
       </div>

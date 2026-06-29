@@ -15,6 +15,7 @@ the chat pane uniformly.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Literal, Optional
 
@@ -577,6 +578,25 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
     parts = (ctx.args or "").split()
     if parts:
         sub = parts[0].lower()
+        if sub == "spawn":
+            # `/agents spawn <name> <role> --prompt <text>` — deterministic
+            # shell entry, mirrors the `spawn_teammate` tool so testers
+            # and e2e can drive a spawn without burning LLM tokens.
+            err = _parse_spawn_args(ctx.args or "")
+            if isinstance(err, str):
+                yield {"type": "error", "message": err}
+                yield {"type": "done"}
+                return
+            name, role, prompt = err
+            result = spawner.spawn(name, role, prompt)
+            if result is not None:
+                yield {"type": "error", "message": result}
+                yield {"type": "done"}
+                return
+            yield {"type": "text",
+                   "text": f"Teammate '{name}' spawned"}
+            yield {"type": "done"}
+            return
         if sub == "stop" and len(parts) >= 2:
             name = parts[1]
             try:
@@ -619,12 +639,10 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
             return
         yield {"type": "error",
                "message": f"unknown subcommand '{sub}'. "
-                          "Use `/agents`, `/agents stop <name>`, "
-                          "or `/agents inbox <name>`."}
+                          "Use `/agents`, `/agents spawn ...`, "
+                          "`/agents stop <name>`, or `/agents inbox <name>`."}
         yield {"type": "done"}
         return
-
-    # Default: list everyone.
     all_known = list(getattr(spawner, "_teammates", {}).values())
     if not all_known:
         yield {"type": "text", "text": "_no teammates spawned in this project_"}
@@ -652,6 +670,38 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
                  "`/agents inbox <name>`")
     yield {"type": "text", "text": "\n".join(lines)}
     yield {"type": "done"}
+
+
+def _parse_spawn_args(raw: str) -> tuple[str, str, str] | str:
+    """Parse `/agents spawn <name> <role> --prompt <text>`.
+
+    Returns (name, role, prompt) on success, or an error string.
+    Prompt text may be quoted; we honour surrounding double quotes
+    because shell-style arg splitting already strips them in real
+    command runners, but our tests pass raw strings.
+    """
+    raw = raw.strip()
+    # Drop leading "spawn" token.
+    if raw.lower().startswith("spawn"):
+        raw = raw[len("spawn"):].strip()
+    # Pull --prompt <text> (or --prompt=text) off the tail first so the
+    # text can contain spaces without confusing positional parsing.
+    prompt = ""
+    m = re.search(r'(?:^|\s)--prompt[=\s]+(.+)$', raw, re.DOTALL)
+    if m:
+        prompt = m.group(1).strip()
+        if (prompt.startswith('"') and prompt.endswith('"')) or \
+           (prompt.startswith("'") and prompt.endswith("'")):
+            prompt = prompt[1:-1]
+        raw = raw[:m.start()].strip()
+    tokens = raw.split()
+    if len(tokens) < 2:
+        return ("usage: `/agents spawn <name> <role> "
+                "--prompt <text>`")
+    if not prompt:
+        return ("usage: `/agents spawn <name> <role> "
+                "--prompt <text>` (--prompt is required)")
+    return tokens[0], tokens[1], prompt
 
 
 def _peek_inbox(spawner, name: str) -> list[dict] | None:
