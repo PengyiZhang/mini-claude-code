@@ -92,6 +92,7 @@ every mini_cc link, and have everything needed to embed the framework into your 
 12. [12 — Skills、斜杠命令与 LSP](zh/12-skills-commands-lsp.md)
 13. [13 — Agent 团队与调度器](zh/13-teams-scheduler.md)
 14. [14 — Web UI、可观测性与部署](zh/14-web-ui-observability-deploy.md)
+15. [15 — 从教学框架到生产级框架的演进(迁移史)](zh/15-evolution-migration.md) — *跨章节的演进叙事,串起 14 章*
 
 ### English version
 
@@ -109,6 +110,7 @@ every mini_cc link, and have everything needed to embed the framework into your 
 12. [12 — Skills, slash commands, and LSP](en/12-skills-commands-lsp.md)
 13. [13 — Agent teams and scheduler](en/13-teams-scheduler.md)
 14. [14 — Web UI, observability, and deployment](en/14-web-ui-observability-deploy.md)
+15. [15 — From teaching framework to production-grade (migration history)](en/15-evolution-migration.md) — *the cross-chapter evolution narrative tying the 14 together*
 
 ---
 
