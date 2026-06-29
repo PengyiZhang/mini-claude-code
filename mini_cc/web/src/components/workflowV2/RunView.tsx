@@ -54,6 +54,7 @@ export default function WorkflowV2RunView({
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
 
   // Resolve a session to drive through. Pick the most-recently-active
   // one if any; the UI offers a dropdown to switch.
@@ -63,8 +64,9 @@ export default function WorkflowV2RunView({
       .then((metas) => {
         if (cancelled) return;
         if (metas.length > 0) setSessionId(metas[0].session_id);
+        setSessionsLoaded(true);
       })
-      .catch(() => { /* no sessions yet — user can create one */ });
+      .catch(() => { setSessionsLoaded(true); });
     return () => { cancelled = true; };
   }, [profile, pid]);
 
@@ -193,6 +195,23 @@ export default function WorkflowV2RunView({
           )}
         </div>
       </div>
+
+      {/* No-session banner — action steps dispatch through the AgentLoop,
+          which needs a chat session. When the project has none, offer a
+          one-click shortcut instead of making the user hunt for the tab. */}
+      {sessionsLoaded && !sessionId && !isTerminalStatus(run.status) && (
+        <div className="border-b border-border bg-amber-50 dark:bg-amber-900/20 px-4 py-2 flex items-center gap-3">
+          <span className="text-xs text-amber-800 dark:text-amber-300 flex-1">
+            action steps need a chat session to dispatch — none exist in this project yet
+          </span>
+          <a
+            href={`#/projects/${pid}`}
+            className="text-xs px-3 py-1.5 rounded bg-accent text-white hover:bg-accent-hover whitespace-nowrap"
+          >
+            open chat tab →
+          </a>
+        </div>
+      )}
 
       {/* Timeline */}
       <div className="flex-1 overflow-auto p-6 space-y-3">

@@ -59,6 +59,40 @@ test.describe("workflow v2", () => {
     await expect(page.locator("text=/run started/i")).toBeVisible({ timeout: 10_000 });
   });
 
+  test("drive with no chat session shows a shortcut to the chat tab", async ({ page }) => {
+    // Fresh project → no sessions exist, so Drive can't dispatch an action step.
+    // The UI must offer a one-click shortcut to the chat tab (Workspace) instead
+    // of just dumping a bare error string.
+    await signIn(page);
+    const pid = `wf_nosession_${Date.now()}`;
+    await page.goto("/#/projects");
+    await page.getByRole("button", { name: /new project/i }).click();
+    await page.getByPlaceholder(/project_id/i).fill(pid);
+    await page.getByPlaceholder(/display name/i).fill(pid);
+    await page.getByRole("button", { name: /^create$/ }).click();
+    await page.goto(`#/projects/${pid}/workflows`);
+
+    // Author a single action step.
+    await page.getByTitle("new definition").click();
+    await page.getByPlaceholder(/release-deploy/i).fill(`nosess_${Date.now()}`);
+    await page.getByRole("button", { name: /^create$/ }).click();
+
+    // Def is auto-selected; start its first run.
+    await page.getByRole("button", { name: /start new run/i }).click();
+    await expect(page.getByRole("button", { name: /^▶ drive$/i })).toBeVisible({ timeout: 10_000 });
+
+    // Click drive — backend can't dispatch without a session.
+    await page.getByRole("button", { name: /^▶ drive$/i }).click();
+
+    // Shortcut link to the chat tab must be visible.
+    const shortcut = page.getByRole("link", { name: /open chat tab|create a session/i });
+    await expect(shortcut).toBeVisible({ timeout: 5_000 });
+
+    // Clicking it lands on the Workspace page (which hosts the chat tab).
+    await shortcut.click();
+    await expect(page).toHaveURL(new RegExp(`#/projects/${pid}$`));
+  });
+
   test("renders empty state when no definitions exist", async ({ page }) => {
     // Use a fresh project so we don't have to clean up.
     await signIn(page);
