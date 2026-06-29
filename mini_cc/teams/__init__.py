@@ -142,6 +142,7 @@ class TeammateInfo:
     alive: bool = True
     thread: threading.Thread | None = None
     started_at: float = field(default_factory=time.time)
+    stopped_at: float = 0.0
 
 
 class TeammateSpawner:
@@ -191,6 +192,7 @@ class TeammateSpawner:
             existing = self._teammates.get(name)
             if existing is not None and existing.alive:
                 return f"Teammate '{name}' already exists"
+            self._prune_stopped_locked()
         info = TeammateInfo(name=name, role=role)
         thread = threading.Thread(
             target=self._runner, args=(info, prompt, on_event),
@@ -200,6 +202,21 @@ class TeammateSpawner:
             self._teammates[name] = info
         thread.start()
         return None
+
+    # Cap on retained stopped entries so `/agents` can still show
+    # "recently stopped" without the registry growing unbounded across
+    # many spawn/stop cycles.
+    _KEEP_STOPPED = 3
+
+    def _prune_stopped_locked(self) -> None:
+        """Caller holds self._lock. Drop oldest stopped entries beyond
+        the retention cap. Alive entries are always kept."""
+        stopped = [t for t in self._teammates.values() if not t.alive]
+        if len(stopped) <= self._KEEP_STOPPED:
+            return
+        stopped.sort(key=lambda t: t.stopped_at or t.started_at)
+        for t in stopped[:-self._KEEP_STOPPED]:
+            self._teammates.pop(t.name, None)
 
     def request_shutdown(self, name: str) -> str:
         with self._lock:
@@ -348,6 +365,8 @@ class TeammateSpawner:
                 if info.name in self._teammates:
                     info = self._teammates[info.name]
                     info.alive = False
+                    info.stopped_at = time.time()
+                self._prune_stopped_locked()
             self.bus.send(info.name, "lead", "Done.", "result")
 
     def _wait_for_plan_verdict(self, info: TeammateInfo,

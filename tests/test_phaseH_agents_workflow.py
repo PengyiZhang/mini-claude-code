@@ -128,7 +128,13 @@ def test_agents_command_stop_missing_name_errors():
 
 
 def test_agents_command_inbox_peek():
-    """`/agents inbox <name>` shows inbox contents via bus.peek_inbox."""
+    """`/agents inbox <name>` shows inbox contents via bus.peek_inbox.
+
+    Uses the REAL MessageBus serialization keys (`from` / `type`) —
+    earlier versions of this test used `from_agent` / `kind`, which
+    matched a buggy reader in `_cmd_agents` and masked a P1 production
+    bug where the rendered inbox always showed `? (message): ...`.
+    """
     @dataclass
     class _Info:
         name: str = "alice"
@@ -137,9 +143,9 @@ def test_agents_command_inbox_peek():
     class _Bus:
         def peek_inbox(self, name):
             return [
-                {"from_agent": "lead", "kind": "shutdown_request",
+                {"from": "lead", "type": "shutdown_request",
                  "content": "Please stop now."},
-                {"from_agent": "bob", "kind": "message",
+                {"from": "bob", "type": "message",
                  "content": "FYI"},
             ]
     class _Spawner:
@@ -156,6 +162,51 @@ def test_agents_command_inbox_peek():
     assert "Inbox for `alice`" in text
     assert "lead" in text
     assert "Please stop now" in text
+    # Sender and type render correctly (regression for the
+    # `from_agent`/`kind` mock-drift bug).
+    assert "(shutdown_request)" in text
+    assert "(message)" in text
+    assert "?" not in text  # no placeholder sender
+
+
+def test_agents_command_error_paths_emit_done():
+    """Every /agents error branch must emit `done` after `error`,
+    otherwise the front-end command runner hangs on onDone (commands.ts).
+    Covers: unknown subcommand, shutdown failure, unknown teammate."""
+    @dataclass
+    class _Info:
+        name: str = "alice"
+        role: str = "r"
+        alive: bool = True
+    class _Spawner:
+        def __init__(self):
+            self._teammates = {"alice": _Info()}
+        def list_alive(self):
+            return list(self._teammates.values())
+        def request_shutdown(self, name):
+            raise RuntimeError("bus is down")
+        bus = None
+    class _P:
+        teams = _Spawner()
+        tenant_id = "t1"
+
+    # Unknown subcommand.
+    evts = _run_cmd("agents", project=_P(), args="frobnicate x")
+    types = [e["type"] for e in evts]
+    assert "error" in types
+    assert types[-1] == "done", f"error path must end with done; got {types}"
+
+    # Shutdown failure.
+    evts = _run_cmd("agents", project=_P(), args="stop alice")
+    types = [e["type"] for e in evts]
+    assert "error" in types
+    assert types[-1] == "done", f"shutdown-error must end with done; got {types}"
+
+    # Unknown teammate (no bus).
+    evts = _run_cmd("agents", project=_P(), args="inbox nobody")
+    types = [e["type"] for e in evts]
+    assert "error" in types
+    assert types[-1] == "done", f"unknown-teammate must end with done; got {types}"
 
 
 def test_agents_command_inbox_unknown_teammate():

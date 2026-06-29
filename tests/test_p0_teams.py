@@ -692,3 +692,38 @@ def test_agentloop_set_worktree_swaps_sandbox(tmp_path):
     # The new sandbox resolves relative paths against wt, not ws
     assert loop.project.sandbox.project_root == wt.resolve()
 
+
+def test_stopped_teammates_get_pruned_from_registry(tmp_path):
+    """Stopped teammates must not accumulate in `_teammates` forever.
+
+    Pre-fix, the runner's `finally` block marked `alive=False` but left
+    the entry in `_teammates`. Across many spawn/stop cycles the
+    registry grew unbounded and `/agents` listing rendered every dead
+    entry forever.
+    """
+    class _Loop:
+        def run(self, prompt, *, on_event=None):
+            # Exit immediately — runner sees no inbox activity and ends.
+            return "done"
+
+    storage = FSStorage(tmp_path / "state")
+    spawner = TeammateSpawner(
+        tmp_path / "ws", loop_factory=lambda sid: _Loop(),
+        project_id="p", storage=storage,
+        idle_poll_interval=0.02, idle_timeout=0.3)
+
+    # Spawn and let die, 5 times.
+    for i in range(5):
+        spawner.spawn(f"t{i}", "worker", "go")
+        deadline = time.time() + 5
+        while spawner.list_alive() and time.time() < deadline:
+            time.sleep(0.02)
+
+    # All stopped. After a prune, _teammates should retain at most a
+    # small bounded tail of recently-stopped entries (so /agents can
+    # still show "recently stopped"), not all 5.
+    assert len(spawner.list_alive()) == 0
+    assert len(spawner._teammates) <= 3, (
+        f"registry leak: {len(spawner._teammates)} entries retained "
+        f"after 5 spawn/stop cycles; expected ≤ 3")
+

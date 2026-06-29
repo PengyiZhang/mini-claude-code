@@ -14,6 +14,7 @@ the chat pane uniformly.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Literal, Optional
 
@@ -582,6 +583,7 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
                 msg = spawner.request_shutdown(name)
             except Exception as e:
                 yield {"type": "error", "message": f"shutdown failed: {e}"}
+                yield {"type": "done"}
                 return
             yield {"type": "text", "text": f"🛑 {msg}"}
             yield {"type": "done"}
@@ -592,6 +594,7 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
             if inbox is None:
                 yield {"type": "error",
                        "message": f"no MessageBus or unknown teammate {name!r}"}
+                yield {"type": "done"}
                 return
             if not inbox:
                 yield {"type": "text",
@@ -600,8 +603,11 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
                 return
             lines = [f"**Inbox for `{name}` ({len(inbox)}):**", ""]
             for i, m in enumerate(inbox[:10], 1):
-                sender = m.get("from_agent", "?")
-                kind = m.get("kind", "message")
+                # MessageBus.send writes keys `from`/`type` (teams/__init__.py:57).
+                # Older readers used `from_agent`/`kind`, which silently fell
+                # back to `?`/`message` for every real message.
+                sender = m.get("from") or m.get("from_agent") or "?"
+                kind = m.get("type") or m.get("kind") or "message"
                 body = (m.get("content") or "").strip()
                 if len(body) > 80:
                     body = body[:80] + "…"
@@ -615,6 +621,7 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
                "message": f"unknown subcommand '{sub}'. "
                           "Use `/agents`, `/agents stop <name>`, "
                           "or `/agents inbox <name>`."}
+        yield {"type": "done"}
         return
 
     # Default: list everyone.
@@ -648,13 +655,18 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
 
 
 def _peek_inbox(spawner, name: str) -> list[dict] | None:
-    """Peek a teammate's inbox without consuming. None if unavailable."""
+    """Peek a teammate's inbox without consuming. None if unavailable.
+
+    Narrow the catch to "no such mailbox" / "corrupt JSON" — broader
+    catches masked permission errors and IO failures as a silent empty
+    inbox, which made production debugging impossible.
+    """
     bus = getattr(spawner, "bus", None)
     if bus is None or not hasattr(bus, "peek_inbox"):
         return None
     try:
         return list(bus.peek_inbox(name))
-    except Exception:
+    except (FileNotFoundError, ValueError, KeyError, json.JSONDecodeError):
         return None
 
 
