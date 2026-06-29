@@ -171,6 +171,11 @@ class WorkflowRun:
     step_runs: list[StepRun] = field(default_factory=list)
     # Trigger that started this run (echoed for audit).
     trigger: dict = field(default_factory=dict)
+    # Snapshot of the definition at run creation time. Drives / gate
+    # resolutions read from this so a def edit mid-run can't mutate
+    # what the run executes (the def_version label otherwise lies).
+    # Legacy runs without a snapshot fall back to the live def.
+    def_snapshot: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -182,6 +187,7 @@ class WorkflowRun:
             "state": dict(self.state),
             "step_runs": [s.to_dict() for s in self.step_runs],
             "trigger": dict(self.trigger),
+            "def_snapshot": self.def_snapshot,
         }
 
     @classmethod
@@ -202,6 +208,7 @@ class WorkflowRun:
                 output=s.get("output"), error=s.get("error"),
             ) for s in raw.get("step_runs", [])],
             trigger=raw.get("trigger", {}),
+            def_snapshot=raw.get("def_snapshot"),
         )
 
 
@@ -265,9 +272,21 @@ class WorkflowService:
             status="pending", state=dict(initial_state or {}),
             trigger=dict(trigger or {"type": "manual"}),
             step_runs=[StepRun(step_id=s.id) for s in d.steps],
+            def_snapshot=d.to_dict(),
         )
         self.storage.save_workflow_run(project_id, run.to_dict())
         return run
+
+    def _resolve_run_def(self, project_id: str,
+                         run: WorkflowRun) -> WorkflowDefinition | None:
+        """Return the def a run executes against.
+
+        Prefers the snapshot captured at run creation; falls back to the
+        live def for legacy runs persisted before snapshots existed.
+        """
+        if run.def_snapshot:
+            return WorkflowDefinition.from_dict(run.def_snapshot)
+        return self.get_definition(project_id, run.def_id)
 
     def get_run(self, project_id: str, run_id: str) -> WorkflowRun | None:
         raw = self.storage.load_workflow_run(project_id, run_id)
@@ -311,7 +330,7 @@ class WorkflowService:
             raise KeyError(f"run {run_id} not found")
         if run.status in ("completed", "failed", "cancelled"):
             return run
-        d = self.get_definition(project_id, run.def_id)
+        d = self._resolve_run_def(project_id, run)
         if d is None:
             raise KeyError(f"definition {run.def_id} not found")
 
@@ -369,8 +388,11 @@ class WorkflowService:
             self.storage.save_workflow_run(project_id, run.to_dict())
 
             try:
-                # Substitute {placeholder} from state.
-                prompt = self._substitute(step.prompt, run.state)
+                # Substitute {placeholder} from state. The current step's
+                # id is injected under the reserved key `step_id` so the
+                # editor-advertised `{step_id}` placeholder resolves.
+                scope = {**run.state, "step_id": step.id}
+                prompt = self._substitute(step.prompt, scope)
                 result = dispatch_fn(prompt, run)
                 sr.output = result
                 sr.status = "completed"
@@ -421,7 +443,7 @@ class WorkflowService:
         run = self.get_run(project_id, run_id)
         if run is None:
             return None
-        d = self.get_definition(project_id, run.def_id)
+        d = self._resolve_run_def(project_id, run)
         if d is None:
             return None
         step = next((s for s in d.steps if s.id == step_id), None)
@@ -578,7 +600,7 @@ class WorkflowService:
         run = self.get_run(project_id, run_id)
         if run is None:
             return None
-        d = self.get_definition(project_id, run.def_id)
+        d = self._resolve_run_def(project_id, run)
         if d is None:
             return None
         step = next((s for s in d.steps if s.id == step_id), None)
@@ -646,7 +668,7 @@ class WorkflowService:
         run = self.get_run(project_id, run_id)
         if run is None:
             return None
-        d = self.get_definition(project_id, run.def_id)
+        d = self._resolve_run_def(project_id, run)
         if d is None:
             return None
         step = next((s for s in d.steps if s.id == step_id), None)

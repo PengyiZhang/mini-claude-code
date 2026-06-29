@@ -300,6 +300,61 @@ def test_drive_run_missing_run_raises(tmp_path):
         svc.drive_run("p1", "ghost", lambda p, r: "")
 
 
+def test_drive_run_uses_snapshot_from_creation_time_not_latest(tmp_path):
+    """A run is pinned to the definition version it was created against.
+    Editing the def mid-run must not mutate what the run executes —
+    otherwise re-drives become non-reproducible and the UI's `v{N}`
+    label lies about what actually ran."""
+    svc = _service(tmp_path)
+    d = svc.create_definition("p1", {
+        "name": "wf",
+        "steps": [{"id": "s1", "prompt": "original"}],
+    })
+    run = svc.start_run("p1", d.def_id)
+    assert run is not None
+    # Bump the def to v2 with a different prompt.
+    svc.update_definition("p1", d.def_id, {
+        "steps": [{"id": "s1", "prompt": "mutated"}],
+    })
+
+    seen: list[str] = []
+
+    def dispatch(prompt, r):
+        seen.append(prompt)
+        return "ok"
+
+    finished = svc.drive_run("p1", run.run_id, dispatch)
+    assert finished.status == "completed"
+    # The run was created against v1; drive must use v1's prompt.
+    assert seen == ["original"], (
+        f"run executed def_version={run.def_version} but dispatched "
+        f"latest-def prompt {seen!r}; expected ['original']")
+
+
+def test_drive_run_substitutes_step_id_placeholder(tmp_path):
+    """The editor advertises `{step_id}` substitution in the prompt
+    placeholder. drive_run must inject the running step's id into the
+    substitution scope so `{step_id}` resolves to it."""
+    svc = _service(tmp_path)
+    d = svc.create_definition("p1", {
+        "name": "wf",
+        "steps": [{"id": "first_step", "prompt": "run {step_id} now"}],
+    })
+    run = svc.start_run("p1", d.def_id)
+    assert run is not None
+
+    seen: list[str] = []
+
+    def dispatch(prompt, r):
+        seen.append(prompt)
+        return "ok"
+
+    finished = svc.drive_run("p1", run.run_id, dispatch)
+    assert finished.status == "completed"
+    assert seen == ["run first_step now"], (
+        f"step_id placeholder not substituted; seen={seen!r}")
+
+
 # ── StepDef / TriggerDef shape ─────────────────────────────────────────────
 
 def test_stepdef_to_dict_includes_all_fields():
