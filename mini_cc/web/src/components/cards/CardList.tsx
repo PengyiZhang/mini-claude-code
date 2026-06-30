@@ -1,9 +1,19 @@
-import type { CardListItem, CardListPayload } from "../../lib/types";
+import { useState } from "react";
+import type { CardListItem, CardListPayload, CardEvent } from "../../lib/types";
 import { useChat } from "../../lib/store";
 import { CardIcon } from "./icons";
+import { CardView } from "./index";
 
-export function CardList({ payload }: { payload: CardListPayload }) {
+interface CardListProps {
+  payload: CardListPayload;
+  parentCardId?: string;
+  chatKey?: string;
+}
+
+export function CardList({ payload, parentCardId, chatKey }: CardListProps) {
   const items = payload.items ?? [];
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
+
   if (items.length === 0) {
     return (
       <div className="text-xs text-ink-dim italic">
@@ -15,7 +25,20 @@ export function CardList({ payload }: { payload: CardListPayload }) {
     <div className="space-y-2">
       <ul className="space-y-1">
         {items.map((it) => (
-          <ListItem key={it.id} item={it} />
+          <ListItem
+            key={it.id}
+            item={it}
+            expandedRow={expandedRow}
+            onToggleExpand={(rowId, cmd) => {
+              const expanding = expandedRow !== rowId;
+              setExpandedRow(expanding ? rowId : null);
+              if (expanding && cmd) {
+                useChat.getState().runCommand(cmd);
+              }
+            }}
+            parentCardId={parentCardId}
+            chatKey={chatKey}
+          />
         ))}
       </ul>
       {payload.summary && (
@@ -27,9 +50,18 @@ export function CardList({ payload }: { payload: CardListPayload }) {
   );
 }
 
-function ListItem({ item }: { item: CardListItem }) {
+interface ListItemProps {
+  item: CardListItem;
+  expandedRow: string | null;
+  onToggleExpand: (rowId: string, cmd: string | null | undefined) => void;
+  parentCardId?: string;
+  chatKey?: string;
+}
+
+function ListItem({ item, expandedRow, onToggleExpand, parentCardId, chatKey }: ListItemProps) {
   const runCommand = useChat((s) => s.runCommand);
   const clickable = Boolean(item.expandable_command);
+  const isExpanded = expandedRow === item.id;
 
   const titleNode = (
     <>
@@ -51,6 +83,9 @@ function ListItem({ item }: { item: CardListItem }) {
       {item.meta && (
         <span className="ml-auto text-xs text-ink-dim">{item.meta}</span>
       )}
+      {clickable && (
+        <span className={`ml-2 text-xs text-ink-dim transition-transform ${isExpanded ? "rotate-90" : ""}`}>▶</span>
+      )}
     </>
   );
 
@@ -59,13 +94,16 @@ function ListItem({ item }: { item: CardListItem }) {
       {clickable ? (
         <button
           type="button"
-          onClick={() => item.expandable_command && runCommand(item.expandable_command)}
+          onClick={() => onToggleExpand(item.id, item.expandable_command)}
           className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-bg-hover"
         >
           {titleNode}
         </button>
       ) : (
         <div className="w-full flex items-center gap-2 px-3 py-2">{titleNode}</div>
+      )}
+      {isExpanded && parentCardId && chatKey && (
+        <ChildCardSlot parentCardId={parentCardId} rowId={item.id} chatKey={chatKey} />
       )}
       {item.menu.length > 0 && (
         <div className="flex items-center gap-1 px-3 py-1.5 border-t border-border bg-bg-hover/40">
@@ -82,6 +120,40 @@ function ListItem({ item }: { item: CardListItem }) {
         </div>
       )}
     </li>
+  );
+}
+
+function ChildCardSlot({
+  parentCardId,
+  rowId,
+  chatKey,
+}: {
+  parentCardId: string;
+  rowId: string;
+  chatKey: string;
+}) {
+  const childId = `${parentCardId}::${rowId}`;
+  const child = useChat((s) => {
+    const msgs = s.messages[chatKey] ?? [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const cards = msgs[i].cards;
+      const found = cards?.find((c) => c.id === childId);
+      if (found) return found;
+    }
+    return null;
+  }) as CardEvent | null;
+
+  if (!child) {
+    return (
+      <div className="px-3 py-2 border-t border-border text-xs text-ink-dim italic">
+        Loading…
+      </div>
+    );
+  }
+  return (
+    <div className="px-3 py-2 border-t border-border bg-bg-hover/20">
+      <CardView card={child} />
+    </div>
   );
 }
 

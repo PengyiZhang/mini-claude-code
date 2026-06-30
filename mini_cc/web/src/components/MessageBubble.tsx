@@ -17,12 +17,13 @@ export default function MessageBubble({ msg }: { msg: ChatMessage }) {
     );
   }
 
+  const chatKey = (msg as unknown as { __key?: string }).__key;
   return (
     <div className="flex gap-3">
       <div className="size-8 rounded-md bg-gradient-to-br from-accent to-indigo-400 shrink-0 mt-0.5" />
       <div className="flex-1 space-y-2 min-w-0">
         {msg.cards?.map((c) => (
-          <CardView key={c.id} card={c} />
+          <CardView key={c.id} card={c} parentCardId={c.id} chatKey={chatKey} />
         ))}
         {msg.activities?.map((a) => (
           <Activity key={a.id} msg={msg} activity={a} />

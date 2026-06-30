@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CardList } from "./CardList";
 import { useChat } from "../../lib/store";
-import type { CardListPayload, CardListItem } from "../../lib/types";
+import type { CardListPayload, CardListItem, CardEvent } from "../../lib/types";
 
 function item(overrides: Partial<CardListItem> = {}): CardListItem {
   return {
@@ -162,5 +162,121 @@ describe("CardList", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: /plain/i })).toBeNull();
+  });
+
+  describe("inline child-card expansion", () => {
+    const PARENT_ID = "agents-roster";
+    const childCard: CardEvent = {
+      id: `${PARENT_ID}::alice`,
+      variant: "key_value",
+      status: "ok",
+      payload: { pairs: [{ k: "From", v: "lead", mono: false, sensitive: false, badge: null }] },
+      actions: [],
+      emitted_at: 1,
+      revision: 1,
+      title: "Inbox: alice",
+    };
+
+    beforeEach(() => {
+      // Seed the store with an assistant message that already has the
+      // child card attached — this is what the real addCard path would
+      // produce once the expandable_command fires and the server
+      // responds with the child card event.
+      useChat.setState({
+        messages: {
+          "p/s": [
+            { role: "assistant", text: "", cards: [childCard] },
+          ],
+        },
+      });
+    });
+
+    it("renders the child card inline below the row when expanded", async () => {
+      const user = userEvent.setup();
+      render(
+        <CardList
+          parentCardId={PARENT_ID}
+          chatKey="p/s"
+          payload={{
+            items: [
+              item({
+                id: "alice",
+                title: "Alice",
+                expandable_command: "/agents inbox alice",
+              }),
+            ],
+            empty_hint: null,
+            summary: null,
+            group_by: null,
+          } as CardListPayload}
+        />,
+      );
+      // Initially collapsed — child card body hidden.
+      expect(screen.queryByText("Inbox: alice")).toBeNull();
+      // Click row to expand.
+      await user.click(screen.getByRole("button", { name: /alice/i }));
+      expect(screen.getByText("Inbox: alice")).toBeInTheDocument();
+    });
+
+    it("collapses the inline child card on a second click", async () => {
+      const user = userEvent.setup();
+      render(
+        <CardList
+          parentCardId={PARENT_ID}
+          chatKey="p/s"
+          payload={{
+            items: [
+              item({
+                id: "alice",
+                title: "Alice",
+                expandable_command: "/agents inbox alice",
+              }),
+            ],
+            empty_hint: null,
+            summary: null,
+            group_by: null,
+          } as CardListPayload}
+        />,
+      );
+      const row = screen.getByRole("button", { name: /alice/i });
+      await user.click(row);
+      expect(screen.getByText("Inbox: alice")).toBeInTheDocument();
+      await user.click(row);
+      expect(screen.queryByText("Inbox: alice")).toBeNull();
+    });
+
+    it("fires runCommand with expandable_command on first expansion only", async () => {
+      const calls: string[] = [];
+      useChat.setState({
+        runCommand: (cmd: string) => { calls.push(cmd); },
+        messages: {
+          "p/s": [{ role: "assistant", text: "", cards: [childCard] }],
+        },
+      });
+      const user = userEvent.setup();
+      render(
+        <CardList
+          parentCardId={PARENT_ID}
+          chatKey="p/s"
+          payload={{
+            items: [
+              item({
+                id: "alice",
+                title: "Alice",
+                expandable_command: "/agents inbox alice",
+              }),
+            ],
+            empty_hint: null,
+            summary: null,
+            group_by: null,
+          } as CardListPayload}
+        />,
+      );
+      const row = screen.getByRole("button", { name: /alice/i });
+      await user.click(row); // expand — fires command
+      await user.click(row); // collapse — does NOT fire again
+      await user.click(row); // re-expand — DOES fire (child may have changed)
+      expect(calls).toEqual(["/agents inbox alice", "/agents inbox alice"]);
+    });
   });
 });

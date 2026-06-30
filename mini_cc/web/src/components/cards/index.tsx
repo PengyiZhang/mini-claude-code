@@ -3,11 +3,19 @@ import { CardShell } from "./CardShell";
 import { CardList } from "./CardList";
 import { CardKeyValue } from "./CardKeyValue";
 
+interface CardViewProps {
+  card: CardEvent;
+  parentCardId?: string;
+  chatKey?: string;
+}
+
 // CardView: top-level dispatcher. Each variant lands in a dedicated
 // component (CardList, CardKeyValue, …) wrapped by CardShell for the
 // chrome (title, icon, status, actions). CardTable and CardSteps arrive
-// in Plan B.
-export function CardView({ card }: { card: CardEvent }) {
+// in Plan B. parentCardId/chatKey thread through to CardList so an
+// expandable row can find its inline child card (keyed
+// `${parentCardId}::${rowId}`) in the store.
+export function CardView({ card, parentCardId, chatKey }: CardViewProps) {
   return (
     <CardShell
       title={card.title}
@@ -17,7 +25,11 @@ export function CardView({ card }: { card: CardEvent }) {
       actions={card.actions}
     >
       {card.variant === "list" && (
-        <CardList payload={card.payload as never} />
+        <CardList
+          payload={card.payload as never}
+          parentCardId={parentCardId}
+          chatKey={chatKey}
+        />
       )}
       {card.variant === "key_value" && (
         <CardKeyValue payload={card.payload as never} />
