@@ -12,7 +12,9 @@ export type WorkflowV2StepType =
   | "validate"
   | "checkpoint"
   | "webhook_wait"
-  | "email_wait";
+  | "email_wait"
+  | "branch"
+  | "loop";
 
 export interface WorkflowV2Step {
   id: string;
@@ -22,6 +24,9 @@ export interface WorkflowV2Step {
   outputs_schema?: Record<string, unknown>;
   config?: Record<string, unknown>;
   condition?: string | null;
+  /** Explicit "go to step X after this one completes". W7: enables
+   * exclusive branch targets and backward jumps for hand-rolled loops. */
+  next?: string | null;
 }
 
 export interface WorkflowV2Definition {

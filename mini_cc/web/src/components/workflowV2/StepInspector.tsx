@@ -66,6 +66,17 @@ export default function WorkflowV2StepInspector({ run, def, stepId }: Props) {
         </Section>
       )}
 
+      {stepDef.next && (
+        <Section title="next">
+          <code className="text-xs text-accent font-mono">
+            → {stepDef.next}
+          </code>
+          <div className="text-[10px] text-ink-faint mt-0.5">
+            explicit goto after this step completes
+          </div>
+        </Section>
+      )}
+
       {/* Config — type-specific knobs. For checkpoint this includes
           approvers; for webhook_wait, webhook_id + event_filter; etc. */}
       {stepDef.config && Object.keys(stepDef.config).length > 0 && (

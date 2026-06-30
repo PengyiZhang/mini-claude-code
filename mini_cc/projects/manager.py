@@ -337,7 +337,7 @@ class ProjectManager:
         # project, backed by the same FSStorage, shared between the
         # HTTP routes and any in-process driver (tests, future UI).
         try:
-            from ..workflow_v2 import WorkflowService
+            from ..workflow.workflow_v2 import WorkflowService
             project.workflows_v2 = WorkflowService(storage)
         except Exception:
             # If the import ever fails (circular dep during a refactor),

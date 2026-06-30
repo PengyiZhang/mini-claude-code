@@ -9,7 +9,7 @@ from mini_cc.projects import ProjectManager
 from mini_cc.server.app import build_app
 from mini_cc.session import SessionManager
 from mini_cc.storage import FSStorage
-from mini_cc.workflow_v2 import WorkflowService
+from mini_cc.workflow.workflow_v2 import WorkflowService
 
 
 AUTH = {"Authorization": "Bearer mck_testkey"}

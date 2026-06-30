@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from mini_cc.storage import FSStorage
-from mini_cc.workflow_v2 import (StepDef, TriggerDef, WorkflowDefinition,
+from mini_cc.workflow.workflow_v2 import (StepDef, TriggerDef, WorkflowDefinition,
                                   WorkflowRun, WorkflowService)
 
 

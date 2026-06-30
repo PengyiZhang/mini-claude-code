@@ -393,7 +393,11 @@ def test_agents_without_spawner_returns_message():
 
 
 def test_agents_lists_spawned_teammates():
-    """A spawner with one alive teammate lists it with the green dot."""
+    """A spawner with one alive teammate lists it in the roster card.
+
+    Phase 3.1 migrated /agents to a list card; this test now asserts
+    against the card payload instead of the old text blob.
+    """
     class _Info:
         def __init__(self, name, role, alive=True):
             self.name = name; self.role = role; self.alive = alive
@@ -407,10 +411,12 @@ def test_agents_lists_spawned_teammates():
         teams = _Spawner()
         tenant_id = "t1"
     events = _run_cmd("agents", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "alice" in text
-    assert "🟢" in text
-    assert "researcher" in text
+    card = next(e for e in events if e.get("type") == "card")
+    items = card["payload"]["items"]
+    alice = next(it for it in items if it["title"] == "alice")
+    assert alice["subtitle"] and "researcher" in alice["subtitle"]
+    badge_texts = [b["text"] for b in alice["badges"]]
+    assert "alive" in badge_texts  # was 🟢 in the old text format
 
 
 def test_logs_lists_files():

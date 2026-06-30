@@ -39,6 +39,8 @@ const STEP_TYPES: WorkflowV2StepType[] = [
   "checkpoint",
   "webhook_wait",
   "email_wait",
+  "branch",
+  "loop",
 ];
 
 const TYPE_HELP: Record<WorkflowV2StepType, string> = {
@@ -47,6 +49,8 @@ const TYPE_HELP: Record<WorkflowV2StepType, string> = {
   checkpoint: "Pause for human approval (approvers optional).",
   webhook_wait: "Pause for an inbound webhook (config.webhook_id optional shared secret).",
   email_wait: "Pause for an inbound email (from_filter / subject_filter optional).",
+  branch: "Conditional jump. config.branches=[{when, next}]; first truthy wins. Optional config.default_next.",
+  loop: "Iterate a body. config.body=[step_ids]; config.while=<expr>; config.max_iterations=N (default 100).",
 };
 
 export default function DefinitionEditor({ profile, pid, target, onClose, onSaved }: Props) {
@@ -279,6 +283,21 @@ function StepEditor({
   function patchConfig(key: string, value: unknown) {
     onChange({ config: { ...cfg, [key]: value } });
   }
+  // Branch helpers — config.branches is a list of {when, next}.
+  function patchBranch(i: number, patch: Partial<{ when: string; next: string }>) {
+    const branches = ((cfg.branches as Array<{ when: string; next: string }>) ?? []).map((b, j) =>
+      j === i ? { ...b, ...patch } : b,
+    );
+    patchConfig("branches", branches);
+  }
+  function addBranch() {
+    const branches = (cfg.branches as Array<{ when: string; next: string }>) ?? [];
+    patchConfig("branches", [...branches, { when: "", next: "" }]);
+  }
+  function removeBranch(i: number) {
+    const branches = ((cfg.branches as Array<{ when: string; next: string }>) ?? []).filter((_, j) => j !== i);
+    patchConfig("branches", branches);
+  }
 
   return (
     <div className="border border-border rounded p-3 bg-bg-panel">
@@ -421,6 +440,98 @@ function StepEditor({
               className="mt-1 w-full bg-bg border border-border rounded px-2 py-1 text-xs outline-none focus:border-accent"
             />
           </label>
+        </div>
+      )}
+
+      {step.type === "branch" && (
+        <div className="space-y-2">
+          <div className="text-xs text-ink-dim">
+            branches — first truthy <code>when</code> wins; jump to its <code>next</code> step id
+          </div>
+          {(cfg.branches as Array<{ when: string; next: string }> ?? []).map((b, i) => (
+            <div key={i} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+              <input
+                type="text"
+                value={b.when}
+                onChange={(e) => patchBranch(i, { when: e.target.value })}
+                placeholder="x < 10"
+                className="bg-bg border border-border rounded px-2 py-1 text-xs font-mono outline-none focus:border-accent"
+              />
+              <input
+                type="text"
+                value={b.next}
+                onChange={(e) => patchBranch(i, { next: e.target.value })}
+                placeholder="small_branch_step"
+                className="bg-bg border border-border rounded px-2 py-1 text-xs font-mono outline-none focus:border-accent"
+              />
+              <button
+                type="button"
+                onClick={() => removeBranch(i)}
+                className="text-xs px-1.5 py-0.5 rounded border border-border hover:border-err text-ink-dim hover:text-err"
+                title="remove branch"
+              >✕</button>
+            </div>
+          ))}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={addBranch}
+              className="text-xs px-2 py-0.5 rounded border border-border hover:border-accent text-ink-dim hover:text-accent"
+            >+ branch</button>
+            <label className="flex-1">
+              <span className="text-xs text-ink-dim">default_next (optional step id)</span>
+              <input
+                type="text"
+                value={(cfg.default_next as string) ?? ""}
+                onChange={(e) => patchConfig("default_next", e.target.value)}
+                placeholder="fall_through_step"
+                className="mt-0.5 w-full bg-bg border border-border rounded px-2 py-1 text-xs font-mono outline-none focus:border-accent"
+              />
+            </label>
+          </div>
+        </div>
+      )}
+
+      {step.type === "loop" && (
+        <div className="space-y-2">
+          <label className="block">
+            <span className="text-xs text-ink-dim">body (comma-separated step ids to iterate)</span>
+            <input
+              type="text"
+              value={Array.isArray(cfg.body) ? (cfg.body as string[]).join(", ") : ""}
+              onChange={(e) =>
+                patchConfig(
+                  "body",
+                  e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                )
+              }
+              placeholder="warmup, main_work"
+              className="mt-1 w-full bg-bg border border-border rounded px-2 py-1 text-xs font-mono outline-none focus:border-accent"
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-xs text-ink-dim">while (expr; iter var = current count)</span>
+              <input
+                type="text"
+                value={(cfg.while as string) ?? ""}
+                onChange={(e) => patchConfig("while", e.target.value)}
+                placeholder="iter &lt; 5"
+                className="mt-1 w-full bg-bg border border-border rounded px-2 py-1 text-xs font-mono outline-none focus:border-accent"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-ink-dim">max_iterations (default 100)</span>
+              <input
+                type="number"
+                min={1}
+                value={(cfg.max_iterations as number) ?? ""}
+                onChange={(e) => patchConfig("max_iterations", Number(e.target.value))}
+                placeholder="100"
+                className="mt-1 w-full bg-bg border border-border rounded px-2 py-1 text-xs font-mono outline-none focus:border-accent"
+              />
+            </label>
+          </div>
         </div>
       )}
 

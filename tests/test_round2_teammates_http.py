@@ -95,16 +95,23 @@ def test_agents_spawn_then_list_then_stop(app):
     assert ev[-1]["type"] == "done", f"expected done footer; got {ev[-1]}"
 
     # Wait for the spawn thread to mark alice alive in the registry.
+    # Phase 3.1: /agents no-args emits a list card; assert against its
+    # payload instead of the old text blob.
     deadline = time.time() + 2
-    listed_text = ""
+    listed_alice_subtitle = ""
     while time.time() < deadline:
         ev = _cmd(app, args="")
-        listed_text = "".join(e.get("text", "") for e in ev if e.get("type") == "text")
-        if "alice" in listed_text:
-            break
+        card = next((e for e in ev if e.get("type") == "card"), None)
+        if card:
+            items = card.get("payload", {}).get("items", [])
+            alice = next((it for it in items if it.get("title") == "alice"), None)
+            if alice:
+                listed_alice_subtitle = alice.get("subtitle") or ""
+                break
         time.sleep(0.05)
-    assert "alice" in listed_text
-    assert "researcher" in listed_text
+    assert "alice" in listed_alice_subtitle or listed_alice_subtitle, \
+        "alice did not appear in roster card"
+    assert "researcher" in listed_alice_subtitle
 
     # stop — should succeed whether alice is still alive or already
     # exited (the registry retains stopped entries briefly).

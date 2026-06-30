@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from mini_cc.storage import FSStorage
-from mini_cc.workflow_v2 import WorkflowService
+from mini_cc.workflow.workflow_v2 import WorkflowService
 
 
 def _svc(tmp_path) -> WorkflowService:

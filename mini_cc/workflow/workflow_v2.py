@@ -52,6 +52,12 @@ class StepDef:
     config: dict = field(default_factory=dict)
     # Soft branch: skip this step when the expression is falsy.
     condition: str | None = None
+    # Explicit "go to step X after this one completes". Overrides the
+    # default linear advance. Used together with ``branch`` for
+    # if/else ladders (each branch target sets ``next`` to the post-
+    # branch step id so the other cases are skipped) and for backward
+    # jumps in hand-rolled loops. None → linear advance.
+    next: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -60,6 +66,7 @@ class StepDef:
             "outputs_schema": dict(self.outputs_schema),
             "config": dict(self.config),
             "condition": self.condition,
+            "next": self.next,
         }
 
 
@@ -128,6 +135,7 @@ class WorkflowDefinition:
                 outputs_schema=s.get("outputs_schema", {}),
                 config=s.get("config", {}),
                 condition=s.get("condition"),
+                next=s.get("next"),
             ) for s in raw.get("steps", [])],
             triggers=[TriggerDef(
                 type=t.get("type", "manual"),
@@ -318,6 +326,19 @@ class WorkflowService:
                   max_steps: int = 1000) -> WorkflowRun:
         """Drive a run forward, executing action steps synchronously.
 
+        Step types supported:
+        - ``action``        — sub-prompt dispatched through AgentLoop
+        - ``validate``      — JSONPath/predicate check (W5)
+        - ``checkpoint``    — pause for human approval (W2)
+        - ``webhook_wait``  — pause for inbound webhook (W3)
+        - ``email_wait``    — pause for inbound email (W4)
+        - ``branch``        — conditional jump (W7)
+        - ``loop``          — iterative sub-workflow (W7)
+
+        Uses a program-counter model so ``branch`` and ``loop`` can jump
+        non-linearly. Linear workflows (no branch/loop) behave exactly
+        as before — the cursor advances by 1 each iteration.
+
         Parking steps (checkpoint / webhook_wait / email_wait) flip
         the run to ``paused`` and return; an external event resolver
         (added in W2-W4) calls back to unpause.
@@ -338,24 +359,89 @@ class WorkflowService:
         run.started_at = run.started_at or _iso_now()
         self.storage.save_workflow_run(project_id, run.to_dict())
 
-        for idx in range(run.current_step_idx, min(len(d.steps), max_steps)):
-            step = d.steps[idx]
-            sr = next((s for s in run.step_runs if s.step_id == step.id),
-                      StepRun(step_id=step.id))
+        step_idx = {s.id: i for i, s in enumerate(d.steps)}
+        sr_by_id: dict[str, StepRun] = {sr.step_id: sr for sr in run.step_runs}
+        pc = run.current_step_idx
+        steps_taken = 0
+
+        while pc < len(d.steps) and steps_taken < max_steps:
+            step = d.steps[pc]
+            sr = sr_by_id.get(step.id)
+            if sr is None:
+                sr = StepRun(step_id=step.id)
+                sr_by_id[step.id] = sr
+                run.step_runs.append(sr)
+
+            # Skip already-completed steps (e.g., on resume after a gate).
             if sr.status in ("completed", "skipped"):
+                pc += 1
                 continue
 
-            # Parking steps: leave the run paused; external resolver
-            # will call drive_run again after the gate is satisfied.
-            if step.type in ("checkpoint", "webhook_wait", "email_wait"):
+            # Soft condition skip (existing W1 behavior).
+            if step.condition is not None:
+                try:
+                    cond_val = self._eval_expr(step.condition, dict(run.state))
+                except Exception:
+                    cond_val = False
+                if not cond_val:
+                    sr.status = "skipped"
+                    sr.started_at = sr.started_at or _iso_now()
+                    run.current_step_idx = pc + 1
+                    self.storage.save_workflow_run(project_id, run.to_dict())
+                    pc += 1
+                    continue
+
+            steps_taken += 1
+
+            # ── Branch (W7) ───────────────────────────────────────────
+            # Pure control-flow step. No dispatch. Records the chosen
+            # target in run.state and jumps the cursor.
+            if step.type == "branch":
+                target = self._eval_branch(step, run.state)
+                decision = target or "default"
+                sr.status = "completed"
+                sr.started_at = sr.started_at or _iso_now()
+                sr.completed_at = _iso_now()
+                sr.output = {"branch_taken": decision}
+                run.state[step.id] = {"branch_taken": decision}
+                if target and target in step_idx:
+                    pc = step_idx[target]
+                else:
+                    pc += 1
+                run.current_step_idx = pc
+                self.storage.save_workflow_run(project_id, run.to_dict())
+                continue
+
+            # ── Loop (W7) ─────────────────────────────────────────────
+            # Iteratively run a list of body step ids while `while` holds.
+            if step.type == "loop":
+                try:
+                    self._run_loop_step(project_id, run, d, step, sr,
+                                        dispatch_fn, step_idx, sr_by_id)
+                except Exception as e:
+                    sr.error = f"{type(e).__name__}: {e}"
+                    sr.status = "failed"
+                    sr.completed_at = _iso_now()
+                    run.status = "failed"
+                    run.completed_at = _iso_now()
+                    run.current_step_idx = pc
+                    self.storage.save_workflow_run(project_id, run.to_dict())
+                    return run
+                pc = self._advance_pc(step, pc, step_idx)
+                run.current_step_idx = pc
+                self.storage.save_workflow_run(project_id, run.to_dict())
+                continue
+
+            # ── Parking steps (W2/W3/W4) ──────────────────────────────
+            if step.type in self.GATE_STEP_TYPES:
                 run.status = "paused"
-                run.current_step_idx = idx
+                run.current_step_idx = pc
                 sr.status = "paused"
                 sr.started_at = _iso_now()
                 self.storage.save_workflow_run(project_id, run.to_dict())
                 return run
 
-            # Validate (W5): deterministic check, no dispatch.
+            # ── Validate (W5) ─────────────────────────────────────────
             if step.type == "validate":
                 sr.status = "running"
                 sr.started_at = _iso_now()
@@ -375,22 +461,19 @@ class WorkflowService:
                     sr.completed_at = _iso_now()
                     run.status = "failed"
                     run.completed_at = _iso_now()
-                    run.current_step_idx = idx
+                    run.current_step_idx = pc
                     self.storage.save_workflow_run(project_id, run.to_dict())
                     return run
-                run.current_step_idx = idx + 1
+                pc = self._advance_pc(step, pc, step_idx)
+                run.current_step_idx = pc
                 self.storage.save_workflow_run(project_id, run.to_dict())
                 continue
 
-            # action step — dispatch through the AgentLoop.
+            # ── Action (default) ──────────────────────────────────────
             sr.status = "running"
             sr.started_at = _iso_now()
             self.storage.save_workflow_run(project_id, run.to_dict())
-
             try:
-                # Substitute {placeholder} from state. The current step's
-                # id is injected under the reserved key `step_id` so the
-                # editor-advertised `{step_id}` placeholder resolves.
                 scope = {**run.state, "step_id": step.id}
                 prompt = self._substitute(step.prompt, scope)
                 result = dispatch_fn(prompt, run)
@@ -404,11 +487,11 @@ class WorkflowService:
                 sr.completed_at = _iso_now()
                 run.status = "failed"
                 run.completed_at = _iso_now()
-                run.current_step_idx = idx
+                run.current_step_idx = pc
                 self.storage.save_workflow_run(project_id, run.to_dict())
                 return run
-
-            run.current_step_idx = idx + 1
+            pc = self._advance_pc(step, pc, step_idx)
+            run.current_step_idx = pc
             self.storage.save_workflow_run(project_id, run.to_dict())
 
         run.status = "completed"
@@ -416,6 +499,196 @@ class WorkflowService:
         run.current_step_idx = len(d.steps)
         self.storage.save_workflow_run(project_id, run.to_dict())
         return run
+
+    def _advance_pc(self, step: StepDef, pc: int,
+                    step_idx: dict[str, int]) -> int:
+        """Compute the next program counter after `step` completes.
+
+        Honors ``step.next`` (explicit goto) when set and the target
+        exists; otherwise linear +1.
+        """
+        if step.next and step.next in step_idx:
+            return step_idx[step.next]
+        return pc + 1
+
+    # ── Branch + Loop helpers (W7) ────────────────────────────────────────
+
+    def _eval_branch(self, step: StepDef, state: dict) -> str | None:
+        """Return the chosen branch's `next` step id, or None for default.
+
+        First truthy `when` wins. ``config.branches`` is a list of
+        ``{"when": <expr>, "next": <step_id>}``. Expressions evaluate
+        against state with the same safe-builtins set as ``validate``.
+        """
+        branches = step.config.get("branches") or []
+        scope = dict(state)
+        for case in branches:
+            when_expr = case.get("when")
+            target = case.get("next")
+            if when_expr is None or target is None:
+                continue
+            try:
+                matched = bool(self._eval_expr(when_expr, scope))
+            except Exception:
+                matched = False
+            if matched:
+                return target
+        return step.config.get("default_next")
+
+    def _run_loop_step(self, project_id: str, run: WorkflowRun,
+                       d: WorkflowDefinition, step: StepDef, sr: StepRun,
+                       dispatch_fn: Callable[[str, WorkflowRun], str],
+                       step_idx: dict[str, int],
+                       sr_by_id: dict[str, StepRun]) -> None:
+        """Execute a loop step's iterations in-place.
+
+        Each iteration: evaluate ``while`` (with ``iter`` = current count),
+        if falsy or max reached → exit; else run each body step via
+        :meth:`_execute_body_step`, then increment the counter.
+        """
+        body_ids: list[str] = list(step.config.get("body") or [])
+        while_expr = step.config.get("while") or "True"
+        max_iter = int(step.config.get("max_iterations", 100))
+        counter_var = step.config.get("counter_var") or f"{step.id}_iter"
+
+        if counter_var not in run.state:
+            run.state[counter_var] = 0
+
+        sr.status = "running"
+        sr.started_at = sr.started_at or _iso_now()
+
+        # Body steps belong to the loop, not the linear flow. Pre-mark
+        # them skipped so a post-loop linear advance (or a zero-iteration
+        # exit) doesn't re-execute them as regular steps. Any iteration
+        # that runs will flip them to "completed" / "skipped" as appropriate.
+        for body_id in body_ids:
+            body_sr = sr_by_id.get(body_id)
+            if body_sr is None:
+                body_sr = StepRun(step_id=body_id, status="skipped")
+                sr_by_id[body_id] = body_sr
+                run.step_runs.append(body_sr)
+            elif body_sr.status not in ("completed", "skipped", "failed"):
+                body_sr.status = "skipped"
+
+        iterations = 0
+        while iterations < max_iter:
+            current = int(run.state.get(counter_var, 0))
+            scope = {**run.state, "iter": current}
+            try:
+                keep_going = bool(self._eval_expr(while_expr, scope))
+            except Exception:
+                keep_going = False
+            if not keep_going:
+                break
+
+            for body_id in body_ids:
+                if body_id not in step_idx:
+                    raise RuntimeError(
+                        f"loop body step {body_id!r} not found in workflow")
+                body_step = d.steps[step_idx[body_id]]
+                if body_step.type in self.GATE_STEP_TYPES:
+                    raise RuntimeError(
+                        f"loop body step {body_id!r} is a parking step "
+                        f"({body_step.type}); loops can only contain "
+                        f"action/validate/branch/loop steps")
+                self._execute_body_step(
+                    project_id, run, d, body_step, sr_by_id,
+                    dispatch_fn, step_idx)
+
+            run.state[counter_var] = current + 1
+            iterations += 1
+            self.storage.save_workflow_run(project_id, run.to_dict())
+
+        sr.status = "completed"
+        sr.completed_at = _iso_now()
+        sr.output = {"iterations": iterations}
+        run.state[step.id] = {"iterations": iterations}
+        run.state[counter_var] = iterations
+
+    def _execute_body_step(self, project_id: str, run: WorkflowRun,
+                           d: WorkflowDefinition, step: StepDef,
+                           sr_by_id: dict[str, StepRun],
+                           dispatch_fn: Callable[[str, WorkflowRun], str],
+                           step_idx: dict[str, int]) -> None:
+        """Run a single step inside a loop iteration.
+
+        Re-runs the step each iteration (StepRun is reset to running,
+        then completed/failed). Branch targets inside a loop body are
+        recorded in state but not jumped — loops execute their body
+        list linearly. Nested loops are supported via _run_loop_step.
+        """
+        sr = sr_by_id.get(step.id)
+        if sr is None:
+            sr = StepRun(step_id=step.id)
+            sr_by_id[step.id] = sr
+            run.step_runs.append(sr)
+
+        # Reset for re-execution.
+        sr.status = "running"
+        sr.started_at = _iso_now()
+        sr.completed_at = None
+        sr.error = None
+
+        # Per-iteration soft condition.
+        if step.condition is not None:
+            try:
+                if not self._eval_expr(step.condition, dict(run.state)):
+                    sr.status = "skipped"
+                    sr.completed_at = _iso_now()
+                    return
+            except Exception:
+                sr.status = "skipped"
+                sr.completed_at = _iso_now()
+                return
+
+        try:
+            if step.type == "branch":
+                target = self._eval_branch(step, run.state)
+                decision = target or "default"
+                sr.status = "completed"
+                sr.completed_at = _iso_now()
+                sr.output = {"branch_taken": decision}
+                run.state[step.id] = {"branch_taken": decision}
+                return
+
+            if step.type == "validate":
+                valid, detail = self._run_validate(step, run.state)
+                sr.output = {"valid": valid, "detail": detail}
+                if not valid:
+                    raise RuntimeError(
+                        f"validate failed: {detail or 'check returned falsy'}")
+                sr.status = "completed"
+                sr.completed_at = _iso_now()
+                run.state[step.id] = {"valid": True}
+                return
+
+            if step.type == "loop":
+                self._run_loop_step(project_id, run, d, step, sr,
+                                    dispatch_fn, step_idx, sr_by_id)
+                return
+
+            # action step
+            scope = {**run.state, "step_id": step.id}
+            prompt = self._substitute(step.prompt, scope)
+            result = dispatch_fn(prompt, run)
+            sr.output = result
+            sr.status = "completed"
+            sr.completed_at = _iso_now()
+            run.state[step.id] = result
+        except Exception as e:
+            sr.error = f"{type(e).__name__}: {e}"
+            sr.status = "failed"
+            sr.completed_at = _iso_now()
+            raise
+
+    def _eval_expr(self, expr: str, scope: dict) -> object:
+        """Evaluate a Python expression against scope with safe builtins.
+
+        Reuses the ``validate`` step's safe-builtins allowlist so branch
+        / loop conditions can't ``__import__`` or ``open`` the disk.
+        """
+        return eval(expr, {"__builtins__": self._VALIDATE_SAFE_BUILTINS},
+                    dict(scope))
 
     # ── Gate resolution (W2) ─────────────────────────────────────────────
     # Parking steps — checkpoint, webhook_wait, email_wait — flip the run
@@ -663,7 +936,7 @@ class WorkflowService:
         # Imported lazily so workflow_v2 doesn't drag the email module
         # (and its smtplib / imaplib imports) at module load time —
         # only needed when an email_wait step is actually resolved.
-        from .email import matches_filters, InboundEmail
+        from ..email import matches_filters, InboundEmail
 
         run = self.get_run(project_id, run_id)
         if run is None:

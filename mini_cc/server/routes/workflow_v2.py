@@ -18,7 +18,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Path
 from pydantic import BaseModel, Field
 
-from ...workflow_v2 import WorkflowService
+from ...workflow.workflow_v2 import WorkflowService
 from ..deps import (check_rate_limit_scope, get_pm, get_sm,
                     require_scope, validate_id)
 from ..errors import BadRequest, NotFound, Unauthorized
