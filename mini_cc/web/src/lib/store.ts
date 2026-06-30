@@ -404,7 +404,7 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
       // hand it straight through (the backend's persist_card_event
       // already stripped the SSE-only `type` field).
       if (b.name === "__card__") {
-        const card = (b.input ?? {}) as CardEvent;
+        const card = (b.input ?? {}) as unknown as CardEvent;
         cur.cards = [...(cur.cards ?? []), card];
         continue;
       }
