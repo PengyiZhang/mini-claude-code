@@ -62,9 +62,16 @@ export default function Workspace() {
   const failAssistant = useChat((s) => s.failAssistant);
   const setStreaming = useChat((s) => s.setStreaming);
   const hydrate = useChat((s) => s.hydrate);
+  const setCommandRunner = useChat((s) => s.setCommandRunner);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Stable ref to the latest runServerCommand closure so the
+  // store-registered command runner (used by CardShell action buttons)
+  // can dispatch without prop-drilling. Updated every render.
+  const runServerCommandRef = useRef<(name: string, args: string) => void>(
+    () => {},
+  );
 
   // ── Slash menu state ─────────────────────────────────────────────
   // Menu shows whenever input looks like "/something" and the user is
@@ -447,6 +454,23 @@ export default function Workspace() {
     );
     abortRef.current = null;
   }
+  runServerCommandRef.current = runServerCommand;
+
+  // Register a stable command runner with the chat store so any deep
+  // component (CardShell action buttons, future inline forms, …) can
+  // trigger a slash command without prop-drilling. The runner parses
+  // "/name args" exactly like a manually-typed command and forwards to
+  // the latest runServerCommand closure via a ref.
+  useEffect(() => {
+    setCommandRunner((cmd) => {
+      const stripped = cmd.replace(/^\//, "");
+      const sep = stripped.search(/\s/);
+      const name = sep === -1 ? stripped : stripped.slice(0, sep);
+      const args = sep === -1 ? "" : stripped.slice(sep + 1);
+      runServerCommandRef.current(name, args);
+    });
+    return () => setCommandRunner(null);
+  }, [setCommandRunner]);
 
   // Dispatch a slash command picked from the menu. Server-scoped →
   // POST to /commands/{name}. Client-scoped commands are not yet

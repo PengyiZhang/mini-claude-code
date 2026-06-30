@@ -103,6 +103,13 @@ interface ChatState {
   // key: `${pid}::${sid}`
   messages: Record<string, ChatMessage[]>;
   streaming: Record<string, boolean>;
+  // Command-runner channel. Workspace registers a handler on mount;
+  // CardShell action buttons and any deep component can call runCommand
+  // without prop-drilling the slash dispatcher. No-op until the runner
+  // is registered (Workspace hasn't mounted yet, e.g. in unit tests).
+  _commandRunner: ((cmd: string) => void) | null;
+  setCommandRunner: (fn: ((cmd: string) => void) | null) => void;
+  runCommand: (command: string) => void;
   appendUser: (key: string, text: string) => void;
   startAssistant: (key: string) => void;
   appendText: (key: string, text: string) => void;
@@ -125,9 +132,15 @@ function lastAssistant(list: ChatMessage[]): ChatMessage | undefined {
   return undefined;
 }
 
-export const useChat = create<ChatState>((set) => ({
+export const useChat = create<ChatState>((set, get) => ({
   messages: {},
   streaming: {},
+  _commandRunner: null,
+  setCommandRunner: (fn) => set({ _commandRunner: fn }),
+  runCommand: (command) => {
+    const fn = get()._commandRunner;
+    if (fn) fn(command);
+  },
   appendUser: (key, text) =>
     set((s) => ({
       messages: { ...s.messages, [key]: [...(s.messages[key] ?? []), { role: "user", text }] },

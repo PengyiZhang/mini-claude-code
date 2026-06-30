@@ -7,5 +7,8 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test-setup.ts"],
+    // Playwright owns the e2e/ directory; vitest shouldn't try to load
+    // test.describe() blocks from there.
+    exclude: ["**/node_modules/**", "**/dist/**", "e2e/**"],
   },
 });

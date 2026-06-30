@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { CardAction, CardStatus } from "../../lib/types";
 import { CardIcon } from "./icons";
+import { useChat } from "../../lib/store";
 
 interface CardShellProps {
   title?: string | null;
@@ -35,6 +36,7 @@ export function CardShell({
 }: CardShellProps) {
   const [collapsed, setCollapsed] = useState(false);
   const badge = STATUS_BADGE[status];
+  const runCommand = useChat((s) => s.runCommand);
 
   return (
     <section
@@ -74,9 +76,15 @@ export function CardShell({
               {actions.map((a, i) => (
                 <button
                   key={`${a.label}-${i}`}
-                  // onClick is wired in Task 1.5; for now the buttons
-                  // are presentational so the structural test can
-                  // assert they exist.
+                  type="button"
+                  // Stop propagation so clicking the button doesn't also
+                  // toggle collapse via the header's onClick (footer is
+                  // outside header, but defensive — future refactors may
+                  // merge them).
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    runCommand(a.command);
+                  }}
                   className={`text-xs px-2 py-1 rounded border ${toneClass(a.tone)}`}
                 >
                   {a.label}

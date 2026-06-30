@@ -1,8 +1,18 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { CardShell } from "./CardShell";
+import { useChat } from "../../lib/store";
 
 describe("CardShell", () => {
+  beforeEach(() => {
+    useChat.setState({
+      runCommand: (cmd: string) => {
+        (globalThis as unknown as { __lastCmd?: string }).__lastCmd = cmd;
+      },
+    });
+  });
+
   it("renders title and icon in the header as a named region", () => {
     render(
       <CardShell title="Teammates" icon="agents" status="ok">
@@ -40,5 +50,47 @@ describe("CardShell", () => {
       </CardShell>,
     );
     expect(container.textContent).toMatch(/warning/i);
+  });
+
+  it("renders action buttons in footer", () => {
+    render(
+      <CardShell
+        title="T"
+        icon={null}
+        status="ok"
+        actions={[
+          { label: "spawn", command: "/agents spawn", tone: "accent" },
+          { label: "refresh", command: "/agents", tone: "default" },
+        ]}
+      >
+        <div />
+      </CardShell>,
+    );
+    expect(
+      screen.getByRole("button", { name: /spawn/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /refresh/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("action button triggers runCommand with the action's command string", async () => {
+    const user = userEvent.setup();
+    render(
+      <CardShell
+        title="T"
+        icon={null}
+        status="ok"
+        actions={[
+          { label: "spawn", command: "/agents spawn", tone: "accent" },
+        ]}
+      >
+        <div />
+      </CardShell>,
+    );
+    await user.click(screen.getByRole("button", { name: /spawn/i }));
+    expect(
+      (globalThis as unknown as { __lastCmd?: string }).__lastCmd,
+    ).toBe("/agents spawn");
   });
 });
