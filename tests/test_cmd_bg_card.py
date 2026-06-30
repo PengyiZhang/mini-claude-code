@@ -114,3 +114,31 @@ def test_bg_no_scheduler_yields_text_marker():
     events = _run_bg(project)
     card = _extract_card(events)
     assert card is None
+
+
+def test_bg_running_tasks_set_refresh_command_for_live_updates():
+    """A roster with at least one running task carries refresh_command
+    so the frontend polls /bg every few seconds and replaces this card
+    in place — the user sees status transitions without re-typing."""
+    bg = SimpleNamespace(list_tasks=lambda: [_task("bg1", "running")],
+                          stop=lambda bid: "")
+    project = SimpleNamespace(background=bg)
+    events = _run_bg(project)
+    card = _extract_card(events)
+    assert card["refresh_command"] == "/bg"
+    assert card["refresh_interval_ms"] > 0
+
+
+def test_bg_all_stopped_no_refresh_command():
+    """A static roster (everything stopped/completed) shouldn't poll —
+    no live updates to deliver. Saves a request per mounted card."""
+    bg = SimpleNamespace(
+        list_tasks=lambda: [_task("bg1", "completed"),
+                            _task("bg2", "stopped")],
+        stop=lambda bid: "",
+    )
+    project = SimpleNamespace(background=bg)
+    events = _run_bg(project)
+    card = _extract_card(events)
+    assert card["refresh_command"] is None
+    assert card["refresh_interval_ms"] is None

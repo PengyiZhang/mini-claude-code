@@ -100,3 +100,29 @@ def test_to_dict_is_idempotent_within_emitted_at_tolerance():
     second = to_dict(ev)["emitted_at"]
     assert first == second
     assert first > 0
+
+
+def test_card_event_refresh_fields_default_to_none():
+    """Cards are static unless refresh_command is set. Default must be
+    None so old persisted cards (and static cards emitted after this
+    field lands) don't trigger spurious polling on the frontend."""
+    ev = CardEvent(id="x", variant="list", payload={"items": []})
+    d = to_dict(ev)
+    assert d.get("refresh_command") is None
+    assert d.get("refresh_interval_ms") is None
+
+
+def test_card_event_carries_refresh_command_for_live_cards():
+    """A card with refresh_command set tells the frontend to poll that
+    command every refresh_interval_ms and replace this card by id with
+    the new payload. Used by /bg and /agents for always-fresh rosters."""
+    ev = CardEvent(
+        id="bg",
+        variant="list",
+        payload={"items": []},
+        refresh_command="/bg",
+        refresh_interval_ms=3000,
+    )
+    d = to_dict(ev)
+    assert d["refresh_command"] == "/bg"
+    assert d["refresh_interval_ms"] == 3000

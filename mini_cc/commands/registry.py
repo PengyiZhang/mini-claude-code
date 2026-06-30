@@ -1533,6 +1533,12 @@ def _cmd_bg(ctx: CommandContext) -> Iterator[dict]:
             items=items,
             summary=" · ".join(summary_bits),
         ).__dict__,
+        # Live-refresh every 3s while any task is still running. The
+        # frontend CardView polls /bg and replaces this card by id, so
+        # the user sees status transitions without re-typing the
+        # command. Stopped-only rosters are static.
+        refresh_command="/bg" if counts.get("running") else None,
+        refresh_interval_ms=3000 if counts.get("running") else None,
     )
     yield to_dict(card)
     yield {"type": "done"}

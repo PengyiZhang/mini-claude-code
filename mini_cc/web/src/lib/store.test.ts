@@ -55,6 +55,54 @@ describe("useChat.addCard", () => {
   });
 });
 
+describe("useChat.replaceCardEverywhere", () => {
+  beforeEach(() => {
+    useChat.getState().clear("p/s");
+  });
+
+  it("replaces a card by id across all messages, not just the last", () => {
+    // Live-refresh invariant: a /bg refresh tick must swap the stale
+    // card in-place, even if newer user/assistant turns have landed
+    // between the original render and the poll. addCard can't do this
+    // (it only looks at the last assistant bubble), so we route
+    // refreshes through replaceCardEverywhere instead.
+    const key = "p/s";
+    useChat.getState().startAssistant(key);
+    useChat.getState().addCard(key, card({ id: "bg", revision: 1 }));
+    // Simulate a newer turn arriving after the card was rendered.
+    useChat.getState().appendUser(key, "/model");
+    useChat.getState().startAssistant(key);
+    useChat.getState().appendText(key, "ok");
+    useChat.getState().finishAssistant(key);
+
+    useChat.getState().replaceCardEverywhere(
+      key,
+      "bg",
+      card({ id: "bg", revision: 2, payload: { items: [{ id: "x", title: "y", badges: [], menu: [] }] } }),
+    );
+
+    const msgs = useChat.getState().messages[key];
+    const firstBubble = msgs[0];
+    expect(firstBubble.cards?.[0].revision).toBe(2);
+    expect(firstBubble.cards?.[0].payload).toEqual({
+      items: [{ id: "x", title: "y", badges: [], menu: [] }],
+    });
+  });
+
+  it("is a no-op when the card id is not present", () => {
+    const key = "p/s";
+    useChat.getState().startAssistant(key);
+    useChat.getState().addCard(key, card({ id: "bg", revision: 1 }));
+    const before = useChat.getState().messages[key];
+    useChat.getState().replaceCardEverywhere(
+      key,
+      "nonexistent",
+      card({ id: "nonexistent", revision: 2 }),
+    );
+    expect(useChat.getState().messages[key]).toBe(before);
+  });
+});
+
 describe("rawToChatMessages — __card__ hydration", () => {
   it("hydrates __card__ tool_use blocks into msg.cards", () => {
     const raw = [

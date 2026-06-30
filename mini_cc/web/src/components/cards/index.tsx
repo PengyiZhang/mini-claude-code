@@ -2,6 +2,7 @@ import type { CardEvent } from "../../lib/types";
 import { CardShell } from "./CardShell";
 import { CardList } from "./CardList";
 import { CardKeyValue } from "./CardKeyValue";
+import { useLiveRefresh } from "./useLiveRefresh";
 
 interface CardViewProps {
   card: CardEvent;
@@ -16,6 +17,9 @@ interface CardViewProps {
 // expandable row can find its inline child card (keyed
 // `${parentCardId}::${rowId}`) in the store.
 export function CardView({ card, parentCardId, chatKey }: CardViewProps) {
+  // Polls /bg, /agents etc. on a timer while this card is mounted and
+  // refresh_command is set. No-op on static cards.
+  useLiveRefresh(card, chatKey);
   return (
     <CardShell
       title={card.title}

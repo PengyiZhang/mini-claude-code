@@ -115,6 +115,12 @@ interface ChatState {
   appendText: (key: string, text: string) => void;
   addActivity: (key: string, act: ChatActivity) => void;
   addCard: (key: string, card: CardEvent) => void;
+  // Live-refresh path: scan EVERY message for a card with matching id
+  // and replace it in-place. Used by /bg and /agents polling so a
+  // refresh tick doesn't create a new assistant bubble — the new card
+  // lands where the old one was, even if other messages have arrived
+  // since the original render.
+  replaceCardEverywhere: (key: string, cardId: string, card: CardEvent) => void;
   setActivityResult: (key: string, toolUseId: string, content: string) => void;
   toggleActivity: (key: string, toolUseId: string) => void;
   addNotice: (key: string, text: string) => void;
@@ -185,6 +191,19 @@ export const useChat = create<ChatState>((set, get) => ({
       else cards.push(card);
       last.cards = cards;
       return { messages: { ...s.messages, [key]: list } };
+    }),
+  replaceCardEverywhere: (key, cardId, card) =>
+    set((s) => {
+      const list = [...(s.messages[key] ?? [])];
+      let found = false;
+      for (const m of list) {
+        if (m.cards && m.cards.some((c) => c.id === cardId)) {
+          m.cards = m.cards.map((c) => (c.id === cardId ? card : c));
+          found = true;
+          break;
+        }
+      }
+      return found ? { messages: { ...s.messages, [key]: list } } : s;
     }),
   setActivityResult: (key, toolUseId, content) =>
     set((s) => {

@@ -141,6 +141,16 @@ class CardEvent:
     # Set lazily by to_dict on first call. Public so tests can override.
     emitted_at: float = 0.0
     revision: int = 1
+    # Live-refresh hint for the frontend. When refresh_command is set,
+    # the card renderer polls that slash command every
+    # refresh_interval_ms and replaces this card by id with the new
+    # payload (without creating a new assistant bubble). Used by
+    # /bg and /agents so the roster stays fresh while mounted. None on
+    # static cards (the common case) — keeps the wire payload small
+    # and avoids spurious polling for cards rehydrated from old
+    # transcripts that pre-date this field.
+    refresh_command: str | None = None
+    refresh_interval_ms: int | None = None
 
 
 def to_dict(ev: CardEvent) -> dict[str, Any]:

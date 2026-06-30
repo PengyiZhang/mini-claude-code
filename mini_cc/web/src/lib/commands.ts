@@ -1,5 +1,5 @@
 import { ApiError, parseErr, tenantPath, authHeaders } from "./api";
-import type { SendEvent, TenantProfile } from "./types";
+import type { CardEvent, SendEvent, TenantProfile } from "./types";
 
 export interface CommandDef {
   name: string;
@@ -137,6 +137,44 @@ export async function runCommandOnce(
         },
         onError: (e) => reject(e),
         onDone: () => resolve(acc),
+      },
+      args,
+    );
+  });
+}
+
+/**
+ * Live-refresh helper: re-run a slash command silently and resolve with
+ * the first card event it emits (or null if the handler emits no card).
+ * Used by the CardView polling hook so /bg + /agents rosters refresh
+ * in-place via replaceCardEverywhere instead of stacking new bubbles.
+ *
+ * The slash command runs without writing user-input markers and the
+ * result is consumed programmatically; no assistant bubble is created
+ * on the client side — the caller routes the resulting card straight
+ * into the store via replaceCardEverywhere.
+ */
+export async function runCommandForCard(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+  name: string,
+  args?: string,
+): Promise<CardEvent | null> {
+  return new Promise((resolve, reject) => {
+    let card: CardEvent | null = null;
+    void streamRunCommand(
+      profile,
+      pid,
+      sid,
+      name,
+      {
+        onEvent: (ev) => {
+          if (ev.type === "card" && !card) card = ev as CardEvent;
+          if (ev.type === "error") reject(new Error((ev as { message: string }).message));
+        },
+        onError: (e) => reject(e),
+        onDone: () => resolve(card),
       },
       args,
     );

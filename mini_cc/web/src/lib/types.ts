@@ -265,4 +265,10 @@ export interface CardEvent {
   actions: CardAction[];
   emitted_at: number;
   revision: number;
+  // Live-refresh hint: when refresh_command is set, the CardView polls
+  // that slash command every refresh_interval_ms and replaces this card
+  // by id in-place (no new assistant bubble). Both fields absent on
+  // static cards (the common case).
+  refresh_command?: string | null;
+  refresh_interval_ms?: number | null;
 }
