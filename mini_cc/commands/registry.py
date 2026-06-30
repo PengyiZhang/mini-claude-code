@@ -145,7 +145,14 @@ def _cmd_clear(ctx: CommandContext) -> Iterator[dict]:
 
 
 def _cmd_sessions(ctx: CommandContext) -> Iterator[dict]:
-    """List sessions in this project, marking the active one."""
+    """List sessions in this project as a list card.
+
+    Each row carries a 'warm'/'cold' badge (in-memory vs disk-only) and
+    an 'active' badge for the current session. Clicking a row fires
+    ``/resume <sid>`` through the standard slash-command path so the
+    user can pick a session and resume it without leaving the chat
+    pane.
+    """
     sm = ctx.session_manager
     if sm is None or ctx.project is None:
         yield {"type": "error", "message": "project context unavailable"}
@@ -155,12 +162,38 @@ def _cmd_sessions(ctx: CommandContext) -> Iterator[dict]:
         yield {"type": "text", "text": "_no sessions in this project_"}
         yield {"type": "done"}
         return
-    lines = [f"**Sessions in `{ctx.project_id}`:**", ""]
+    items: list[CardListItem] = []
     for m in metas:
-        marker = " ← active" if m.session_id == ctx.session_id else ""
-        warm = "🟢" if m.in_memory else "⚪"
-        lines.append(f"- {warm} `{m.session_id}`{marker}")
-    yield {"type": "text", "text": "\n".join(lines)}
+        badges: list[CardBadge] = []
+        if m.in_memory:
+            badges.append(CardBadge(text="warm", tone="accent"))
+        else:
+            badges.append(CardBadge(text="cold", tone="default"))
+        if m.session_id == ctx.session_id:
+            badges.append(CardBadge(text="active", tone="ok"))
+        subtitle = f"{m.message_count} msgs · {m.last_active_at}"
+        items.append(CardListItem(
+            id=m.session_id,
+            title=m.session_id,
+            subtitle=subtitle,
+            icon="sessions",
+            badges=badges,
+            expandable_command=f"/resume {m.session_id}",
+            menu=[],
+        ))
+    card = CardEvent(
+        id="sessions",
+        variant="list",
+        title=f"Sessions · {ctx.project_id}",
+        icon="sessions",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=f"{len(items)} session{'s' if len(items) != 1 else ''}",
+            empty_hint=None,
+        ).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
@@ -924,26 +957,56 @@ def _cmd_loop(ctx: CommandContext) -> Iterator[dict]:
         yield {"type": "done"}
         return
     import time as _time
-    lines = [f"**Scheduled jobs in `{ctx.project_id}`:**", ""]
+    now = _time.monotonic()
+    items: list[CardListItem] = []
+    for j in cron_jobs:
+        preview = (j.prompt[:60] + "…") if len(j.prompt) > 60 else j.prompt
+        badges: list[CardBadge] = []
+        if j.recurring:
+            badges.append(CardBadge(text="recurring", tone="accent"))
+        else:
+            badges.append(CardBadge(text="one-shot", tone="default"))
+        if getattr(j, "durable", False):
+            badges.append(CardBadge(text="durable", tone="ok"))
+        items.append(CardListItem(
+            id=j.job_id,
+            title=j.job_id,
+            subtitle=f"`{j.cron}` · {preview!r}",
+            icon="loop",
+            badges=badges,
+            menu=[CardAction(label="cancel", command=f"/loop cancel {j.job_id}",
+                              tone="warn")],
+        ))
+    for w in sorted(wakeups, key=lambda x: x.fire_at):
+        remaining = max(0, int(w.fire_at - now))
+        reason_tag = f" · {w.reason}" if w.reason else ""
+        preview = (w.prompt[:60] + "…") if len(w.prompt) > 60 else w.prompt
+        items.append(CardListItem(
+            id=w.wakeup_id,
+            title=w.wakeup_id,
+            subtitle=f"in {remaining}s{reason_tag} · {preview!r}",
+            icon="loop",
+            badges=[CardBadge(text="wakeup", tone="default")],
+            menu=[CardAction(label="cancel", command=f"/loop cancel {w.wakeup_id}",
+                              tone="warn")],
+        ))
+    summary_bits = []
     if cron_jobs:
-        lines.append(f"**Cron jobs ({len(cron_jobs)}):**")
-        for j in cron_jobs:
-            kind = "🔁 recurring" if j.recurring else "⚡ one-shot"
-            durable = " · 💾 durable" if j.durable else ""
-            preview = (j.prompt[:60] + "…") if len(j.prompt) > 60 else j.prompt
-            lines.append(f"- {kind}`{j.job_id}` `{j.cron}`{durable}")
-            lines.append(f"  prompt: {preview!r}")
-        lines.append("")
+        summary_bits.append(f"{len(cron_jobs)} cron")
     if wakeups:
-        lines.append(f"**Pending wakeups ({len(wakeups)}):**")
-        now = _time.monotonic()
-        for w in sorted(wakeups, key=lambda x: x.fire_at):
-            remaining = max(0, int(w.fire_at - now))
-            reason_tag = f" — {w.reason}" if w.reason else ""
-            preview = (w.prompt[:60] + "…") if len(w.prompt) > 60 else w.prompt
-            lines.append(f"- ⏰ `{w.wakeup_id}` in {remaining}s{reason_tag}")
-            lines.append(f"  prompt: {preview!r}")
-    yield {"type": "text", "text": "\n".join(lines)}
+        summary_bits.append(f"{len(wakeups)} wakeup")
+    card = CardEvent(
+        id="loop",
+        variant="list",
+        title=f"Scheduled jobs · {ctx.project_id}",
+        icon="loop",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=" · ".join(summary_bits),
+        ).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
@@ -1246,22 +1309,39 @@ def _cmd_bg(ctx: CommandContext) -> Iterator[dict]:
                        "Use `bash run_in_background=true` to start one._"}
         yield {"type": "done"}
         return
-    lines = [f"**Background tasks in `{ctx.project_id}`:**", ""]
-    counts = {"running": 0, "completed": 0, "stopped": 0}
+    counts: dict[str, int] = {}
+    items: list[CardListItem] = []
     for t in tasks:
         status = t.get("status", "?")
         counts[status] = counts.get(status, 0) + 1
-        marker = {"running": "🟢", "completed": "✅",
-                  "stopped": "⛔"}.get(status, "❓")
-        cmd = (t.get("command") or "")[:60]
-        cmd_display = cmd + ("…" if len((t.get("command") or "")) > 60 else "")
-        lines.append(f"- {marker} `{t.get('bg_id')}` — {cmd_display}")
+        bg_id = t.get("bg_id", "?")
+        cmd = (t.get("command") or "")
+        cmd_display = (cmd[:60] + "…") if len(cmd) > 60 else cmd
+        tone = {"running": "ok", "completed": "default",
+                "stopped": "warn"}.get(status, "default")
+        badge = CardBadge(text=status, tone=tone)
+        items.append(CardListItem(
+            id=bg_id,
+            title=bg_id,
+            subtitle=cmd_display or None,
+            icon="bg",
+            badges=[badge],
+            menu=[CardAction(label="stop", command=f"/bg stop {bg_id}",
+                              tone="warn")] if status == "running" else [],
+        ))
     summary_bits = [f"{v} {k}" for k, v in counts.items() if v]
-    lines.append("")
-    lines.append(f"_{' · '.join(summary_bits)}_")
-    lines.append("")
-    lines.append("Subcommands: `/bg stop <bg_id>`")
-    yield {"type": "text", "text": "\n".join(lines)}
+    card = CardEvent(
+        id="bg",
+        variant="list",
+        title=f"Background tasks · {ctx.project_id}",
+        icon="bg",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=" · ".join(summary_bits),
+        ).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
