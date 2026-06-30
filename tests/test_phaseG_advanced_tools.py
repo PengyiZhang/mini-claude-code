@@ -310,29 +310,44 @@ def test_loop_command_lists_jobs():
 
 
 def test_config_command_redacts_api_key():
-    """Config command must redact API keys."""
+    """Config command must redact API keys.
+
+    Since the rich-card migration /config emits a key_value card event
+    instead of a text blob. The redaction invariant is the same: the
+    full secret must never appear in the wire payload (the value field
+    is what the frontend renders, masked or not).
+    """
     set_default_config(AnthropicConfig(
         api_key="sk-abc-1234567890",
         tavily_api_key="tvly-abcdefghij",
         primary_model="claude-sonnet-4-6",
     ))
     events = _run_cmd("config")
-    text = next(e["text"] for e in events if e["type"] == "text")
-    # Must NOT contain the full key.
-    assert "sk-abc-1234567890" not in text
-    assert "tvly-abcdefghij" not in text
-    # Should contain the prefix + •••• pattern.
-    assert "••••" in text
-    # Should show the model.
-    assert "claude-sonnet-4-6" in text
+    card = next(e for e in events if e.get("type") == "card")
+    pairs = {p["k"]: p for p in card["payload"]["pairs"]}
+    # Full key must never appear anywhere in the card payload.
+    blob = repr(card)
+    assert "sk-abc-1234567890" not in blob
+    assert "tvly-abcdefghij" not in blob
+    # API keys are flagged sensitive so the frontend masks them by
+    # default; the value is the pre-redacted short form.
+    assert pairs["anthropic_api_key"]["sensitive"] is True
+    # _redact shows first 4 + •••• + last 4
+    assert pairs["anthropic_api_key"]["v"].endswith("7890")
+    assert "••••" in pairs["anthropic_api_key"]["v"]
+    # Model is rendered as a non-sensitive mono value.
+    assert pairs["primary_model"]["v"] == "claude-sonnet-4-6"
+    assert pairs["primary_model"]["sensitive"] is False
 
 
 def test_config_command_shows_unset():
+    """When nothing is configured, the card still renders and uses the
+    em-dash placeholder for unset values."""
     set_default_config(AnthropicConfig())
     events = _run_cmd("config")
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "—" in text  # unset keys show as em dash
-    assert "primary_model" in text
+    card = next(e for e in events if e.get("type") == "card")
+    pair_keys = {p["k"] for p in card["payload"]["pairs"]}
+    assert "primary_model" in pair_keys
 
 
 def test_output_style_command_requires_warm_session():

@@ -21,6 +21,13 @@ from typing import Any, Callable, Iterator, Literal, Optional
 
 from ..config import default_config
 from ..core.llm import looks_like_litellm
+from .cards import (
+    CardAction,
+    CardEvent,
+    CardKeyValuePair,
+    CardKeyValuePayload,
+    to_dict,
+)
 
 
 @dataclass
@@ -856,29 +863,43 @@ def _cmd_loop(ctx: CommandContext) -> Iterator[dict]:
 
 
 def _cmd_config(ctx: CommandContext) -> Iterator[dict]:
-    """Show current effective configuration.
+    """Show current effective configuration as a key_value card.
 
-    Redacts API keys (shows only the last 4 chars + prefix). Useful
-    for debugging "why isn't the model connecting" without leaking
-    secrets into chat history.
+    API keys are flagged ``sensitive`` so the frontend masks them by
+    default; a click reveals the value. Useful for debugging "why isn't
+    the model connecting" without leaking secrets into chat history.
     """
     cfg = default_config()
-    lines = ["**Effective configuration:**", ""]
-    lines.append(f"- primary_model: `{cfg.primary_model}`")
-    lines.append(f"- fallback_model: `{cfg.fallback_model or '—'}`")
-    lines.append(f"- anthropic_api_key: `{_redact(cfg.api_key)}`")
-    lines.append(f"- anthropic_base_url: `{cfg.base_url or '— (default SDK)'}`")
-    lines.append(f"- litellm_api_key: `{_redact(cfg.litellm_api_key)}`")
-    lines.append(f"- litellm_base_url: `{cfg.litellm_base_url or '—'}`")
-    lines.append(f"- tavily_api_key: `{_redact(cfg.tavily_api_key)}`")
-    # Provider routing hint.
     backend = "litellm" if looks_like_litellm(cfg.primary_model) else "anthropic"
-    lines.append(f"- active backend: `{backend}`")
-    # Output style if set on the session.
     sess_loop = _loop_of(ctx)
-    style = getattr(getattr(sess_loop, "state", None), "output_style", None)
-    lines.append(f"- output_style: `{style or 'default'}`")
-    yield {"type": "text", "text": "\n".join(lines)}
+    style = getattr(getattr(sess_loop, "state", None), "output_style", None) or "default"
+
+    def kv(k: str, v: str, *, mono: bool = False, sensitive: bool = False) -> CardKeyValuePair:
+        return CardKeyValuePair(k=k, v=v, mono=mono, sensitive=sensitive)
+
+    pairs: list[CardKeyValuePair] = [
+        kv("primary_model", cfg.primary_model, mono=True),
+        kv("fallback_model", cfg.fallback_model or "—", mono=True),
+        kv("active backend", backend, mono=True),
+        kv("anthropic_base_url", cfg.base_url or "— (default SDK)", mono=True),
+        kv("litellm_base_url", cfg.litellm_base_url or "—", mono=True),
+        kv("anthropic_api_key", _redact(cfg.api_key), mono=True, sensitive=True),
+        kv("litellm_api_key", _redact(cfg.litellm_api_key), mono=True, sensitive=True),
+        kv("tavily_api_key", _redact(cfg.tavily_api_key), mono=True, sensitive=True),
+        kv("output_style", style, mono=True),
+    ]
+    card = CardEvent(
+        id="config",
+        variant="key_value",
+        title="Configuration",
+        icon="config",
+        status="ok",
+        payload=CardKeyValuePayload(pairs=pairs).__dict__,
+        actions=[
+            CardAction(label="↻ reload", command="/config", tone="default"),
+        ],
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
