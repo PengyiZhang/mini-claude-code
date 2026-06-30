@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { useChat } from "./store";
+import { useChat, rawToChatMessages } from "./store";
 import type { CardEvent } from "./types";
 
 function card(overrides: Partial<CardEvent> = {}): CardEvent {
@@ -52,5 +52,86 @@ describe("useChat.addCard", () => {
     const msgs = useChat.getState().messages[key];
     // No bubble was opened → nothing to attach to.
     expect(msgs ?? []).toHaveLength(0);
+  });
+});
+
+describe("rawToChatMessages — __card__ hydration", () => {
+  it("hydrates __card__ tool_use blocks into msg.cards", () => {
+    const raw = [
+      { role: "user", content: "/config" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "__card__",
+            input: {
+              id: "config",
+              variant: "key_value",
+              status: "ok",
+              payload: { pairs: [] },
+              actions: [],
+              emitted_at: 0,
+              revision: 1,
+            },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }],
+      },
+    ];
+    const out = rawToChatMessages(raw as never);
+    // The card should land on the assistant bubble, not as an activity.
+    const asst = out.find((m) => m.role === "assistant");
+    expect(asst?.cards?.[0].id).toBe("config");
+    expect(asst?.cards?.[0].variant).toBe("key_value");
+    // The synthetic tool_result must NOT leak as an activity entry.
+    expect(asst?.activities ?? []).toHaveLength(0);
+  });
+
+  it("mixes cards and real tool_use blocks in one bubble", () => {
+    const raw = [
+      { role: "user", content: "/agents" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "card-1",
+            name: "__card__",
+            input: {
+              id: "roster",
+              variant: "list",
+              status: "ok",
+              payload: { items: [] },
+              actions: [],
+              emitted_at: 0,
+              revision: 1,
+            },
+          },
+          {
+            type: "tool_use",
+            id: "real-1",
+            name: "read_file",
+            input: { path: "/tmp/x" },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "card-1", content: "ok" },
+          { type: "tool_result", tool_use_id: "real-1", content: "data" },
+        ],
+      },
+    ];
+    const out = rawToChatMessages(raw as never);
+    const asst = out.find((m) => m.role === "assistant");
+    expect(asst?.cards?.[0].id).toBe("roster");
+    expect(asst?.activities?.[0].name).toBe("read_file");
+    expect(asst?.activities?.[0].result).toBe("data");
   });
 });

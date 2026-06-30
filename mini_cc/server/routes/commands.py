@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ...commands import CommandContext, default_registry
+from ...commands.cards import persist_card_event
 from ..deps import check_rate_limit_scope, get_pm, get_sm, require_scope, validate_id
 from ..errors import NotFound
 from ..sse import sse_stream
@@ -100,7 +101,26 @@ def run_command(name: str,
                 session_manager=sm,
                 storage=project.storage,
             )
-            yield from cmd.handler(ctx)
+            card_buffer: list[dict] = []
+            for ev in cmd.handler(ctx):
+                # Side-channel persist: each card event is appended to
+                # the transcript as a synthetic __card__ tool_use so a
+                # page reload rehydrates the same cards. Buffered and
+                # flushed once at the end (instead of save_messages per
+                # card) so a multi-card command stays O(1) on disk.
+                if isinstance(ev, dict) and ev.get("type") == "card":
+                    card_buffer.append(ev)
+                yield ev
+            if card_buffer:
+                for c in card_buffer:
+                    persist_card_event(sess.loop.messages, c)
+                try:
+                    project.storage.save_messages(pid, sid, sess.loop.messages)
+                except Exception:
+                    # Persistence is best-effort: a transient write
+                    # failure shouldn't break the SSE stream the user
+                    # is already looking at.
+                    pass
         except Exception as e:
             yield {"type": "error",
                    "message": f"{type(e).__name__}: {e}"}

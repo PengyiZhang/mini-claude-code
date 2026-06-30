@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -154,3 +155,41 @@ def to_dict(ev: CardEvent) -> dict[str, Any]:
     d = dataclasses.asdict(ev)
     d["type"] = "card"
     return d
+
+
+def persist_card_event(messages: list[dict], card: dict) -> None:
+    """Append a card event to the Anthropic transcript as a synthetic
+    ``tool_use{name="__card__"}`` block paired with a ``tool_result``.
+
+    Why this shape: cards need to survive session compaction, but they
+    aren't real tool calls. Reusing the tool_use/tool_result envelope
+    means the existing persistence + hydration path picks them up for
+    free (the transcript treats them like any other tool call), and the
+    frontend's ``rawToChatMessages`` routes them to ``msg.cards`` instead
+    of ``msg.activities`` by matching on ``name == "__card__"``.
+
+    The wire-level ``type:"card"`` field is stripped before persistence
+    (it's SSE metadata, not part of the card shape).
+
+    Mutates ``messages`` in place; callers are responsible for calling
+    ``save_messages`` afterwards.
+    """
+    tid = f"card_{uuid.uuid4().hex[:8]}"
+    payload = {k: v for k, v in card.items() if k != "type"}
+    messages.append({
+        "role": "assistant",
+        "content": [{
+            "type": "tool_use",
+            "id": tid,
+            "name": "__card__",
+            "input": payload,
+        }],
+    })
+    messages.append({
+        "role": "user",
+        "content": [{
+            "type": "tool_result",
+            "tool_use_id": tid,
+            "content": "ok",
+        }],
+    })
