@@ -326,6 +326,7 @@ def test_workflow_command_no_active():
 
 
 def test_workflow_command_shows_active():
+    """Migrated in Plan B.9 — /workflow now emits a list card."""
     wf = workflow_from_dict({
         "name": "demo",
         "description": "A demo workflow",
@@ -340,12 +341,17 @@ def test_workflow_command_shows_active():
     class _P:
         active_workflow = wf
     events = _run_cmd("workflow", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "demo" in text
-    assert "A demo workflow" in text
-    assert "s1" in text and "s2" in text
-    assert "✅" in text  # s1 completed marker
-    assert "if `s1`" in text  # condition annotation
+    card = next(e for e in events if e.get("type") == "card")
+    title = card.get("title") or ""
+    blob = repr(card["payload"])
+    assert "demo" in title.lower() or "demo" in blob.lower()
+    assert "s1" in blob and "s2" in blob
+    # s1 is done → ok-tone badge; s2 has condition "s1" in meta
+    items = {it["title"]: it for it in card["payload"]["items"]}
+    s1_badges = [b["text"].lower() for b in items["s1"]["badges"]]
+    assert any("done" in t or "complete" in t for t in s1_badges)
+    s2_meta = items["s2"].get("meta") or ""
+    assert "s1" in s2_meta
 
 
 def test_workflow_command_clear():

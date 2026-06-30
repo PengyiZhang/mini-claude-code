@@ -1311,33 +1311,68 @@ def _cmd_workflow(ctx: CommandContext) -> Iterator[dict]:
         yield {"type": "done"}
         return
 
-    # Render steps + state + results.
-    from ..workflow import Workflow  # local to avoid import cycles
-    lines = [f"**Workflow:** `{wf.name}` (`{wf.id}`)", ""]
-    if wf.description:
-        lines.append(f"_{wf.description}_")
-        lines.append("")
-    lines.append(f"- status: **{wf.status}**")
-    lines.append(f"- steps: {len(wf.steps)} · completed: {len(wf.results)}")
-    if wf.state:
-        state_keys = ", ".join(f"`{k}`" for k in sorted(wf.state.keys()))
-        lines.append(f"- state: {state_keys}")
-    if wf.steps:
-        lines.append("")
-        lines.append("**Steps:**")
-        for s in wf.steps:
-            done = s.id in wf.results
-            tag = "✅" if done else "◻️"
-            cond = f" _if `{s.condition}`_" if s.condition else ""
-            par = (f" _parallel with `{s.parallel_with}`)_"
-                   if s.parallel_with else "")
-            preview = s.prompt.strip().splitlines()[0][:60] if s.prompt else ""
-            lines.append(f"- {tag} `{s.id}`{cond}{par}")
-            if preview:
-                lines.append(f"    _{preview}_")
-    lines.append("")
-    lines.append("Subcommands: `/workflow save|load <id>|list|delete <id>|clear`")
-    yield {"type": "text", "text": "\n".join(lines)}
+    # Render as a list card: one row per step, status badge tone-coded,
+    # with conditional/parallel info as meta. The workflow-level status
+    # and progress appear in the summary line.
+    def _status_tone(status: str) -> str:
+        s = (status or "").lower()
+        if s in ("completed", "complete", "done"):
+            return "ok"
+        if s in ("failed", "aborted", "error"):
+            return "err"
+        if s in ("paused", "blocked", "pending"):
+            return "warn"
+        return "accent"  # running
+
+    items: list[CardListItem] = []
+    for s in wf.steps:
+        done = s.id in wf.results
+        is_current = getattr(wf, "current_step", None) == s.id
+        badges: list[CardBadge] = []
+        if done:
+            badges.append(CardBadge(text="done", tone="ok"))
+        elif is_current:
+            badges.append(CardBadge(text="current", tone="accent"))
+        else:
+            badges.append(CardBadge(text="pending", tone="default"))
+        if s.parallel_with:
+            badges.append(CardBadge(text=f"‖ {s.parallel_with}", tone="default"))
+        preview = ""
+        if s.prompt:
+            preview = s.prompt.strip().splitlines()[0][:60]
+        meta_bits: list[str] = []
+        if s.condition:
+            meta_bits.append(f"if {s.condition}")
+        items.append(CardListItem(
+            id=s.id,
+            title=s.id,
+            subtitle=preview or None,
+            icon="workflow",
+            badges=badges,
+            meta=" · ".join(meta_bits) if meta_bits else None,
+            menu=[],
+        ))
+    total = len(wf.steps)
+    completed = len(wf.results)
+    summary = (f"{wf.status} · {completed}/{total} steps"
+               f"{' · current: ' + wf.current_step if getattr(wf, 'current_step', None) else ''}")
+    card = CardEvent(
+        id="workflow",
+        variant="list",
+        title=f"Workflow · {wf.name}",
+        icon="workflow",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=summary,
+            empty_hint=None,
+        ).__dict__,
+        actions=[
+            CardAction(label="💾 save", command="/workflow save", tone="default"),
+            CardAction(label="🧹 clear", command="/workflow clear", tone="default"),
+        ],
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
