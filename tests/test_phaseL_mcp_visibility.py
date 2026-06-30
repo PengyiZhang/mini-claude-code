@@ -78,12 +78,12 @@ def test_mcp_command_shows_failed_section():
     ctx = CommandContext(project_id="p", session_id="s", tenant_id="t",
                          project=project)
     events = list(_cmd_mcp(ctx))
-    text = next(e["text"] for e in events if e.get("type") == "text")
-    # Must NOT say "no MCP servers registered".
-    assert "no MCP servers registered" not in text
-    # Must name the failed server + its reason.
-    assert "tavily-remote" in text
-    assert "401" in text
+    # Migrated in Plan B.7 — /mcp emits a list card. The failed server
+    # must appear in the card payload with its reason.
+    card = next(e for e in events if e.get("type") == "card")
+    blob = repr(card["payload"])
+    assert "tavily-remote" in blob
+    assert "401" in blob
 
 
 # ── End-to-end through _connect_configured_mcp_servers ────────────────

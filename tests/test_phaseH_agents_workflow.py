@@ -380,8 +380,8 @@ def test_bg_command_empty():
 
 
 def test_bg_command_lists_tasks():
+    """Migrated in Plan B.5 — /bg now emits a list card."""
     bg = BackgroundScheduler()
-    # Inject tasks without launching threads.
     from mini_cc.tools.background import _BGTask
     bg._tasks["bg_a"] = _BGTask("bg_a", "tu1", "bash",
                                 "echo first", status="running")
@@ -390,12 +390,11 @@ def test_bg_command_lists_tasks():
     class _P:
         background = bg
     events = _run_cmd("bg", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "bg_a" in text
-    assert "bg_b" in text
-    assert "echo first" in text
-    assert "🟢" in text  # running marker
-    assert "✅" in text  # completed marker
+    card = next(e for e in events if e.get("type") == "card")
+    blob = repr(card["payload"])
+    assert "bg_a" in blob
+    assert "bg_b" in blob
+    assert "echo first" in blob
 
 
 def test_bg_command_stop_dispatches():

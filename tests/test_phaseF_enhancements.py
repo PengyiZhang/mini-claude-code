@@ -342,7 +342,8 @@ def test_cost_on_real_project_without_metrics_does_not_crash(tmp_path):
 
 
 def test_cost_reports_token_totals():
-    """With a metrics registry populated, /cost shows the numbers."""
+    """With a metrics registry populated, /cost emits a key_value card
+    with the token totals. Migrated in Plan B.2."""
     from mini_cc.server.metrics import default_registry as _metrics_factory, record_tokens
     reg = _metrics_factory()
     record_tokens(reg, "t1", input=1000, output=500, cache_read=50, cache_create=10)
@@ -351,26 +352,28 @@ def test_cost_reports_token_totals():
         metrics = reg
         tenant_id = "t1"
     events = _run_cmd("cost", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "1,000" in text           # input
-    assert "500" in text             # output
-    assert "total" in text.lower()
+    card = next(e for e in events if e.get("type") == "card")
+    blob = repr(card["payload"])
+    assert "1,000" in blob           # input
+    assert "500" in blob             # output
+    assert "total" in blob.lower()
 
 
 def test_permissions_lists_blocked_patterns():
-    """Permissions command surfaces the sandbox policy."""
+    """Permissions command surfaces the sandbox policy as a key_value
+    card. Migrated in Plan B.1."""
     class _P:
         tenant_id = "t1"
         class sandbox:
             policy = SubprocessSandbox("p", Path(".")).policy
     events = _run_cmd("permissions", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "Blocked" in text or "blocked" in text.lower()
-    assert "sudo" in text              # in DEFAULT_BLOCKED_PATTERNS
-    assert "DENY_LIST" in text
+    card = next(e for e in events if e.get("type") == "card")
+    blob = repr(card["payload"]).lower()
+    assert "sudo" in blob              # in DEFAULT_BLOCKED_PATTERNS
+    assert "deny_list" in blob
     # Allowed git
-    assert "status" in text
-    assert "commit" in text
+    assert "status" in blob
+    assert "commit" in blob
 
 
 def test_permissions_handles_missing_sandbox():
@@ -421,13 +424,13 @@ def test_agents_lists_spawned_teammates():
 
 def test_logs_lists_files():
     """The logs directory exists (this repo writes to it); /logs must
-    list at least one file."""
+    emit either a list card with files or a text marker if empty.
+    Migrated in Plan B.7."""
     events = _run_cmd("logs")
-    text = next(e["text"] for e in events if e["type"] == "text")
-    # Either we found files ("Recent log files") or we report empty.
-    assert ("Recent log files" in text
-            or "no log files" in text
-            or "not found" in text.lower())
+    has_card = any(e.get("type") == "card" for e in events)
+    text = "".join(e.get("text", "") for e in events if e.get("type") == "text")
+    assert has_card or "no log files" in text.lower() \
+        or "not found" in text.lower()
 
 
 def test_logs_command_visible_in_help():

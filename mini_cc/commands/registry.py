@@ -233,17 +233,15 @@ def _cmd_model(ctx: CommandContext) -> Iterator[dict]:
 
 
 def _cmd_skills(ctx: CommandContext) -> Iterator[dict]:
-    """List skills available in this project.
+    """List skills available in this project as a list card.
 
-    Skills are discovered from <workspace>/skills/*/SKILL.md by the
-    project's SkillLoader. The model loads one on demand via the
-    ``load_skill`` tool; this command just shows the catalog.
+    Each row is one discovered skill; subtitle is the first line of its
+    SKILL.md description so users can scan the catalog at a glance.
     """
     project = ctx.project
     if project is None or project.skills_loader is None:
         yield {"type": "error", "message": "skills not configured for this project"}
         return
-    # Re-scan so newly added skills appear without a server restart.
     try:
         project.skills_loader.scan()
     except Exception:
@@ -255,32 +253,44 @@ def _cmd_skills(ctx: CommandContext) -> Iterator[dict]:
                        "`<workspace>/skills/<name>/SKILL.md` and run `/skills` again._"}
         yield {"type": "done"}
         return
-    lines = [f"**Skills in `{ctx.project_id}`:**", ""]
+    items: list[CardListItem] = []
     for s in reg.values():
         desc = (s.description or "").strip().splitlines()[0] if s.description else ""
-        lines.append(f"- `{s.name}` — {desc}" if desc else f"- `{s.name}`")
-    lines.append("")
-    lines.append("Tip: ask the agent to `load_skill <name>` to use one.")
-    yield {"type": "text", "text": "\n".join(lines)}
+        items.append(CardListItem(
+            id=s.name,
+            title=s.name,
+            subtitle=desc or None,
+            icon="skills",
+            badges=[],
+            menu=[],
+        ))
+    card = CardEvent(
+        id="skills",
+        variant="list",
+        title=f"Skills · {ctx.project_id}",
+        icon="skills",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=f"{len(items)} skill{'s' if len(items) != 1 else ''}",
+            empty_hint=None,
+        ).__dict__,
+        actions=[CardAction(label="↻ rescan", command="/skills", tone="default")],
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
 def _cmd_tools(ctx: CommandContext) -> Iterator[dict]:
-    """List every tool the agent can call this turn.
+    """List every tool the agent can call this turn, as a list card.
 
-    Combines the builtin tool registry (bash, fs, web_search, ...) with
-    the live MCP tools from any connected MCP server. The same view the
-    Anthropic API sees in the ``tools`` field — useful for debugging
-    "why doesn't the agent see my tool" (e.g. web_search requires
-    TAVILY_API_KEY to *succeed* but is always *registered*).
+    Each row is tagged ``builtin`` or ``mcp`` so the user can tell at a
+    glance where a tool came from — useful when debugging "why doesn't
+    the agent see my MCP tool" vs "this builtin needs an API key".
     """
     from ..tools import builtin_tools
     project = ctx.project
-    lines = [f"**Tools visible to the agent in `{ctx.project_id}`:**", ""]
-    builtin = [t.name for t in builtin_tools()]
-    lines.append(f"**builtin ({len(builtin)}):**")
-    for name in sorted(builtin):
-        lines.append(f"- `{name}`")
+    builtin = sorted(t.name for t in builtin_tools())
     mcp_names: list[str] = []
     if project is not None and project.mcp_pool is not None:
         try:
@@ -288,22 +298,45 @@ def _cmd_tools(ctx: CommandContext) -> Iterator[dict]:
                 mcp_names.append(t.name)
         except Exception:
             pass
-    lines.append("")
-    lines.append(f"**MCP ({len(mcp_names)}):**")
-    if mcp_names:
-        for name in sorted(mcp_names):
-            lines.append(f"- `{name}`")
-    else:
-        lines.append("_none — no MCP servers connected_")
-    lines.append("")
-    lines.append("Note: tools like `web_search` are always listed but return "
-                 "an error at runtime if their API key is missing.")
-    yield {"type": "text", "text": "\n".join(lines)}
+    mcp_names = sorted(set(mcp_names))
+    items: list[CardListItem] = []
+    for name in builtin:
+        items.append(CardListItem(
+            id=f"builtin:{name}",
+            title=name,
+            icon="tools",
+            badges=[CardBadge(text="builtin", tone="default")],
+            menu=[],
+        ))
+    for name in mcp_names:
+        items.append(CardListItem(
+            id=f"mcp:{name}",
+            title=name,
+            icon="tools",
+            badges=[CardBadge(text="mcp", tone="accent")],
+            menu=[],
+        ))
+    summary = f"{len(builtin)} builtin · {len(mcp_names)} mcp"
+    card = CardEvent(
+        id="tools",
+        variant="list",
+        title=f"Tools · {ctx.project_id}",
+        icon="tools",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=summary,
+            empty_hint=None,
+        ).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
 def _cmd_search(ctx: CommandContext) -> Iterator[dict]:
-    """F3.1: substring search across every session in the project."""
+    """F3.1: substring search across every session in the project,
+    rendered as a list card. Each hit row carries ``/resume <sid>`` as
+    its expandable command so a click opens the matching session."""
     query = (ctx.args or "").strip()
     if not query:
         yield {"type": "text",
@@ -328,14 +361,31 @@ def _cmd_search(ctx: CommandContext) -> Iterator[dict]:
         yield {"type": "text", "text": f"No matches for `{query}`."}
         yield {"type": "done"}
         return
-    lines = [f"**Found {len(hits)} match{'es' if len(hits)!=1 else ''} "
-             f"for `{query}`:**", ""]
+    items: list[CardListItem] = []
     for h in hits:
-        lines.append(f"- **{h.session_id}** ({h.role}, msg #{h.message_index + 1}):")
-        lines.append(f"  > {h.snippet}")
-    lines.append("")
-    lines.append("Use `/resume <session_id>` to open a matching session.")
-    yield {"type": "text", "text": "\n".join(lines)}
+        items.append(CardListItem(
+            id=f"{h.session_id}:{h.message_index}",
+            title=h.session_id,
+            subtitle=h.snippet,
+            icon="search",
+            badges=[CardBadge(text=h.role, tone="default")],
+            meta=f"msg #{h.message_index + 1}",
+            expandable_command=f"/resume {h.session_id}",
+            menu=[],
+        ))
+    card = CardEvent(
+        id="search",
+        variant="list",
+        title=f"Search · `{query}`",
+        icon="search",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=f"{len(hits)} match{'es' if len(hits) != 1 else ''}",
+            empty_hint=None,
+        ).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
@@ -431,34 +481,34 @@ def _render_session_markdown(session_id: str, msgs: list[dict]) -> str:
 
 
 def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
-    """List MCP servers registered for this project.
+    """List MCP servers registered for this project, as a list card.
 
-    Reports both the servers the project is currently connected to
-    (their tools are live in the loop's tool pool) and the servers
-    that could be connected (registered factories not yet attached).
+    Rows are bucketed by state — connected (tone=ok), available
+    (default), failed-to-connect (err). Each row's subtitle shows tool
+    count for connected servers or the failure reason for failed ones.
     """
     project = ctx.project
     if project is None or project.mcp_pool is None:
         yield {"type": "error", "message": "MCP not configured for this project"}
         return
     pool = project.mcp_pool
-    connected = list(pool.list_connected())
     try:
-        available = list(type(pool).available_servers())
+        connected = list(pool.list_connected())
+    except Exception:
+        connected = list(getattr(pool, "_clients", {}).keys())
+    try:
+        _fn = getattr(pool, "available_servers", None)
+        available = list(_fn()) if callable(_fn) else []
     except Exception:
         available = []
     connectable = sorted(s for s in available if s not in connected)
-    # Discovered-on-disk servers that were tried at assembly time but
-    # failed to connect (auth error, unreachable host, …). Without
-    # surfacing these the user sees "no servers registered" and has no
-    # clue why their .mcp.json didn't take effect.
     try:
         attempts = pool.list_attempts()
     except Exception:
         attempts = {}
     failed = sorted(
         name for name, rec in attempts.items()
-        if not rec.ok and name not in connected)
+        if not getattr(rec, "ok", False) and name not in connected)
     if not connected and not connectable and not failed:
         yield {"type": "text",
                "text": "_no MCP servers registered. Drop a ``.mcp.json`` "
@@ -467,35 +517,67 @@ def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
                        "``MCPPool.register_factory(name, fn)``._"}
         yield {"type": "done"}
         return
-    lines = [f"**MCP servers for `{ctx.project_id}`:**", ""]
+    items: list[CardListItem] = []
+    for name in connected:
+        client = getattr(pool, "_clients", {}).get(name)
+        tool_count = len(getattr(client, "tools", []) or [])
+        items.append(CardListItem(
+            id=f"mcp:{name}",
+            title=name,
+            subtitle=f"{tool_count} tools live",
+            icon="mcp",
+            badges=[CardBadge(text="connected", tone="ok")],
+            menu=[],
+        ))
+    for name in failed:
+        reason = getattr(attempts.get(name), "message", "") or "failed"
+        items.append(CardListItem(
+            id=f"mcp:{name}",
+            title=name,
+            subtitle=reason,
+            icon="mcp",
+            badges=[CardBadge(text="failed", tone="err")],
+            menu=[],
+        ))
+    for name in connectable:
+        items.append(CardListItem(
+            id=f"mcp:{name}",
+            title=name,
+            subtitle="available — ask the agent to `connect_mcp "
+                     f"{name}`",
+            icon="mcp",
+            badges=[CardBadge(text="available", tone="default")],
+            menu=[],
+        ))
+    summary_bits: list[str] = []
     if connected:
-        lines.append("**connected:**")
-        for name in connected:
-            client = pool._clients.get(name)
-            tool_count = len(getattr(client, "tools", []) or [])
-            lines.append(f"- 🟢 `{name}` ({tool_count} tools live)")
+        summary_bits.append(f"{len(connected)} connected")
     if failed:
-        if connected:
-            lines.append("")
-        lines.append("**failed to connect (discovered in .mcp.json/mcp.toml):**")
-        for name in failed:
-            reason = attempts[name].message
-            lines.append(f"- 🔴 `{name}` — {reason}")
-            lines.append(f"  _edit the matching entry in `.mini_cc/.mcp.json` "
-                         f"(or `mcp.toml`) and re-open the session to retry._")
+        summary_bits.append(f"{len(failed)} failed")
     if connectable:
-        if connected or failed:
-            lines.append("")
-        lines.append("**available (not connected):**")
-        for name in connectable:
-            lines.append(f"- ⚪ `{name}` — ask the agent to "
-                         f"`connect_mcp {name}`")
-    yield {"type": "text", "text": "\n".join(lines)}
+        summary_bits.append(f"{len(connectable)} available")
+    card = CardEvent(
+        id="mcp",
+        variant="list",
+        title=f"MCP servers · {ctx.project_id}",
+        icon="mcp",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=" · ".join(summary_bits),
+            empty_hint=None,
+        ).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
 def _cmd_tasks(ctx: CommandContext) -> Iterator[dict]:
-    """List durable tasks created via create_task."""
+    """List durable tasks created via create_task, as a list card.
+
+    Each row's status badge is tone-coded (done=ok, blocked/pending=
+    warn, default otherwise) so the roster reads at a glance.
+    """
     if ctx.project is None or ctx.storage is None:
         yield {"type": "error", "message": "project context unavailable"}
         return
@@ -504,12 +586,50 @@ def _cmd_tasks(ctx: CommandContext) -> Iterator[dict]:
         yield {"type": "text", "text": "_no tasks in this project_"}
         yield {"type": "done"}
         return
-    lines = [f"**Tasks in `{ctx.project_id}`:**", ""]
+
+    def _tone(status: str) -> str:
+        s = (status or "").lower()
+        if s in ("done", "completed", "complete"):
+            return "ok"
+        if s in ("blocked", "pending", "todo"):
+            return "warn"
+        return "default"
+
+    items: list[CardListItem] = []
     for t in tasks:
-        owner = f" (owner:{t.owner})" if t.owner else ""
-        wt = f" (wt:{t.worktree})" if t.worktree else ""
-        lines.append(f"- `{t.id}` [{t.status}] {t.subject}{owner}{wt}")
-    yield {"type": "text", "text": "\n".join(lines)}
+        meta_bits: list[str] = []
+        if t.owner:
+            meta_bits.append(f"owner:{t.owner}")
+        if t.worktree:
+            meta_bits.append(f"wt:{t.worktree}")
+        items.append(CardListItem(
+            id=t.id,
+            title=t.id,
+            subtitle=t.subject,
+            icon="tasks",
+            badges=[CardBadge(text=t.status, tone=_tone(t.status))],
+            meta=" · ".join(meta_bits) if meta_bits else None,
+            menu=[],
+        ))
+    summary_bits: list[str] = []
+    by_status: dict[str, int] = {}
+    for t in tasks:
+        by_status[t.status] = by_status.get(t.status, 0) + 1
+    for status, count in by_status.items():
+        summary_bits.append(f"{count} {status}")
+    card = CardEvent(
+        id="tasks",
+        variant="list",
+        title=f"Tasks · {ctx.project_id}",
+        icon="tasks",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=" · ".join(summary_bits),
+            empty_hint=None,
+        ).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
@@ -866,14 +986,13 @@ def _format_age(started_at: float) -> str:
 
 
 def _cmd_logs(ctx: CommandContext) -> Iterator[dict]:
-    """List recent log files written to ``mini_cc/logs/``.
+    """List recent log files written to ``mini_cc/logs/``, as a list card.
 
-    The log directory is a sibling of the package, so resolve it
-    relative to the package root rather than the project workspace.
-    Each file's mtime determines recency.
+    Sorted by mtime desc, capped at 20. Subtitle carries size + mtime
+    so the recent-most file is easy to spot.
     """
     from pathlib import Path
-    import os
+    import time as _time
     logs_dir = Path(__file__).resolve().parent.parent / "logs"
     if not logs_dir.is_dir():
         yield {"type": "text", "text": f"_logs directory not found: {logs_dir}_"}
@@ -886,17 +1005,34 @@ def _cmd_logs(ctx: CommandContext) -> Iterator[dict]:
         yield {"type": "text", "text": f"_no log files in {logs_dir}_"}
         yield {"type": "done"}
         return
-    # Sort by mtime desc; cap at 20 so the listing stays useful.
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     candidates = candidates[:20]
-    lines = [f"**Recent log files** (`{logs_dir}`)", ""]
-    import time as _time
+    items: list[CardListItem] = []
     for p in candidates:
         size = p.stat().st_size
         mtime = _time.strftime("%Y-%m-%d %H:%M",
                                _time.localtime(p.stat().st_mtime))
-        lines.append(f"- `{p.name}` — {size:,} bytes — {mtime}")
-    yield {"type": "text", "text": "\n".join(lines)}
+        items.append(CardListItem(
+            id=p.name,
+            title=p.name,
+            subtitle=f"{size:,} bytes · {mtime}",
+            icon="logs",
+            badges=[],
+            menu=[],
+        ))
+    card = CardEvent(
+        id="logs",
+        variant="list",
+        title="Recent log files",
+        icon="logs",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=f"{len(items)} file{'s' if len(items) != 1 else ''}",
+            empty_hint=None,
+        ).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 

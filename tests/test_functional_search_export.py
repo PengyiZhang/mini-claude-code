@@ -39,11 +39,14 @@ def test_search_command_finds_matches(tmp_path):
         {"role": "assistant", "content": "edit settings.py"}])
     s.save_messages("p1", "sess_b", [
         {"role": "user", "content": "totally unrelated"}])
-    text, done = _consume(_cmd_search(_ctx(storage=s, args="postgres")))
-    assert done
-    assert "sess_a" in text
-    assert "postgres" in text
-    assert "sess_b" not in text
+    # Migrated in Plan B.7 — /search now emits a list card. Drain
+    # events and check the card payload (not text blob).
+    events = list(_cmd_search(_ctx(storage=s, args="postgres")))
+    assert any(e.get("type") == "done" for e in events)
+    card = next(e for e in events if e.get("type") == "card")
+    blob = repr(card["payload"])
+    assert "sess_a" in blob
+    assert "sess_b" not in blob
 
 
 def test_search_command_handles_empty_query():

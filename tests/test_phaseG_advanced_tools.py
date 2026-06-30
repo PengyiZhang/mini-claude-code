@@ -284,6 +284,7 @@ def test_loop_command_empty():
 
 
 def test_loop_command_lists_jobs():
+    """Migrated in Plan B.6 — /loop now emits a unified list card."""
     from mini_cc.scheduler import WakeupScheduler
     sched_w = WakeupScheduler()
     sched_w.schedule("wakeup task", 5)
@@ -301,12 +302,11 @@ def test_loop_command_lists_jobs():
         scheduler = _Cron()
         wakeups = sched_w
     events = _run_cmd("loop", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "cron_1" in text
-    assert "every 5 min" in text
-    assert "wakeup task" in text
-    assert "Cron jobs" in text
-    assert "Pending wakeups" in text
+    card = next(e for e in events if e.get("type") == "card")
+    blob = repr(card["payload"])
+    assert "cron_1" in blob
+    assert "every 5 min" in blob
+    assert "wakeup task" in blob
 
 
 def test_config_command_redacts_api_key():
