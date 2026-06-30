@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { CardAction, CardStatus } from "../../lib/types";
 import { CardIcon } from "./icons";
 import { useChat } from "../../lib/store";
+import { AgentsSpawnForm } from "./AgentsSpawnForm";
 
 interface CardShellProps {
   title?: string | null;
@@ -26,6 +27,13 @@ const STATUS_BADGE: Record<CardStatus, { label: string; cls: string }> = {
   error: { label: "error", cls: "text-err bg-err/10 border border-err/30" },
 };
 
+// Heuristic: an action whose command matches this pattern opens the
+// inline spawn form instead of firing the raw slash. The raw command
+// would error (spawn needs 3 args), so we intercept it and surface a
+// proper form. Future card-level forms should grow a typed `form` field
+// on CardAction rather than piling on more patterns here.
+const SPAWN_ACTION_RE = /^\/agents\s+spawn(\s|$)/;
+
 export function CardShell({
   title,
   icon,
@@ -35,6 +43,7 @@ export function CardShell({
   children,
 }: CardShellProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [showSpawnForm, setShowSpawnForm] = useState(false);
   const badge = STATUS_BADGE[status];
   const runCommand = useChat((s) => s.runCommand);
 
@@ -77,13 +86,13 @@ export function CardShell({
                 <button
                   key={`${a.label}-${i}`}
                   type="button"
-                  // Stop propagation so clicking the button doesn't also
-                  // toggle collapse via the header's onClick (footer is
-                  // outside header, but defensive — future refactors may
-                  // merge them).
                   onClick={(e) => {
                     e.stopPropagation();
-                    runCommand(a.command);
+                    if (SPAWN_ACTION_RE.test(a.command)) {
+                      setShowSpawnForm((v) => !v);
+                    } else {
+                      runCommand(a.command);
+                    }
                   }}
                   className={`text-xs px-2 py-1 rounded border ${toneClass(a.tone)}`}
                 >
@@ -91,6 +100,9 @@ export function CardShell({
                 </button>
               ))}
             </footer>
+          )}
+          {showSpawnForm && (
+            <AgentsSpawnForm onClose={() => setShowSpawnForm(false)} />
           )}
         </>
       )}

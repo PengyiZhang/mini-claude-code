@@ -6,6 +6,7 @@ import { useChat } from "../../lib/store";
 
 describe("CardShell", () => {
   beforeEach(() => {
+    (globalThis as unknown as { __lastCmd?: string }).__lastCmd = undefined;
     useChat.setState({
       runCommand: (cmd: string) => {
         (globalThis as unknown as { __lastCmd?: string }).__lastCmd = cmd;
@@ -74,7 +75,27 @@ describe("CardShell", () => {
     ).toBeInTheDocument();
   });
 
-  it("action button triggers runCommand with the action's command string", async () => {
+  it("non-spawn action triggers runCommand with the action's command", async () => {
+    const user = userEvent.setup();
+    render(
+      <CardShell
+        title="T"
+        icon={null}
+        status="ok"
+        actions={[
+          { label: "refresh", command: "/agents", tone: "default" },
+        ]}
+      >
+        <div />
+      </CardShell>,
+    );
+    await user.click(screen.getByRole("button", { name: /refresh/i }));
+    expect(
+      (globalThis as unknown as { __lastCmd?: string }).__lastCmd,
+    ).toBe("/agents");
+  });
+
+  it("spawn action opens inline form instead of firing the raw command", async () => {
     const user = userEvent.setup();
     render(
       <CardShell
@@ -89,8 +110,64 @@ describe("CardShell", () => {
       </CardShell>,
     );
     await user.click(screen.getByRole("button", { name: /spawn/i }));
+    // Raw command would error; the form should open instead.
     expect(
       (globalThis as unknown as { __lastCmd?: string }).__lastCmd,
-    ).toBe("/agents spawn");
+    ).toBeUndefined();
+    // The form has a name input and a prompt textarea.
+    expect(screen.getByPlaceholderText("alice")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Find the latest test results/)).toBeInTheDocument();
+  });
+
+  it("spawn form builds slash command on submit and closes", async () => {
+    const user = userEvent.setup();
+    render(
+      <CardShell
+        title="T"
+        icon={null}
+        status="ok"
+        actions={[
+          { label: "spawn", command: "/agents spawn", tone: "accent" },
+        ]}
+      >
+        <div />
+      </CardShell>,
+    );
+    await user.click(screen.getByRole("button", { name: /spawn/i }));
+    await user.type(screen.getByPlaceholderText("alice"), "alice");
+    await user.type(screen.getByPlaceholderText("researcher"), "researcher");
+    await user.type(
+      screen.getByPlaceholderText(/Find the latest test results/),
+      "summarize the latest test run",
+    );
+    await user.click(screen.getByRole("button", { name: /spawn teammate/i }));
+    expect(
+      (globalThis as unknown as { __lastCmd?: string }).__lastCmd,
+    ).toBe('/agents spawn alice researcher --prompt "summarize the latest test run"');
+    // Form closed after submit.
+    expect(screen.queryByPlaceholderText("alice")).not.toBeInTheDocument();
+  });
+
+  it("spawn form requires name, role, and prompt before submit", async () => {
+    const user = userEvent.setup();
+    render(
+      <CardShell
+        title="T"
+        icon={null}
+        status="ok"
+        actions={[
+          { label: "spawn", command: "/agents spawn", tone: "accent" },
+        ]}
+      >
+        <div />
+      </CardShell>,
+    );
+    await user.click(screen.getByRole("button", { name: /spawn/i }));
+    // Submit without filling anything.
+    await user.click(screen.getByRole("button", { name: /spawn teammate/i }));
+    expect(
+      (globalThis as unknown as { __lastCmd?: string }).__lastCmd,
+    ).toBeUndefined();
+    expect(screen.getByText(/all required/i)).toBeInTheDocument();
   });
 });
