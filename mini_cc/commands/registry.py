@@ -165,19 +165,37 @@ def _cmd_sessions(ctx: CommandContext) -> Iterator[dict]:
 
 
 def _cmd_model(ctx: CommandContext) -> Iterator[dict]:
-    """Report the current model + which provider backend will handle it."""
+    """Show current model + provider backend as a key_value card.
+
+    Surfaces the config-default model, the resolved backend (anthropic
+    vs litellm), the fallback, and any per-session override so the
+    user can tell "I changed it via the API" from "this is the global
+    default" at a glance.
+    """
     cfg = default_config()
     model = cfg.primary_model
     backend = "litellm" if looks_like_litellm(model) else "anthropic"
     fallback = cfg.fallback_model or "—"
-    yield {"type": "text", "text": (
-        f"**Current model**\n"
-        f"- model: `{model}`\n"
-        f"- backend: `{backend}`\n"
-        f"- fallback: `{fallback}`\n"
-        f"- session model override: "
-        f"`{getattr(getattr(_loop_of(ctx), 'state', None), 'current_model', '—')}`"
-    )}
+    sess_override = getattr(getattr(_loop_of(ctx), "state", None),
+                            "current_model", None) or "—"
+    pairs = [
+        CardKeyValuePair(k="model", v=model, mono=True),
+        CardKeyValuePair(k="backend", v=backend, mono=True),
+        CardKeyValuePair(k="fallback", v=fallback, mono=True),
+        CardKeyValuePair(k="session override", v=sess_override, mono=True),
+    ]
+    card = CardEvent(
+        id="model",
+        variant="key_value",
+        title="Current model",
+        icon="model",
+        status="ok",
+        payload=CardKeyValuePayload(pairs=pairs).__dict__,
+        actions=[
+            CardAction(label="↻ refresh", command="/model", tone="default"),
+        ],
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
@@ -486,7 +504,7 @@ def _cmd_compact(ctx: CommandContext) -> Iterator[dict]:
 
 
 def _cmd_cost(ctx: CommandContext) -> Iterator[dict]:
-    """Show token usage for the current tenant across the project.
+    """Show token usage for the current tenant as a key_value card.
 
     Pulls from MetricsRegistry (attached to Project.metrics). When no
     registry is wired in we surface a friendly "—" rather than 0 so
@@ -514,24 +532,41 @@ def _cmd_cost(ctx: CommandContext) -> Iterator[dict]:
     by_status = {s["labels"].get("status", "?"): s["value"]
                  for s in req_family.get("series", [])}
 
-    lines = [f"**Cost snapshot** (`{tenant}`)", "",
-             f"- input tokens: **{inp:,}**",
-             f"- output tokens: **{out:,}**",
-             f"- cache read: `{cache_read:,}`",
-             f"- cache create: `{cache_create:,}`",
-             f"- **total: {total:,}**",
-             ""]
+    pairs = [
+        CardKeyValuePair(k="input tokens", v=f"{inp:,}", mono=True),
+        CardKeyValuePair(k="output tokens", v=f"{out:,}", mono=True),
+        CardKeyValuePair(k="cache read", v=f"{cache_read:,}", mono=True),
+        CardKeyValuePair(k="cache create", v=f"{cache_create:,}", mono=True),
+        CardKeyValuePair(k="total", v=f"{total:,}", mono=True),
+    ]
     if by_status:
         outcome_bits = [f"{k}={v}" for k, v in sorted(by_status.items())]
-        lines.append(f"- requests: {', '.join(outcome_bits)}")
-    yield {"type": "text", "text": "\n".join(lines)}
+        pairs.append(CardKeyValuePair(k="requests", v=", ".join(outcome_bits), mono=True))
+
+    card = CardEvent(
+        id="cost",
+        variant="key_value",
+        title=f"Cost snapshot · {tenant}",
+        icon="cost",
+        status="ok",
+        payload=CardKeyValuePayload(pairs=pairs).__dict__,
+        actions=[
+            CardAction(label="↻ refresh", command="/cost", tone="default"),
+        ],
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
 def _cmd_permissions(ctx: CommandContext) -> Iterator[dict]:
-    """Show the sandbox policy: blocked command patterns, allowed git
-    subcommands, and the env var whitelist. Useful for understanding
-    why a command was denied without digging into source files."""
+    """Show the sandbox policy as a key_value card.
+
+    Each blocked pattern gets its own pair (named ``blocked: <name>``)
+    so users can scan them in a fixed grid rather than a wrapped comma
+    list. Allowed git / env and the global hook deny-lists are surfaced
+    as their own pairs too — answering "why was my command blocked"
+    without grepping source files.
+    """
     project = ctx.project
     sandbox = getattr(project, "sandbox", None) if project else None
     if sandbox is None or not hasattr(sandbox, "policy"):
@@ -540,32 +575,44 @@ def _cmd_permissions(ctx: CommandContext) -> Iterator[dict]:
         yield {"type": "done"}
         return
     policy = sandbox.policy
-    lines = [f"**Sandbox policy** (`{ctx.project_id}`)", ""]
 
-    lines.append("**Blocked command patterns:**")
+    pairs: list[CardKeyValuePair] = []
     if policy.blocked:
         for name, rx in policy.blocked:
-            lines.append(f"- `{name}` — `{rx}`")
+            pairs.append(CardKeyValuePair(
+                k=f"blocked: {name}", v=rx, mono=True))
     else:
-        lines.append("_none_")
-    lines.append("")
+        pairs.append(CardKeyValuePair(k="blocked", v="— none —", mono=True))
 
-    lines.append("**Allowed git subcommands:**")
-    lines.append(", ".join(f"`{s}`" for s in sorted(policy.allowed_git)))
-    lines.append("")
+    pairs.append(CardKeyValuePair(
+        k="allowed git",
+        v=", ".join(sorted(policy.allowed_git)) or "— none —",
+        mono=True))
+    pairs.append(CardKeyValuePair(
+        k="allowed env",
+        v=", ".join(sorted(policy.allowed_env)) or "— none —",
+        mono=True))
 
-    lines.append("**Forwarded env vars:**")
-    lines.append(", ".join(f"`{v}`" for v in sorted(policy.allowed_env)))
-
-    # Surface the hook-level permission gate too (DENY_LIST / DESTRUCTIVE)
-    # if the project has one wired.
+    # Surface the hook-level permission gate too (DENY_LIST / DESTRUCTIVE).
     from ..core.hooks import DENY_LIST, DESTRUCTIVE
-    lines.append("")
-    lines.append("**Permission hook deny-lists:**")
-    lines.append(f"- DENY_LIST: {', '.join(repr(s) for s in DENY_LIST)}")
-    lines.append(f"- DESTRUCTIVE: {', '.join(repr(s) for s in DESTRUCTIVE)}")
+    pairs.append(CardKeyValuePair(
+        k="hook DENY_LIST",
+        v=", ".join(repr(s) for s in DENY_LIST) or "— none —",
+        mono=True))
+    pairs.append(CardKeyValuePair(
+        k="hook DESTRUCTIVE",
+        v=", ".join(repr(s) for s in DESTRUCTIVE) or "— none —",
+        mono=True))
 
-    yield {"type": "text", "text": "\n".join(lines)}
+    card = CardEvent(
+        id="permissions",
+        variant="key_value",
+        title=f"Sandbox policy · {ctx.project_id}",
+        icon="permissions",
+        status="ok",
+        payload=CardKeyValuePayload(pairs=pairs).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
