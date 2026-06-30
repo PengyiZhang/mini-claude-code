@@ -81,11 +81,16 @@ def test_agents_command_lists_status_and_inbox_count():
         tenant_id = "t1"
 
     events = _run_cmd("agents", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "alice" in text
-    assert "researcher" in text
-    assert "🟢" in text
-    assert "1 alive" in text
+    # Since the rich-card migration /agents emits a list card event
+    # instead of a text blob. Assert against the card payload.
+    card = next(e for e in events if e.get("type") == "card")
+    items = card["payload"]["items"]
+    alice = next(it for it in items if it["title"] == "alice")
+    assert alice["subtitle"] and "researcher" in alice["subtitle"]
+    badge_texts = [b["text"] for b in alice["badges"]]
+    assert "alive" in badge_texts  # was 🟢 in the old text format
+    summary = card["payload"].get("summary") or ""
+    assert "1 " in summary and "alive" in summary
 
 
 def test_agents_command_stop_calls_request_shutdown():

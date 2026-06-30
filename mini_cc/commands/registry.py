@@ -23,9 +23,12 @@ from ..config import default_config
 from ..core.llm import looks_like_litellm
 from .cards import (
     CardAction,
+    CardBadge,
     CardEvent,
     CardKeyValuePair,
     CardKeyValuePayload,
+    CardListItem,
+    CardListPayload,
     to_dict,
 )
 
@@ -651,31 +654,66 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
         yield {"type": "done"}
         return
     all_known = list(getattr(spawner, "_teammates", {}).values())
-    if not all_known:
-        yield {"type": "text", "text": "_no teammates spawned in this project_"}
-        yield {"type": "done"}
-        return
-    lines = [f"**Teammates in `{ctx.project_id}`:**", ""]
-    alive_count = 0
+    alive_count = sum(1 for i in all_known if getattr(i, "alive", False))
+    stopped_count = len(all_known) - alive_count
+
+    items: list[CardListItem] = []
     for info in all_known:
         role = getattr(info, "role", "") or ""
-        marker = "🟢" if getattr(info, "alive", False) else "⚫"
-        if info.alive:
-            alive_count += 1
         age = _format_age(getattr(info, "started_at", 0))
         inbox_count = _count_inbox(spawner, info.name)
         wt = getattr(info, "worktree", None)
-        wt_tag = f" · wt:`{wt}`" if wt else ""
-        inbox_tag = f" · 📨{inbox_count}" if inbox_count else ""
-        lines.append(f"- {marker} `{info.name}` — {role} "
-                     f"(age {age}{wt_tag}{inbox_tag})")
-    lines.append("")
-    lines.append(f"_{alive_count} alive · {len(all_known) - alive_count} "
-                 f"stopped_")
-    lines.append("")
-    lines.append("Subcommands: `/agents stop <name>`, "
-                 "`/agents inbox <name>`")
-    yield {"type": "text", "text": "\n".join(lines)}
+
+        badges: list[CardBadge] = []
+        if info.alive:
+            badges.append(CardBadge(text="alive", tone="ok"))
+        else:
+            badges.append(CardBadge(text="stopped", tone="default"))
+        if inbox_count:
+            badges.append(CardBadge(text=f"📨 {inbox_count}", tone="accent"))
+        if wt:
+            badges.append(CardBadge(text=f"wt:{wt}", tone="default"))
+
+        subtitle_parts: list[str] = []
+        if role:
+            subtitle_parts.append(role)
+        subtitle_parts.append(f"age {age}")
+        subtitle = " · ".join(subtitle_parts) or None
+
+        items.append(CardListItem(
+            id=info.name,
+            title=info.name,
+            subtitle=subtitle,
+            icon="agents",
+            badges=badges,
+            # Clicking the row expands an inline child card showing the
+            # teammate's inbox (Phase 3.3). The slash command exists
+            # already, so we just point at it.
+            expandable_command=f"/agents inbox {info.name}",
+            menu=[
+                CardAction(label="stop", command=f"/agents stop {info.name}",
+                           tone="default"),
+            ],
+        ))
+
+    summary = f"{alive_count} alive · {stopped_count} stopped" if all_known else None
+    card = CardEvent(
+        id="agents-roster",
+        variant="list",
+        title=f"Teammates in {ctx.project_id}",
+        icon="agents",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            empty_hint="no teammates spawned in this project",
+            summary=summary,
+        ).__dict__,
+        actions=[
+            CardAction(label="＋ spawn", command="/agents spawn", tone="accent"),
+            CardAction(label="↻ refresh", command="/agents", tone="default"),
+        ],
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
