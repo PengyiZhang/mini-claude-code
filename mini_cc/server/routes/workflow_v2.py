@@ -66,6 +66,7 @@ class StepIn(BaseModel):
     outputs_schema: dict = Field(default_factory=dict)
     config: dict = Field(default_factory=dict)
     condition: str | None = None
+    next: str | None = None
 
 
 class TriggerIn(BaseModel):

@@ -93,6 +93,24 @@ def test_delete_definition_returns_204_then_404(client):
     assert d2.status_code == 404
 
 
+def test_create_definition_round_trips_step_next_field(client):
+    """W7 regression: the StepIn schema must accept and persist the
+    `next` field so authors can express explicit gotos / branch targets
+    over HTTP — initial Phase B shipped the field on StepDef but missed
+    it on the route model, silently dropping every goto."""
+    r = client.post("/tenants/tenant1/projects/p1/workflow-definitions",
+                    headers=AUTH,
+                    json={"name": "goto",
+                          "steps": [{"id": "a", "type": "validate",
+                                     "config": {"check": "True"}, "next": "b"},
+                                    {"id": "b", "type": "validate",
+                                     "config": {"check": "True"}}]})
+    assert r.status_code == 201, r.text
+    steps = r.json()["steps"]
+    assert steps[0]["next"] == "b"
+    assert steps[1]["next"] is None
+
+
 def test_tenant_boundary_blocks_cross_tenant_access(client, tmp_path):
     """Cross-tenant pid guess must 404, not 403 (no info leak)."""
     r = client.post("/tenants/tenant1/projects/p1/workflow-definitions",
