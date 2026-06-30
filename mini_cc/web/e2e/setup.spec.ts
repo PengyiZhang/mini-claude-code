@@ -38,17 +38,14 @@ test.describe("files", () => {
     await page.goto("/#/projects/e2e_proj");
     await page.getByRole("button", { name: /files/i }).click();
 
-    // Make a subfolder via right-click → new folder.
-    const folderName = `up_${Date.now()}`;
-    await page.locator("text=📁").first().click({ button: "right" });
-    await page.getByText(/^＋ New folder/).click();
-    await page.getByPlaceholder("new-folder").fill(folderName);
-    await page.keyboard.press("Enter");
-
-    // right-click that new folder to upload into it
-    const folderRow = page.locator(`text=${folderName}`).first();
-    await folderRow.waitFor({ state: "visible", timeout: 10_000 });
-    await folderRow.click({ button: "right" });
+    // e2e_proj ships with an empty file tree, so we use the root-level
+    // "＋" button (FileTree.tsx header) to upload directly to the root,
+    // rather than right-clicking a (non-existent) folder to get a
+    // context menu. The "＋" → "📄 Upload files…" path goes through
+    // triggerRootUpload, which posts to the same /files endpoint as
+    // the per-folder menu; the per-folder right-click flow is covered
+    // by the integration tests in test_files_http.py.
+    await page.getByTitle("add to workspace").click();
     await page.getByText(/^📄 Upload files/).click();
 
     await page
@@ -65,10 +62,12 @@ test.describe("files", () => {
     await page.locator("text=a.txt").first().click();
     await expect(page.locator("text=hello a")).toBeVisible({ timeout: 10_000 });
 
-    // download zip
+    // download zip. The button's accessible name is just "⬇"; rely on
+    // its title attribute instead of /download zip/i, which doesn't
+    // reliably match a symbol-only button.
     const [download] = await Promise.all([
       page.waitForEvent("download", { timeout: 10_000 }),
-      page.getByRole("button", { name: /download zip/i }).click(),
+      page.getByTitle("download workspace as ZIP").click(),
     ]);
     expect(download.suggestedFilename()).toMatch(/\.zip$/);
   });
