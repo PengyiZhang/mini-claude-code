@@ -103,15 +103,37 @@ class CommandRegistry:
 # ── Built-in handlers ──────────────────────────────────────────────────────
 
 def _cmd_help(ctx: CommandContext) -> Iterator[dict]:
-    """Yield a markdown table of available commands as a single text event."""
+    """Yield a list card of available commands. Each row is one command
+    with title ``/<name>``, description subtitle, and a badge per alias
+    so users can see at a glance that ``/?`` is the same as ``/help``."""
     reg = default_registry()
-    lines = ["**Available commands:**", ""]
+    items: list[CardListItem] = []
     for c in reg.all_visible():
-        aliases = f" (aliases: {', '.join('/' + a for a in c.aliases)})"
-        lines.append(f"- `/{c.name}` — {c.description}{aliases if c.aliases else ''}")
-    lines.append("")
-    lines.append("Tip: type `/` in the input box to see the menu.")
-    yield {"type": "text", "text": "\n".join(lines)}
+        badges: list[CardBadge] = []
+        for a in c.aliases:
+            badges.append(CardBadge(text=f"/{a}", tone="default"))
+        items.append(CardListItem(
+            id=f"cmd:{c.name}",
+            title=f"/{c.name}",
+            subtitle=c.description,
+            icon="help",
+            badges=badges,
+            menu=[],
+        ))
+    items.sort(key=lambda it: it.title)
+    card = CardEvent(
+        id="help",
+        variant="list",
+        title="Available commands",
+        icon="help",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=f"{len(items)} command{'s' if len(items) != 1 else ''} · type / in the input to see the menu",
+            empty_hint=None,
+        ).__dict__,
+    )
+    yield to_dict(card)
     yield {"type": "done"}
 
 
