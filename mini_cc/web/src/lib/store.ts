@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { TenantProfile, TodoItem } from "./types";
+import type { CardEvent, TenantProfile, TodoItem } from "./types";
 
 const LS_KEY = "mini_cc.tenants.v1";
 const LS_ACTIVE = "mini_cc.tenants.active";
@@ -94,6 +94,7 @@ export interface ChatMessage {
   text: string;
   streaming?: boolean;
   activities?: ChatActivity[];
+  cards?: CardEvent[];
   error?: string;
   notices?: string[];
 }
@@ -106,6 +107,7 @@ interface ChatState {
   startAssistant: (key: string) => void;
   appendText: (key: string, text: string) => void;
   addActivity: (key: string, act: ChatActivity) => void;
+  addCard: (key: string, card: CardEvent) => void;
   setActivityResult: (key: string, toolUseId: string, content: string) => void;
   toggleActivity: (key: string, toolUseId: string) => void;
   addNotice: (key: string, text: string) => void;
@@ -134,7 +136,7 @@ export const useChat = create<ChatState>((set) => ({
     set((s) => ({
       messages: {
         ...s.messages,
-        [key]: [...(s.messages[key] ?? []), { role: "assistant", text: "", streaming: true, activities: [], notices: [] }],
+        [key]: [...(s.messages[key] ?? []), { role: "assistant", text: "", streaming: true, activities: [], notices: [], cards: [] }],
       },
     })),
   appendText: (key, text) =>
@@ -153,6 +155,22 @@ export const useChat = create<ChatState>((set) => ({
       if (last) {
         last.activities = [...(last.activities ?? []), act];
       }
+      return { messages: { ...s.messages, [key]: list } };
+    }),
+  addCard: (key, card) =>
+    set((s) => {
+      const list = [...(s.messages[key] ?? [])];
+      const last = lastAssistant(list);
+      if (!last) return s;
+      const cards = [...(last.cards ?? [])];
+      // Replace-by-id: if a card with the same id is already on the
+      // bubble, swap it in-place. This is how live refresh works — a
+      // handler re-emits the same card id with a bumped revision and
+      // the new payload replaces the old without stacking duplicates.
+      const idx = cards.findIndex((c) => c.id === card.id);
+      if (idx >= 0) cards[idx] = card;
+      else cards.push(card);
+      last.cards = cards;
       return { messages: { ...s.messages, [key]: list } };
     }),
   setActivityResult: (key, toolUseId, content) =>

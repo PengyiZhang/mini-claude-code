@@ -55,6 +55,7 @@ export default function Workspace() {
   const startAssistant = useChat((s) => s.startAssistant);
   const appendText = useChat((s) => s.appendText);
   const addActivity = useChat((s) => s.addActivity);
+  const addCard = useChat((s) => s.addCard);
   const setActivityResult = useChat((s) => s.setActivityResult);
   const addNotice = useChat((s) => s.addNotice);
   const finishAssistant = useChat((s) => s.finishAssistant);
@@ -420,6 +421,9 @@ export default function Workspace() {
           switch (ev.type) {
             case "text":
               appendText(chatKey!, ev.text);
+              break;
+            case "card":
+              addCard(chatKey!, ev);
               break;
             case "done":
               finishAssistant(chatKey!);

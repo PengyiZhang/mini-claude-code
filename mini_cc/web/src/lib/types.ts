@@ -192,4 +192,72 @@ export type SendEvent =
   | { type: "error"; message: string }
   | { type: "max_tokens_escalation"; max_tokens: number }
   | { type: "cron_fired"; job_id: string; prompt: string }
-  | { type: "background_notification" };
+  | { type: "background_notification" }
+  | { type: "card" } & CardEvent;
+
+// ── Slash-command card schema ───────────────────────────────────────
+// A CardEvent is a structured alternative to the plain {type:"text"} event
+// that slash-command handlers emit. The frontend CardView component
+// dispatches on `variant` to a dedicated renderer (CardList, CardKeyValue,
+// …), giving each command a typed, interactive surface.
+//
+// The Python-side source of truth is mini_cc/commands/cards.py — keep this
+// interface in sync with the dataclass fields there. Tests pin the shape.
+
+export type CardTone = "default" | "ok" | "warn" | "err" | "accent";
+export type CardVariant = "list" | "table" | "key_value" | "steps";
+export type CardStatus = "ok" | "warning" | "error";
+
+export interface CardBadge {
+  text: string;
+  tone: CardTone;
+}
+
+export interface CardAction {
+  label: string;
+  command: string;
+  tone: CardTone;
+}
+
+export interface CardListItem {
+  id: string;
+  title: string;
+  subtitle?: string | null;
+  icon?: string | null;
+  badges: CardBadge[];
+  meta?: string | null;
+  expandable_command?: string | null;
+  menu: CardAction[];
+}
+
+export interface CardListPayload {
+  items: CardListItem[];
+  empty_hint?: string | null;
+  summary?: string | null;
+  group_by?: string | null;
+}
+
+export interface CardKeyValuePair {
+  k: string;
+  v: string;
+  mono: boolean;
+  sensitive: boolean;
+  badge?: CardBadge | null;
+}
+
+export interface CardKeyValuePayload {
+  pairs: CardKeyValuePair[];
+}
+
+export interface CardEvent {
+  id: string;
+  variant: CardVariant;
+  title?: string | null;
+  icon?: string | null;
+  status: CardStatus;
+  error_message?: string | null;
+  payload: CardListPayload | CardKeyValuePayload | Record<string, unknown>;
+  actions: CardAction[];
+  emitted_at: number;
+  revision: number;
+}
