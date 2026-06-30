@@ -4,6 +4,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { lineDiff, diffStats } from "../lib/diff"
 import BackgroundTile from "./BackgroundTile"
 import { useAuth, useSessionNav } from "../lib/store"
+import { CardView } from "./cards"
 
 export default function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "user") {
@@ -20,6 +21,9 @@ export default function MessageBubble({ msg }: { msg: ChatMessage }) {
     <div className="flex gap-3">
       <div className="size-8 rounded-md bg-gradient-to-br from-accent to-indigo-400 shrink-0 mt-0.5" />
       <div className="flex-1 space-y-2 min-w-0">
+        {msg.cards?.map((c) => (
+          <CardView key={c.id} card={c} />
+        ))}
         {msg.activities?.map((a) => (
           <Activity key={a.id} msg={msg} activity={a} />
         ))}
