@@ -69,7 +69,8 @@ every mini_cc link, and have everything needed to embed the framework into your 
 | Workflow V2:可暂停的工作流 / pausable workflows | [10](zh/10-workflow-v2.md) |
 | MCP 客户端与三层插件 / MCP & three-tier plugins | [11](zh/11-mcp-plugins.md) |
 | Skills、斜杠命令、LSP / skills, slash, LSP | [12](zh/12-skills-commands-lsp.md) |
-| 多 Agent 团队 + cron + wakeup / teams & scheduler | [13](zh/13-teams-scheduler.md) |
+| 多 Agent 团队（teammates）/ agent teams | [13a](zh/13a-teammates.md) |
+| 调度器：wakeup / cron / 后台任务 / scheduler | [13b](zh/13b-scheduler.md) |
 | Web UI、可观测性、部署 / UI, observability, deploy | [14](zh/14-web-ui-observability-deploy.md) |
 
 ---
@@ -90,7 +91,8 @@ every mini_cc link, and have everything needed to embed the framework into your 
 10. [10 — Workflow V2(可暂停工作流)](zh/10-workflow-v2.md)
 11. [11 — MCP 客户端与三层插件](zh/11-mcp-plugins.md)
 12. [12 — Skills、斜杠命令与 LSP](zh/12-skills-commands-lsp.md)
-13. [13 — Agent 团队与调度器](zh/13-teams-scheduler.md)
+13a. [13a — Agent 团队（Teammates）](zh/13a-teammates.md)
+13b. [13b — 调度器（wakeup / cron / 后台任务）](zh/13b-scheduler.md)
 14. [14 — Web UI、可观测性与部署](zh/14-web-ui-observability-deploy.md)
 15. [15 — 从教学框架到生产级框架的演进(迁移史)](zh/15-evolution-migration.md) — *跨章节的演进叙事,串起 14 章*
 

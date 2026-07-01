@@ -1,4 +1,4 @@
-[ < [11](11-mcp-plugins.md) ] [ [13](13-teams-scheduler.md) > ] · [English version](../en/12-skills-commands-lsp.md)
+[ < [11](11-mcp-plugins.md) ] [ [13a](13a-teammates.md) > ] · [English version](../en/12-skills-commands-lsp.md)
 
 # 12 — 技能、斜杠命令与 LSP
 

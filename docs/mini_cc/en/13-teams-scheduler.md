@@ -1,4 +1,6 @@
-[ < [12](12-skills-commands-lsp.md) ] [ [14](14-web-ui-observability-deploy.md) > ] · [中文版本](../zh/13-teams-scheduler.md)
+[ < [12](12-skills-commands-lsp.md) ] [ [14](14-web-ui-observability-deploy.md) > ] · [中文版本](../zh/13a-teammates.md)
+
+> **Note:** The Chinese version of this chapter has been split into [13a (teams)](../zh/13a-teammates.md) and [13b (scheduler)](../zh/13b-scheduler.md). This English file still covers both and will be split in a follow-up.
 
 # 13 — Agent Teams & Scheduler
 

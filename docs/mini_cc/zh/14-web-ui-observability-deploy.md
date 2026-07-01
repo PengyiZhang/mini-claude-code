@@ -1,4 +1,4 @@
-[ < [13](13-teams-scheduler.md) ] · [English version](../en/14-web-ui-observability-deploy.md)
+[ < [13b](13b-scheduler.md) ] · [English version](../en/14-web-ui-observability-deploy.md)
 
 # 14 — Web UI、可观测性与部署
 
@@ -192,4 +192,4 @@ mini_cc 的"壳"由三块拼起来:**React Web UI** 把 SDK 能力翻译成可�
 
 ### 全系列收尾
 
-这是 mini_cc 进阶内部原理的第十四章,也是最后一章。十四章走完一圈:从 [01 总览](01-overview.md) 的分层架构与"无模块级全局状态"决策出发,我们拆过存储/项目/会话 ([02](02-storage-projects-sessions.md))、三层沙箱 ([03](03-sandbox.md))、Agent Loop 与工具派发 ([04](04-agent-loop.md))、Tools 工具箱 ([05](05-tools.md))、Permissions 权限模型 ([06](06-permissions.md))、HTTP Server ([07](07-http-server.md))、SSE 流与断线恢复 ([08](08-sse-streaming.md))、Auth 认证授权与租户隔离 ([09](09-auth.md))、Workflow V2 ([10](10-workflow-v2.md))、MCP 客户端与三层插件 ([11](11-mcp-plugins.md))、Skills/Slash/LSP ([12](12-skills-commands-lsp.md))、Agent 团队与三种异步原语 ([13](13-teams-scheduler.md)),最后到这里——Web UI、端到端可观测性、部署形态。覆盖了从最底层 Protocol+多实现的扩展点,到最外层面向真人的浏览器界面与运维手册的全部子系统。按顺序读下来,现在应当能解释 mini_cc 每条链路的"为什么这么设计"与"在哪能扩展";跳着读的话,回到 [01](01-overview.md) 总览图定位自己关心的子系统再深入。mini_cc 的价值不在于实现了多少功能,而在于把这些功能组合成一个分层清晰、可被嵌入、可观测、可扩展的框架——希望这套教程帮你建立了这份全景地图。
+这是 mini_cc 进阶内部原理的第十四章,也是最后一章。十四章走完一圈:从 [01 总览](01-overview.md) 的分层架构与"无模块级全局状态"决策出发,我们拆过存储/项目/会话 ([02](02-storage-projects-sessions.md))、三层沙箱 ([03](03-sandbox.md))、Agent Loop 与工具派发 ([04](04-agent-loop.md))、Tools 工具箱 ([05](05-tools.md))、Permissions 权限模型 ([06](06-permissions.md))、HTTP Server ([07](07-http-server.md))、SSE 流与断线恢复 ([08](08-sse-streaming.md))、Auth 认证授权与租户隔离 ([09](09-auth.md))、Workflow V2 ([10](10-workflow-v2.md))、MCP 客户端与三层插件 ([11](11-mcp-plugins.md))、Skills/Slash/LSP ([12](12-skills-commands-lsp.md))、Agent 团队与三种异步原语 ([13a](13a-teammates.md)、[13b](13b-scheduler.md)),最后到这里——Web UI、端到端可观测性、部署形态。覆盖了从最底层 Protocol+多实现的扩展点,到最外层面向真人的浏览器界面与运维手册的全部子系统。按顺序读下来,现在应当能解释 mini_cc 每条链路的"为什么这么设计"与"在哪能扩展";跳着读的话,回到 [01](01-overview.md) 总览图定位自己关心的子系统再深入。mini_cc 的价值不在于实现了多少功能,而在于把这些功能组合成一个分层清晰、可被嵌入、可观测、可扩展的框架——希望这套教程帮你建立了这份全景地图。
