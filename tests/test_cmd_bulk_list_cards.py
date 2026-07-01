@@ -59,11 +59,13 @@ def test_skills_no_loader_yields_error():
     assert any(e.get("type") == "error" for e in events)
 
 
-def test_skills_no_skills_yields_text_marker():
+def test_skills_no_skills_yields_empty_state_card():
     loader = SimpleNamespace(scan=lambda: None, registry={})
     events = _run("skills", project=SimpleNamespace(skills_loader=loader))
     card = _card(events)
-    assert card is None
+    assert card is not None
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
 
 
 # ── /tools ──────────────────────────────────────────────────────────────
@@ -127,11 +129,13 @@ def test_tasks_card_status_badge_tone():
     assert done_badge["tone"] == "ok"
 
 
-def test_tasks_no_tasks_yields_text_marker():
+def test_tasks_no_tasks_yields_empty_state_card():
     storage = SimpleNamespace(load_tasks=lambda pid: [])
     events = _run("tasks", project=SimpleNamespace(), storage=storage)
     card = _card(events)
-    assert card is None
+    assert card is not None
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
 
 
 # ── /logs ───────────────────────────────────────────────────────────────
@@ -178,7 +182,7 @@ def test_logs_with_files_yields_card(tmp_path, monkeypatch):
 
 # ── /mcp ────────────────────────────────────────────────────────────────
 
-def test_mcp_no_servers_yields_text_marker():
+def test_mcp_no_servers_yields_empty_state_card():
     pool = SimpleNamespace(
         _clients={},
         list_attempts=lambda: {},
@@ -186,7 +190,9 @@ def test_mcp_no_servers_yields_text_marker():
     )
     events = _run("mcp", project=SimpleNamespace(mcp_pool=pool))
     card = _card(events)
-    assert card is None
+    assert card is not None
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
 
 
 def test_mcp_with_connected_server_yields_card():
@@ -213,12 +219,12 @@ def _search_hit(sid="s1", role="user", idx=0, snippet="hello world"):
                             message_index=idx, snippet=snippet)
 
 
-def test_search_no_query_yields_usage_text():
+def test_search_no_query_yields_empty_state_card():
     events = _run("search", project=SimpleNamespace(), args="", storage=SimpleNamespace())
     card = _card(events)
-    assert card is None
-    text = "".join(e.get("text", "") for e in events if e.get("type") == "text")
-    assert "usage" in text.lower()
+    assert card is not None
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
 
 
 def test_search_with_hits_yields_card():
@@ -249,11 +255,13 @@ def test_search_card_each_hit_has_resume_expandable():
     assert item["expandable_command"] == "/resume s1"
 
 
-def test_search_no_hits_yields_text_marker():
+def test_search_no_hits_yields_empty_state_card():
     storage = SimpleNamespace(
         search_messages=lambda pid, q, limit=20: [],
     )
     events = _run("search", project=SimpleNamespace(), args="zzz",
                    storage=storage)
     card = _card(events)
-    assert card is None
+    assert card is not None
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")

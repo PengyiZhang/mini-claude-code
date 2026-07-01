@@ -36,10 +36,12 @@ def _wf(name="release", status="running", steps=None, results=None,
     )
 
 
-def test_workflow_no_active_yields_text_marker():
+def test_workflow_no_active_yields_empty_state_card():
     events = _run(project=SimpleNamespace(active_workflow=None))
     card = _card(events)
-    assert card is None
+    assert card is not None
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
 
 
 def test_workflow_active_yields_list_card():

@@ -321,8 +321,10 @@ def test_workflow_slash_registered():
 def test_workflow_command_no_active():
     class _P: pass
     events = _run_cmd("workflow", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "no active" in text.lower()
+    card = next(e for e in events if e["type"] == "card")
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
+    assert "no active" in card["payload"]["empty_hint"].lower()
 
 
 def test_workflow_command_shows_active():
@@ -381,8 +383,10 @@ def test_bg_command_empty():
     class _P:
         background = BackgroundScheduler()
     events = _run_cmd("bg", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "no background tasks" in text.lower()
+    card = next(e for e in events if e["type"] == "card")
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
+    assert "no background" in card["payload"]["empty_hint"].lower()
 
 
 def test_bg_command_lists_tasks():

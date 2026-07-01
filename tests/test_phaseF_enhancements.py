@@ -316,14 +316,15 @@ def test_slash_commands_registered():
         assert cmd.scope == "server"
 
 
-def test_cost_without_metrics_returns_friendly_message():
-    """Project without a metrics registry → friendly fallback."""
+def test_cost_without_metrics_returns_warning_card():
+    """Project without a metrics registry → warning card with error_message."""
     class _P:
         metrics = None
         tenant_id = "t1"
     events = _run_cmd("cost", project=_P())
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "not configured" in text.lower()
+    card = next(e for e in events if e["type"] == "card")
+    assert card["status"] == "warning"
+    assert "not configured" in (card.get("error_message") or "").lower()
 
 
 def test_cost_on_real_project_without_metrics_does_not_crash(tmp_path):
@@ -336,9 +337,9 @@ def test_cost_on_real_project_without_metrics_does_not_crash(tmp_path):
     pm = ProjectManager(tmp_path / "pm")
     project = pm.create(tenant_id="t1", project_id="proj-real")
     events = _run_cmd("cost", project=project)
-    text = next(e["text"] for e in events if e["type"] == "text")
-    # No metrics registry wired → friendly fallback, NOT AttributeError.
-    assert "not configured" in text.lower()
+    card = next(e for e in events if e["type"] == "card")
+    # No metrics registry wired → warning card, NOT AttributeError.
+    assert card["status"] == "warning"
 
 
 def test_cost_reports_token_totals():

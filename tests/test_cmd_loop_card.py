@@ -100,12 +100,13 @@ def test_loop_card_has_cancel_menu_action_per_job():
     assert cancel_actions[0]["command"] == "/loop cancel j1"
 
 
-def test_loop_no_jobs_yields_text_marker():
+def test_loop_no_jobs_yields_empty_state_card():
     sched = SimpleNamespace(list_jobs=lambda: [], cancel=lambda jid: "")
     project = SimpleNamespace(scheduler=sched,
                               wakeups=SimpleNamespace(list=lambda: [], cancel=lambda jid: False))
     events = _run_loop(project)
     card = _extract_card(events)
-    assert card is None
-    text = "".join(e.get("text", "") for e in events if e.get("type") == "text")
-    assert "no scheduled" in text.lower()
+    assert card is not None
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
+    assert "no scheduled" in card["payload"]["empty_hint"].lower()

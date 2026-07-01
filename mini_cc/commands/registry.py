@@ -269,12 +269,6 @@ def _cmd_skills(ctx: CommandContext) -> Iterator[dict]:
     except Exception:
         pass
     reg = project.skills_loader.registry
-    if not reg:
-        yield {"type": "text",
-               "text": "_no skills found in this project. Drop a skill into "
-                       "`<workspace>/skills/<name>/SKILL.md` and run `/skills` again._"}
-        yield {"type": "done"}
-        return
     items: list[CardListItem] = []
     for s in reg.values():
         desc = (s.description or "").strip().splitlines()[0] if s.description else ""
@@ -294,8 +288,8 @@ def _cmd_skills(ctx: CommandContext) -> Iterator[dict]:
         status="ok",
         payload=CardListPayload(
             items=items,
-            summary=f"{len(items)} skill{'s' if len(items) != 1 else ''}",
-            empty_hint=None,
+            summary=f"{len(items)} skill{'s' if len(items) != 1 else ''}" if items else None,
+            empty_hint="no skills found. Drop one into `<workspace>/skills/<name>/SKILL.md` and re-run `/skills`." if not items else None,
         ).__dict__,
         actions=[CardAction(label="↻ rescan", command="/skills", tone="default")],
     )
@@ -360,27 +354,60 @@ def _cmd_search(ctx: CommandContext) -> Iterator[dict]:
     rendered as a list card. Each hit row carries ``/resume <sid>`` as
     its expandable command so a click opens the matching session."""
     query = (ctx.args or "").strip()
-    if not query:
-        yield {"type": "text",
-               "text": "Usage: `/search <query>` — searches every session's "
-                       "messages in this project."}
-        yield {"type": "done"}
-        return
     storage = ctx.storage
     if storage is None and ctx.project is not None:
-        storage = ctx.project.storage
+        storage = getattr(ctx.project, "storage", None)
+
+    # Build empty-state card helper. We emit a card even when the query
+    # is blank or there are no matches so the UI keeps a consistent
+    # shape (card with empty_hint) instead of falling back to a text
+    # bubble that breaks the visual rhythm of the chat.
+    def _empty_card(hint: str) -> dict:
+        return to_dict(CardEvent(
+            id="search",
+            variant="list",
+            title=f"Search · `{query or '—'}`",
+            icon="search",
+            status="ok",
+            payload=CardListPayload(
+                items=[],
+                summary=None,
+                empty_hint=hint,
+            ).__dict__,
+        ))
+
+    if not query:
+        yield _empty_card("type a query in the form `/search <query>` to scan every session in this project.")
+        yield {"type": "done"}
+        return
     if storage is None:
-        yield {"type": "text", "text": "Error: storage unavailable."}
+        yield to_dict(CardEvent(
+            id="search",
+            variant="list",
+            title=f"Search · `{query}`",
+            icon="search",
+            status="error",
+            error_message="storage unavailable",
+            payload=CardListPayload(items=[], empty_hint=None).__dict__,
+        ))
         yield {"type": "done"}
         return
     try:
         hits = storage.search_messages(ctx.project_id, query, limit=20)
     except Exception as e:
-        yield {"type": "text", "text": f"Error: {type(e).__name__}: {e}"}
+        yield to_dict(CardEvent(
+            id="search",
+            variant="list",
+            title=f"Search · `{query}`",
+            icon="search",
+            status="error",
+            error_message=f"{type(e).__name__}: {e}",
+            payload=CardListPayload(items=[], empty_hint=None).__dict__,
+        ))
         yield {"type": "done"}
         return
     if not hits:
-        yield {"type": "text", "text": f"No matches for `{query}`."}
+        yield _empty_card(f"no matches for `{query}`.")
         yield {"type": "done"}
         return
     items: list[CardListItem] = []
@@ -531,14 +558,6 @@ def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
     failed = sorted(
         name for name, rec in attempts.items()
         if not getattr(rec, "ok", False) and name not in connected)
-    if not connected and not connectable and not failed:
-        yield {"type": "text",
-               "text": "_no MCP servers registered. Drop a ``.mcp.json`` "
-                       "into any ``.mini_cc/`` tier, or register a factory "
-                       "at app startup via "
-                       "``MCPPool.register_factory(name, fn)``._"}
-        yield {"type": "done"}
-        return
     items: list[CardListItem] = []
     for name in connected:
         client = getattr(pool, "_clients", {}).get(name)
@@ -586,8 +605,8 @@ def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
         status="ok",
         payload=CardListPayload(
             items=items,
-            summary=" · ".join(summary_bits),
-            empty_hint=None,
+            summary=" · ".join(summary_bits) if items else None,
+            empty_hint="no MCP servers registered. Drop a `.mcp.json` into any `.mini_cc/` tier, or register a factory at app startup via `MCPPool.register_factory(name, fn)`." if not items else None,
         ).__dict__,
     )
     yield to_dict(card)
@@ -603,11 +622,10 @@ def _cmd_tasks(ctx: CommandContext) -> Iterator[dict]:
     if ctx.project is None or ctx.storage is None:
         yield {"type": "error", "message": "project context unavailable"}
         return
-    tasks = ctx.storage.load_tasks(ctx.project_id)
-    if not tasks:
-        yield {"type": "text", "text": "_no tasks in this project_"}
-        yield {"type": "done"}
-        return
+    try:
+        tasks = ctx.storage.load_tasks(ctx.project_id)
+    except Exception:
+        tasks = []
 
     def _tone(status: str) -> str:
         s = (status or "").lower()
@@ -647,8 +665,8 @@ def _cmd_tasks(ctx: CommandContext) -> Iterator[dict]:
         status="ok",
         payload=CardListPayload(
             items=items,
-            summary=" · ".join(summary_bits),
-            empty_hint=None,
+            summary=" · ".join(summary_bits) if items else None,
+            empty_hint="no tasks in this project" if not items else None,
         ).__dict__,
     )
     yield to_dict(card)
@@ -687,7 +705,16 @@ def _cmd_cost(ctx: CommandContext) -> Iterator[dict]:
     """
     project = ctx.project
     if project is None or project.metrics is None:
-        yield {"type": "text", "text": "_metrics not configured for this project_"}
+        card = CardEvent(
+            id="cost",
+            variant="key_value",
+            title=f"Cost snapshot · {ctx.tenant_id or 'unknown'}",
+            icon="cost",
+            status="warning",
+            error_message="metrics not configured for this project",
+            payload=CardKeyValuePayload(pairs=[]).__dict__,
+        )
+        yield to_dict(card)
         yield {"type": "done"}
         return
     tenant = project.tenant_id or ctx.tenant_id or "unknown"
@@ -1075,9 +1102,10 @@ def _cmd_loop(ctx: CommandContext) -> Iterator[dict]:
                 cron_jobs = list(project.scheduler.list_jobs())
             except Exception:
                 cron_jobs = []
-        if project.wakeups is not None:
+        wakeups_mgr = getattr(project, "wakeups", None)
+        if wakeups_mgr is not None:
             try:
-                wakeups = project.wakeups.list()
+                wakeups = wakeups_mgr.list()
             except Exception:
                 wakeups = []
 
@@ -1096,8 +1124,9 @@ def _cmd_loop(ctx: CommandContext) -> Iterator[dict]:
                     return
             except Exception:
                 pass
-        if project.wakeups is not None:
-            ok = project.wakeups.cancel(job_id)
+        wakeups_mgr = getattr(project, "wakeups", None)
+        if wakeups_mgr is not None:
+            ok = wakeups_mgr.cancel(job_id)
             if ok:
                 yield {"type": "text", "text": f"🚫 cancelled wakeup `{job_id}`"}
                 yield {"type": "done"}
@@ -1108,10 +1137,19 @@ def _cmd_loop(ctx: CommandContext) -> Iterator[dict]:
 
     # Default: list everything.
     if not cron_jobs and not wakeups:
-        yield {"type": "text",
-               "text": "_no scheduled jobs in this project. "
-                       "Use the agent's schedule_cron or schedule_wakeup "
-                       "tool to create one._"}
+        card = CardEvent(
+            id="loop",
+            variant="list",
+            title=f"Scheduled jobs · {ctx.project_id}",
+            icon="loop",
+            status="ok",
+            payload=CardListPayload(
+                items=[],
+                summary=None,
+                empty_hint="no scheduled jobs in this project. Use the agent's schedule_cron or schedule_wakeup tool to create one.",
+            ).__dict__,
+        )
+        yield to_dict(card)
         yield {"type": "done"}
         return
     import time as _time
@@ -1305,9 +1343,19 @@ def _cmd_workflow(ctx: CommandContext) -> Iterator[dict]:
 
     wf = getattr(project, "active_workflow", None) if project else None
     if wf is None:
-        yield {"type": "text",
-               "text": "_no active workflow. Use the agent's "
-                       "`workflow_create` tool to start one._"}
+        card = CardEvent(
+            id="workflow",
+            variant="list",
+            title=f"Workflow · {ctx.project_id}",
+            icon="workflow",
+            status="ok",
+            payload=CardListPayload(
+                items=[],
+                summary=None,
+                empty_hint="no active workflow. Use the agent's `workflow_create` tool to start one.",
+            ).__dict__,
+        )
+        yield to_dict(card)
         yield {"type": "done"}
         return
 
@@ -1496,12 +1544,6 @@ def _cmd_bg(ctx: CommandContext) -> Iterator[dict]:
         return
 
     tasks = bg.list_tasks()
-    if not tasks:
-        yield {"type": "text",
-               "text": "_no background tasks in this project. "
-                       "Use `bash run_in_background=true` to start one._"}
-        yield {"type": "done"}
-        return
     counts: dict[str, int] = {}
     items: list[CardListItem] = []
     for t in tasks:
@@ -1531,7 +1573,8 @@ def _cmd_bg(ctx: CommandContext) -> Iterator[dict]:
         status="ok",
         payload=CardListPayload(
             items=items,
-            summary=" · ".join(summary_bits),
+            summary=" · ".join(summary_bits) if items else None,
+            empty_hint="no background tasks in this project. Use `bash run_in_background=true` to start one." if not items else None,
         ).__dict__,
         # Live-refresh every 3s while any task is still running. The
         # frontend CardView polls /bg and replaces this card by id, so

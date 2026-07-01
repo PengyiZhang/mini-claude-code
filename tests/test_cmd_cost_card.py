@@ -83,11 +83,12 @@ def test_cost_card_has_request_outcomes_pair():
     assert "error=1" in pairs["requests"]
 
 
-def test_cost_no_metrics_yields_text_not_card():
-    """Without a metrics registry the command should emit a text marker
-    (so 'no metrics configured' is distinguishable from 'zero usage')."""
+def test_cost_no_metrics_yields_warning_card():
+    """Without a metrics registry the command should emit a warning card
+    (so 'no metrics configured' is distinguishable from 'zero usage'
+    while still preserving the card-shaped UI)."""
     events = _run_cost(project=None)
     card = _extract_card(events)
-    assert card is None
-    text = "".join(e.get("text", "") for e in events if e.get("type") == "text")
-    assert "not configured" in text.lower()
+    assert card is not None
+    assert card["status"] == "warning"
+    assert card.get("error_message")

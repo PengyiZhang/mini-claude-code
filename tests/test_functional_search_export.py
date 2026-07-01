@@ -50,17 +50,20 @@ def test_search_command_finds_matches(tmp_path):
 
 
 def test_search_command_handles_empty_query():
-    text, done = _consume(_cmd_search(_ctx(args="")))
-    assert "Usage" in text
-    assert done
+    events = list(_cmd_search(_ctx(args="")))
+    card = next(e for e in events if e["type"] == "card")
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
 
 
 def test_search_command_reports_no_matches(tmp_path):
     from mini_cc.storage.fs import FSStorage
     s = FSStorage(tmp_path)
     s.save_messages("p1", "sess_a", [{"role": "user", "content": "hello"}])
-    text, _ = _consume(_cmd_search(_ctx(storage=s, args="missing")))
-    assert "No matches" in text
+    events = list(_cmd_search(_ctx(storage=s, args="missing")))
+    card = next(e for e in events if e["type"] == "card")
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
 
 
 def test_search_registered_in_default_registry():

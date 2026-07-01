@@ -99,14 +99,16 @@ def test_bg_card_summary_counts_by_status():
     assert "1" in summary and "completed" in summary.lower()
 
 
-def test_bg_no_tasks_yields_text_marker():
+def test_bg_no_tasks_emits_empty_state_card():
+    """Empty roster yields a list card with empty_hint, not text."""
     bg = SimpleNamespace(list_tasks=lambda: [], stop=lambda bid: "")
     project = SimpleNamespace(background=bg)
     events = _run_bg(project)
     card = _extract_card(events)
-    assert card is None
-    text = "".join(e.get("text", "") for e in events if e.get("type") == "text")
-    assert "no background" in text.lower()
+    assert card is not None
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint") is not None
+    assert "no background" in card["payload"]["empty_hint"].lower()
 
 
 def test_bg_no_scheduler_yields_text_marker():

@@ -279,8 +279,9 @@ def test_slash_commands_registered():
 
 def test_loop_command_empty():
     events = _run_cmd("loop", project=None)
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "no scheduled jobs" in text.lower() or "no active" in text.lower()
+    card = next(e for e in events if e["type"] == "card")
+    assert card["payload"]["items"] == []
+    assert card["payload"].get("empty_hint")
 
 
 def test_loop_command_lists_jobs():
