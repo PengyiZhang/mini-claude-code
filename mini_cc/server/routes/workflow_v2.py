@@ -294,6 +294,26 @@ def list_runs(pid: str = Path(...),
     return [_run_to_out(r) for r in svc.list_runs(pid, def_id=def_id)]
 
 
+# debug.7.md Task 3b — candidate-approvers picker for checkpoint UI.
+# Surfaces the project's spawner roster (alive + recently stopped) so
+# the dropdown can pre-populate teammate names instead of forcing the
+# user to type blind. Synthetic 'lead' + 'human' entries round out
+# the list for self-approve / arbitrary-name cases.
+@runs_router.get("/{run_id}/steps/{step_id}/approvers")
+def list_approvers(run_id: str = Path(...),
+                   step_id: str = Path(...),
+                   pid: str = Path(...),
+                   tid: str = Depends(require_scope("projects:read")),
+                   pm=Depends(get_pm)) -> list[dict]:
+    validate_id(pid)
+    # _service_for enforces the tenant boundary; the project it
+    # returns carries the .teams spawner we need.
+    svc = _service_for(pm, pid, tid)
+    project = pm.get(pid)
+    from ...workflow.approvers import list_candidate_approvers
+    return list_candidate_approvers(project)
+
+
 @runs_router.get("/{run_id}", response_model=RunOut)
 def get_run(run_id: str = Path(...),
             pid: str = Path(...),
