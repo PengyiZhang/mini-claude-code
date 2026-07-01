@@ -102,3 +102,14 @@ cd mini_cc/web && VITE_API_BASE=http://127.0.0.1:8002 /d/nodejs/node.exe ./node_
 ### 2026-07-02 05:50（cron #2 - 校验）
 - 检查 00:40 cron 已完成所有 TODO（除两项标 ~~delete~~ / sink 重绑因 LLM 路径未走而跳过）
 - 状态：已完成，无需重复
+
+### 2026-07-02 14:00（cron #3 - 用户反馈 + bug 修复 + LLM 实测）
+- 用户反馈："先修 bugs，测试太简单不实用，基于实际任务用 LLM"
+- **找到真 bug**：persistent teammate 在 idle_timeout 后 `continue` 重入 while，每 60s 重跑一次 `loop.run(stale next_input)` —— `lead.jsonl` 出现 25+ 条相同 "Work Complete Summary"。之前以为的 "alive 标志没翻" 只是表象
+- **TDD 修复**：`mini_cc/teams/__init__.py:433-460` —— persistent 路径改成紧密 `_idle_poll` 循环；非 persistent 保留遗留"超时即退"。回归测试 `test_persistent_teammate_does_not_burn_llm_calls_when_idle` 断言 4+ 个 idle 周期后 `loop.runs == 1`。10/10 GREEN
+- **LLM 实测（之前跳过的两项现已补上）**：
+  - LLM 驱动 spawn alice + lead @mention ping → alice 回 `pong` **恰好一次**（直接证据：fix 在生产路径生效）。截图 10/11 落 `docs/mini_cc/zh/img/`
+  - LLM 驱动 triage workflow `pw_triage_demo`：LLM 把 "my app crashes on startup" 分类成 `bug`，branch 据此选 `bug_path`，loop 步迭代 2 次退出 —— 验证 state-passing 跨 action/branch/loop 真的能工作
+- 文档：§1.6（LLM @mention 实测）+ §1.7（bug 根因 + 修复）+ §2.4（LLM 驱动 triage workflow）+ §4（移除旧"alive 不更新"条目）
+- commit `c888ec5`：fix + 回归测试 + 文档 + 截图 10/11
+- **任务完成**，所有 TODO（含原被跳过的两条）均已覆盖
