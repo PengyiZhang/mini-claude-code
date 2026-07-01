@@ -143,6 +143,13 @@ class TeammateInfo:
     thread: threading.Thread | None = None
     started_at: float = field(default_factory=time.time)
     stopped_at: float = 0.0
+    # 手工 spawn 的 teammate 默认常驻 (debug.7.md Task 1) — 仅在用户
+    # 显式 persistent=False 时才会在 idle_timeout 后退出。
+    persistent: bool = True
+    # 最近一次使用的 prompt — 用于 /agents edit 调整后下次 idle 唤醒时
+    # 注入。当前 _runner 直接通过 inbox 内容驱动下一轮，prompt 仅作为
+    # 元数据保留供 /agents roster 显示与未来 re-spawn。
+    prompt: str = ""
 
 
 class TeammateSpawner:
@@ -187,13 +194,14 @@ class TeammateSpawner:
             return [t for t in self._teammates.values() if t.alive]
 
     def spawn(self, name: str, role: str, prompt: str,
-              on_event=None) -> str | None:
+              on_event=None, *, persistent: bool = True) -> str | None:
         with self._lock:
             existing = self._teammates.get(name)
             if existing is not None and existing.alive:
                 return f"Teammate '{name}' already exists"
             self._prune_stopped_locked()
-        info = TeammateInfo(name=name, role=role)
+        info = TeammateInfo(name=name, role=role, persistent=persistent,
+                            prompt=prompt)
         thread = threading.Thread(
             target=self._runner, args=(info, prompt, on_event),
             daemon=True, name=f"teammate:{name}")
@@ -295,6 +303,46 @@ class TeammateSpawner:
                       f"Submit plan for: {task}", "message")
         return f"Asked {teammate_name} to submit a plan"
 
+    def delete(self, name: str) -> str:
+        """Remove a stopped teammate from the registry (debug.7.md Task 1d).
+
+        Refuses alive teammates — the caller must ``request_shutdown`` and
+        wait for the worker thread to exit first. Force-removing an alive
+        entry would leave the thread running with no registry handle.
+        Returns None on success or an error string.
+        """
+        with self._lock:
+            info = self._teammates.get(name)
+            if info is None:
+                return f"Teammate '{name}' not found"
+            if info.alive:
+                return (f"Teammate '{name}' is still alive — "
+                        "stop it first with `/agents stop`")
+            self._teammates.pop(name, None)
+        return None
+
+    def edit(self, name: str, *, role: str | None = None,
+             prompt: str | None = None) -> str:
+        """Update role and/or prompt on a stopped teammate (debug.7.md Task 1d).
+
+        Editing a live teammate mid-flight is refused — the running loop
+        has already captured the original values; subsequent idle turns
+        are driven by inbox contents, not the stored prompt.
+        Returns None on success or an error string.
+        """
+        with self._lock:
+            info = self._teammates.get(name)
+            if info is None:
+                return f"Teammate '{name}' not found"
+            if info.alive:
+                return (f"Teammate '{name}' is still alive — "
+                        "stop it before editing")
+            if role is not None:
+                info.role = role
+            if prompt is not None:
+                info.prompt = prompt
+        return None
+
     def list_pending_requests(self) -> list[ProtocolState]:
         return self.protocol.list_pending()
 
@@ -355,6 +403,10 @@ class TeammateSpawner:
                     should_shutdown = True
                     break
                 if result == "timeout":
+                    # debug.7.md Task 1: 手工 spawn 的 teammate 常驻 —
+                    # persistent=True 时继续等待，仅 persistent=False 才退出。
+                    if info.persistent:
+                        continue
                     break
                 next_input = user_input or ""
         except Exception as e:

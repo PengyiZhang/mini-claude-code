@@ -896,10 +896,68 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
             yield {"type": "text", "text": "\n".join(lines)}
             yield {"type": "done"}
             return
+        if sub == "delete" and len(parts) >= 2:
+            # debug.7.md Task 1d: drop a *stopped* teammate from the roster.
+            # Alive teammates must be stopped first (force-delete races the
+            # worker thread).
+            name = parts[1]
+            if _spawner_is_alive(spawner, name):
+                yield {"type": "error",
+                       "message": (f"Teammate '{name}' is still alive — "
+                                   "stop it first with `/agents stop`")}
+                yield {"type": "done"}
+                return
+            delete = getattr(spawner, "delete", None)
+            if not callable(delete):
+                yield {"type": "error",
+                       "message": "this spawner does not support delete"}
+                yield {"type": "done"}
+                return
+            err = delete(name)
+            if err is not None:
+                yield {"type": "error", "message": err}
+                yield {"type": "done"}
+                return
+            yield {"type": "text", "text": f"🗑 Teammate '{name}' deleted"}
+            yield {"type": "done"}
+            return
+        if sub == "edit" and len(parts) >= 2:
+            # debug.7.md Task 1d: update role/prompt on a stopped teammate.
+            name = parts[1]
+            if _spawner_is_alive(spawner, name):
+                yield {"type": "error",
+                       "message": (f"Teammate '{name}' is still alive — "
+                                   "stop it before editing")}
+                yield {"type": "done"}
+                return
+            edit = getattr(spawner, "edit", None)
+            if not callable(edit):
+                yield {"type": "error",
+                       "message": "this spawner does not support edit"}
+                yield {"type": "done"}
+                return
+            role, prompt = _parse_edit_args(ctx.args or "")
+            if role is None and prompt is None:
+                yield {"type": "error",
+                       "message": ("usage: `/agents edit <name> "
+                                   "[--role <r>] [--prompt <p>]` "
+                                   "(at least one flag required)")}
+                yield {"type": "done"}
+                return
+            err = edit(name, role=role, prompt=prompt)
+            if err is not None:
+                yield {"type": "error", "message": err}
+                yield {"type": "done"}
+                return
+            yield {"type": "text",
+                   "text": f"✏ Teammate '{name}' updated"}
+            yield {"type": "done"}
+            return
         yield {"type": "error",
                "message": f"unknown subcommand '{sub}'. "
                           "Use `/agents`, `/agents spawn ...`, "
-                          "`/agents stop <name>`, or `/agents inbox <name>`."}
+                          "`/agents stop <name>`, `/agents inbox <name>`, "
+                          "`/agents delete <name>`, or `/agents edit <name> ...`."}
         yield {"type": "done"}
         return
     all_known = list(getattr(spawner, "_teammates", {}).values())
@@ -939,10 +997,7 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
             # teammate's inbox (Phase 3.3). The slash command exists
             # already, so we just point at it.
             expandable_command=f"/agents inbox {info.name}",
-            menu=[
-                CardAction(label="stop", command=f"/agents stop {info.name}",
-                           tone="default"),
-            ],
+            menu=_agents_menu_for(info),
         ))
 
     summary = f"{alive_count} alive · {stopped_count} stopped" if all_known else None
@@ -964,6 +1019,75 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
     )
     yield to_dict(card)
     yield {"type": "done"}
+
+
+def _spawner_is_alive(spawner, name: str) -> bool:
+    """True if a teammate with `name` exists and is alive.
+
+    Prefers list_alive() (stable public API); falls back to the internal
+    registry dict for stubs that don't expose list_alive.
+    """
+    try:
+        return any(getattr(t, "name", None) == name
+                   for t in spawner.list_alive())
+    except Exception:
+        pass
+    registry = getattr(spawner, "_teammates", {})
+    info = registry.get(name)
+    return bool(info and getattr(info, "alive", False))
+
+
+def _agents_menu_for(info) -> list[CardAction]:
+    """Build the row-level action menu for a teammate.
+
+    Alive teammates: stop + inbox. Stopped: delete + edit (debug.7.md Task 1d).
+    """
+    if getattr(info, "alive", False):
+        return [
+            CardAction(label="stop",
+                       command=f"/agents stop {info.name}",
+                       tone="default"),
+        ]
+    return [
+        CardAction(label="edit",
+                   command=f"/agents edit {info.name}",
+                   tone="default"),
+        CardAction(label="delete",
+                   command=f"/agents delete {info.name}",
+                   tone="err"),
+    ]
+
+
+def _parse_edit_args(raw: str) -> tuple[str | None, str | None]:
+    """Parse `/agents edit <name> [--role <r>] [--prompt <p>]`.
+
+    Returns (role, prompt); each is None if not provided. Surrounding
+    double or single quotes on prompt are stripped.
+    """
+    raw = raw.strip()
+    # Drop leading "edit" token + name.
+    if raw.lower().startswith("edit"):
+        raw = raw[len("edit"):].strip()
+    # Skip the name token (positional).
+    tokens = raw.split(None, 1)
+    if not tokens:
+        return (None, None)
+    rest = tokens[1] if len(tokens) > 1 else ""
+    role: str | None = None
+    prompt: str | None = None
+    # Pull --prompt <text> first so its value can contain --role-like text.
+    m = re.search(r'(?:^|\s)--prompt[=\s]+(.+?)((?:\s)--role[=\s]+\S+|$)',
+                  rest, re.DOTALL)
+    if m:
+        prompt = m.group(1).strip()
+        if (prompt.startswith('"') and prompt.endswith('"')) or \
+           (prompt.startswith("'") and prompt.endswith("'")):
+            prompt = prompt[1:-1]
+        rest = (rest[:m.start()] + rest[m.end():]).strip()
+    m = re.search(r'(?:^|\s)--role[=\s]+(\S+)', rest)
+    if m:
+        role = m.group(1).strip()
+    return (role, prompt)
 
 
 def _parse_spawn_args(raw: str) -> tuple[str, str, str] | str:

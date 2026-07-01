@@ -147,7 +147,7 @@ def test_spawner_runs_prompt_and_marks_dead(tmp_path):
     spawner = TeammateSpawner(
         tmp_path / "ws", loop_factory=lambda sid: loop,
         idle_poll_interval=0.02, idle_timeout=0.1)
-    err = spawner.spawn("alice", "worker", "do thing")
+    err = spawner.spawn("alice", "worker", "do thing", persistent=False)
     assert err is None
     # Wait for thread to finish
     deadline = time.time() + 5
@@ -424,7 +424,7 @@ def test_spawner_plan_approval_cycle(tmp_path):
         tmp_path / "ws", loop_factory=lambda sid: _TwoRunLoop(),
         idle_poll_interval=0.02, idle_timeout=0.1)
 
-    spawner.spawn("alice", "worker", "initial prompt")
+    spawner.spawn("alice", "worker", "initial prompt", persistent=False)
     # Wait for the first turn + submit_plan to land
     deadline = time.time() + 2
     while not spawner._waiting_plan.get("alice") and time.time() < deadline:
@@ -456,7 +456,7 @@ def test_spawner_plan_approval_rejection_carries_feedback(tmp_path):
         tmp_path / "ws", loop_factory=lambda sid: _Loop(),
         idle_poll_interval=0.02, idle_timeout=0.1)
 
-    spawner.spawn("alice", "worker", "go")
+    spawner.spawn("alice", "worker", "go", persistent=False)
     deadline = time.time() + 2
     while not spawner._waiting_plan.get("alice") and time.time() < deadline:
         time.sleep(0.02)
@@ -485,7 +485,7 @@ def test_spawner_plan_approval_shutdown_during_wait(tmp_path):
         tmp_path / "ws", loop_factory=lambda sid: _Loop(),
         idle_poll_interval=0.02, idle_timeout=10)
 
-    spawner.spawn("alice", "worker", "go")
+    spawner.spawn("alice", "worker", "go", persistent=False)
     deadline = time.time() + 2
     while not spawner._waiting_plan.get("alice") and time.time() < deadline:
         time.sleep(0.02)
@@ -530,7 +530,7 @@ def test_idle_poll_claims_unclaimed_task(tmp_path):
         tmp_path / "ws", loop_factory=lambda sid: _Loop(),
         project_id="p", storage=storage,
         idle_poll_interval=0.02, idle_timeout=2)
-    spawner.spawn("alice", "worker", "first")
+    spawner.spawn("alice", "worker", "first", persistent=False)
     deadline = time.time() + 5
     while spawner.list_alive() and time.time() < deadline:
         time.sleep(0.05)
@@ -561,7 +561,7 @@ def test_idle_poll_skips_blocked_task(tmp_path):
         tmp_path / "ws", loop_factory=lambda sid: _Loop(),
         project_id="p", storage=storage,
         idle_poll_interval=0.02, idle_timeout=0.3)
-    spawner.spawn("alice", "worker", "first")
+    spawner.spawn("alice", "worker", "first", persistent=False)
     deadline = time.time() + 5
     while spawner.list_alive() and time.time() < deadline:
         time.sleep(0.05)
@@ -585,7 +585,7 @@ def test_idle_poll_timeout_exits_teammate(tmp_path):
         project_id="p",
         storage=FSStorage(tmp_path / "state"),
         idle_poll_interval=0.02, idle_timeout=0.2)
-    spawner.spawn("alice", "worker", "only turn")
+    spawner.spawn("alice", "worker", "only turn", persistent=False)
     deadline = time.time() + 5
     while spawner.list_alive() and time.time() < deadline:
         time.sleep(0.05)
@@ -604,7 +604,7 @@ def test_idle_poll_inbox_message_becomes_next_prompt(tmp_path):
     spawner = TeammateSpawner(
         tmp_path / "ws", loop_factory=lambda sid: _Loop(),
         idle_poll_interval=0.02, idle_timeout=1)
-    spawner.spawn("alice", "worker", "first")
+    spawner.spawn("alice", "worker", "first", persistent=False)
     # Give the first turn time to complete, then send a message
     time.sleep(0.2)
     spawner.bus.send("lead", "alice", "do more work", "message")
@@ -640,7 +640,7 @@ def test_idle_poll_with_worktree_redirects_loop_cwd(tmp_path):
         tmp_path / "ws", loop_factory=lambda sid: _Loop(),
         project_id="p", storage=storage,
         idle_poll_interval=0.02, idle_timeout=1)
-    spawner.spawn("alice", "worker", "first")
+    spawner.spawn("alice", "worker", "first", persistent=False)
     deadline = time.time() + 5
     while spawner.list_alive() and time.time() < deadline:
         time.sleep(0.05)
@@ -665,7 +665,7 @@ def test_idle_poll_no_worktree_does_not_redirect(tmp_path):
         tmp_path / "ws", loop_factory=lambda sid: _Loop(),
         project_id="p", storage=storage,
         idle_poll_interval=0.02, idle_timeout=0.3)
-    spawner.spawn("alice", "worker", "first")
+    spawner.spawn("alice", "worker", "first", persistent=False)
     deadline = time.time() + 5
     while spawner.list_alive() and time.time() < deadline:
         time.sleep(0.05)
