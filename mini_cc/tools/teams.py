@@ -32,6 +32,13 @@ def _send(ctx: ToolContext, args: dict) -> str:
     # Teammates identify themselves by their session name; the lead uses
     # the literal "lead".
     from_ = _name_from_session(ctx) or "lead"
+    # debug.7.md Task 1c: lead-side @mention must re-bind the teammate's
+    # event sink so events from the wake-up turn flow into the current
+    # SSE stream (the spawn-time sink went stale when spawn_teammate
+    # returned). Teammate-to-teammate sends don't need this — their
+    # events already route through their own runner's sink.
+    if from_ == "lead" and hasattr(spawner, "bind_event_sink"):
+        spawner.bind_event_sink(to, ctx.on_subagent_event)
     spawner.bus.send(from_, to, content, msg_type)
     return f"Sent to {to}"
 

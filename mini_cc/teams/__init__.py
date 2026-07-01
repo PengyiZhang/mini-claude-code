@@ -150,6 +150,12 @@ class TeammateInfo:
     # 注入。当前 _runner 直接通过 inbox 内容驱动下一轮，prompt 仅作为
     # 元数据保留供 /agents roster 显示与未来 re-spawn。
     prompt: str = ""
+    # Live event sink — re-bindable across turns. _runner reads this on
+    # every emitted event so the lead can refresh the sink when a new
+    # tool call wires up a fresh ctx.on_subagent_event (debug.7.md Task
+    # 1c: @mention on later turns must still surface teammate events
+    # to the main session).
+    event_sink: Callable[[dict], None] | None = None
 
 
 class TeammateSpawner:
@@ -201,14 +207,31 @@ class TeammateSpawner:
                 return f"Teammate '{name}' already exists"
             self._prune_stopped_locked()
         info = TeammateInfo(name=name, role=role, persistent=persistent,
-                            prompt=prompt)
+                            prompt=prompt, event_sink=on_event)
         thread = threading.Thread(
-            target=self._runner, args=(info, prompt, on_event),
+            target=self._runner, args=(info, prompt),
             daemon=True, name=f"teammate:{name}")
         info.thread = thread
         with self._lock:
             self._teammates[name] = info
         thread.start()
+        return None
+
+    def bind_event_sink(self, name: str, sink) -> str | None:
+        """Re-bind the teammate's live event sink (debug.7.md Task 1c).
+
+        Lead calls this whenever a fresh ctx.on_subagent_event is set up
+        (per tool call) so subsequent idle-wake turns route events into
+        the current SSE stream instead of the original spawn-time sink
+        which becomes stale once the spawn_teammate call returns.
+
+        Pass None to clear. Returns None on success or an error string.
+        """
+        with self._lock:
+            info = self._teammates.get(name)
+            if info is None:
+                return f"Teammate '{name}' not found"
+            info.event_sink = sink
         return None
 
     # Cap on retained stopped entries so `/agents` can still show
@@ -347,7 +370,7 @@ class TeammateSpawner:
         return self.protocol.list_pending()
 
     # ── Runner (worker thread body) ────────────────────────────────────
-    def _runner(self, info: TeammateInfo, prompt: str, on_event):
+    def _runner(self, info: TeammateInfo, prompt: str):
         # Hyphen not colon: see core/subagent.py for the validate_id rationale.
         loop = self._loop_factory(f"teammate-{info.name}")
         identity = (f"<identity>You are '{info.name}', a {info.role}. "
@@ -355,6 +378,19 @@ class TeammateSpawner:
                     f"Send your final summary to 'lead' via send_message "
                     f"before stopping. After calling submit_plan, end "
                     f"your turn and wait for approval.</identity>")
+
+        def _forward(ev: dict) -> None:
+            """Live event forwarding — re-read info.event_sink each call
+            so bind_event_sink takes effect on the next event."""
+            with self._lock:
+                sink = info.event_sink
+            if sink is not None:
+                try:
+                    sink(ev)
+                except Exception:
+                    # A broken sink must never tear down the teammate.
+                    pass
+
         try:
             # Pre-spawn drain: handle any pending protocol messages.
             for msg in self.bus.read_inbox(info.name):
@@ -370,8 +406,7 @@ class TeammateSpawner:
                 # shutdown detection lets a long-running generator exit
                 # as soon as the lead requests shutdown.
                 for ev in loop.run(next_input):
-                    if on_event is not None:
-                        on_event(ev)
+                    _forward(ev)
                     if ev.get("type") == "done":
                         pending = self.bus.peek_inbox(info.name)
                         if any(m.get("type") == "shutdown_request"
