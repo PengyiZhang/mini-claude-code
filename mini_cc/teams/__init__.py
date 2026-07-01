@@ -433,15 +433,32 @@ class TeammateSpawner:
                     continue
 
                 # Idle poll for inbox messages or unclaimed tasks.
+                # Persistent teammates must NOT re-enter loop.run() on
+                # timeout — that re-runs the LLM with stale next_input
+                # every idle_timeout cycle (one burn per minute forever;
+                # observed 25+ identical "Work Complete Summary" writes
+                # to lead.jsonl during Playwright e2e). Instead, keep
+                # re-polling the inbox until real work arrives or a
+                # shutdown turns up. Only non-persistent teammates fall
+                # through to the exit on first timeout.
+                if info.persistent:
+                    while True:
+                        result, user_input = self._idle_poll(info, loop)
+                        if result == "shutdown":
+                            should_shutdown = True
+                            break
+                        if result == "work":
+                            next_input = user_input or ""
+                            break
+                        # timeout: keep polling without LLM call
+                    if should_shutdown:
+                        break
+                    continue
                 result, user_input = self._idle_poll(info, loop)
                 if result == "shutdown":
                     should_shutdown = True
                     break
                 if result == "timeout":
-                    # debug.7.md Task 1: 手工 spawn 的 teammate 常驻 —
-                    # persistent=True 时继续等待，仅 persistent=False 才退出。
-                    if info.persistent:
-                        continue
                     break
                 next_input = user_input or ""
         except Exception as e:

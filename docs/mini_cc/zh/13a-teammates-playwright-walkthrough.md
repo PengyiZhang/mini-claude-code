@@ -135,27 +135,125 @@ $ tail mini_cc_data_e2e/tenants/e2e/projects/e2e_proj/workspace/.mailboxes/lead.
 
 ![08-agents-edit-blocked](img/08-agents-edit-blocked.png)
 
-> ⚠️ **本次实测发现一个 bug**：alice 处理完 shutdown_request 后，
-> `lead.jsonl` 收到了 shutdown_response，但 `TeammateSpawner` 注册表里
-> alice 仍然标记 `alive=True`，导致 `/agents` 卡片一直显示 alive
-> （age 涨到 5m 也不变）。这意味着 sub-AgentLoop 线程退出时
-> `_runner` 没把 `TeammateInfo.alive` 翻成 False —— 待修。详见
-> [13a 第 11 节「常见坑」](13a-teammates.md) 已记录此风险。
+> ✅ **2026-07-02 修复**：先前版本的"alice 一直显示 alive"现象，根因
+> **不是**注册表 alive 标志没翻，而是 persistent teammate 在 idle 超时后
+> 反复重入 `loop.run()` 烧 LLM，每 60s 一发不可破。修法见 1.7 节。
 
-### 1.6 sink 重绑机制（理论）
+### 1.6 LLM 驱动的 spawn → @mention → pong
 
-> 本次实测未能用 LLM 驱动 @mention（lead 主动发自然语言消息给 alice），
-> 因此 sink 重绑没有直接观测。机制说明见 [13a 第 6 节](13a-teammates.md)。
-> 简要总结：
->
-> - spawn 时 `ctx.on_subagent_event` 绑定到 `TeammateInfo.event_sink`
-> - 但下一回合 lead 的 `ctx` 是新的，sink 也变了
-> - 解法：`tools/teams.py:_send` 在 `from_=="lead"` 时调
->   `spawner.bind_event_sink(to, ctx.on_subagent_event)` 重新挂当前 sink
-> - `_runner._forward` 每次 emit 都重新读 `info.event_sink`，保证最新
->
-> **实操结论**：spawn 完直接 @mention 是等不到事件刷 UI 的；必须 lead 先
-> 主动发一次消息触发 sink 重绑。
+为了贴近真实使用场景（而不是 HTTP 直驱），用 lead 的 chat 自然语言
+驱动 `spawn_teammate` 工具，再让 lead 主动 @alice 触发 sink 重绑。
+
+#### 1.6.1 让 lead spawn alice
+
+在 chat 输入：
+
+```
+spawn alice as a researcher. Prompt: "When pinged, reply 'pong' to lead."
+```
+
+lead 的 LLM 调用 `spawn_teammate` 工具：
+
+![10-llm-spawn-alice](img/10-llm-spawn-alice.png)
+
+#### 1.6.2 让 lead ping alice
+
+接着输入：
+
+```
+@alice ping
+```
+
+lead 调 `send_message` 工具发了一条 ping 给 alice。这一发也触发了
+**sink 重绑**：`tools/teams.py:_send` 在 `from_=="lead"` 时调
+`spawner.bind_event_sink(to, ctx.on_subagent_event)` 把当前回合的 sink
+挂到 alice 的 `TeammateInfo.event_sink`，从此 alice 的事件能进 live SSE。
+
+![11-llm-lead-pinged-alice](img/11-llm-lead-pinged-alice.png)
+
+#### 1.6.3 验证 mailbox 里的 pong
+
+```bash
+$ tail mini_cc_data_e2e/tenants/e2e/projects/e2e_proj/workspace/.mailboxes/lead.jsonl
+{"from":"alice","to":"lead","content":"pong",
+ "type":"message","ts":1782915XXX.XX}
+```
+
+**关键证据**：alice **只回了一次 `pong`**。
+修复前在同一场景下，alice 会在每个 idle_timeout 周期重入 `loop.run()`，
+往 lead.jsonl 写入 25+ 条相同的 "Work Complete Summary"（见下节 bug
+分析）。这是验证修复在生产路径上确实生效的最直接证据。
+
+### 1.7 修复：persistent teammate 烧 LLM 的 bug
+
+#### 现象
+
+cron 跑长尾 e2e 时发现 `lead.jsonl` 里出现大量重复消息：
+
+```
+{"from":"alice","to":"lead","content":"Work Complete Summary: ..."}
+{"from":"alice","to":"lead","content":"Work Complete Summary: ..."}
+...   （25+ 条相同，时间戳每 60s 一发）
+```
+
+#### 根因
+
+`TeammateSpawner._runner` 在 `idle_poll` 超时后，对 persistent
+teammate 只是 `continue` 重入 while 循环：
+
+```python
+# 修复前
+if result == "timeout":
+    if info.persistent:
+        continue                  # ← 重入 while 顶部
+    break
+next_input = user_input or ""     # ← stale next_input
+```
+
+`continue` 后 while 顶部又调 `loop.run(next_input)`，而 `next_input`
+仍是上一轮的 identity+prompt —— 等于每 60s 烧一发 LLM 调用，永远不停。
+
+#### 修复
+
+`mini_cc/teams/__init__.py:433-460`：persistent teammate 超时后**不重入
+loop.run**，改在紧密循环里反复 `_idle_poll` inbox，直到真有工作或
+shutdown 才退出。非 persistent 仍保留"超时即退"的遗留语义。
+
+```python
+# 修复后
+if info.persistent:
+    while True:
+        result, user_input = self._idle_poll(info, loop)
+        if result == "shutdown":
+            should_shutdown = True
+            break
+        if result == "work":
+            next_input = user_input or ""
+            break
+        # timeout: keep polling without LLM call
+    if should_shutdown:
+        break
+    continue
+```
+
+#### 回归测试
+
+`tests/test_agents_persistent.py::test_persistent_teammate_does_not_burn_llm_calls_when_idle`
+显式断言：4 个 idle_timeout 周期过后，`loop.runs` 恰好被调一次（仅初始
+turn），不会再涨。
+
+### 1.8 sink 重绑机制（理论补充）
+
+spawn 时的 sink 在 `spawn_teammate` 工具返回后即失效；下一回合 lead
+有新的 `ctx.on_subagent_event`。解法：
+
+- `tools/teams.py:_send` 在 `from_=="lead"` 时调
+  `spawner.bind_event_sink(to, ctx.on_subagent_event)` 重新挂当前 sink
+- `_runner._forward` 每次 emit 都重新读 `info.event_sink`，保证最新
+
+**实操结论**（已在 1.6 实测验证）：spawn 完直接 @mention 是等不到事件
+刷 UI 的；必须 lead 先主动发一次消息触发 sink 重绑 —— 这正是 1.6.2
+"ping alice" 那一步做的事。
 
 ---
 
@@ -412,6 +510,117 @@ POST .../workflow-runs/wfrun_0b1f49d139/drive → 200 { "status": "completed" }
 把 `decision` 改成 `"reject"` 即可。`resolve_gate` 会把 review 步标
 `failed`，run 整体翻 `failed`，后续步不再跑。
 
+### 2.4 真实任务：LLM 驱动的 triage → branch → loop refine
+
+前面 2.1–2.3 的 prompt 都是「Reply: xxx」的占位级别。真实任务里，
+我们想让 LLM **真的判断输入属于哪类问题**，再 branch 到不同的处理
+路径，最后用一个 loop 步迭代精修输出。这一节就是这样的端到端例子。
+
+#### 2.4.1 业务场景
+
+客服 triage 流程：
+1. 把用户问题分到 `bug` / `feature` / `docs` 三类（action 步 → LLM 分类）
+2. 按 classification 路由到对应处理步（branch 步）
+3. 用 loop 步迭代精修两次输出（counter-controlled）
+
+#### 2.4.2 定义
+
+```http
+POST .../workflow-definitions
+{
+  "name": "pw_triage_demo",
+  "description": "Realistic LLM-driven triage: classify → branch → loop refine",
+  "state_schema": { "issue": "string", "refine_iter": "integer" },
+  "steps": [
+    {
+      "id": "triage",
+      "type": "action",
+      "prompt": "Classify this user issue into exactly one word: bug, feature, or docs. Issue: 'my app crashes on startup'"
+    },
+    {
+      "id": "route",
+      "type": "branch",
+      "config": {
+        "branches": [
+          { "when": "triage == 'bug'",     "next": "bug_path" },
+          { "when": "triage == 'feature'", "next": "feature_path" },
+          { "when": "triage == 'docs'",    "next": "docs_path" }
+        ],
+        "default_next": "docs_path"
+      }
+    },
+    { "id": "bug_path",     "type": "action",
+      "prompt": "Reply with one short sentence: the user is hitting a startup crash." },
+    { "id": "feature_path", "type": "action",
+      "prompt": "Reply with one short user-story sentence for the feature request." },
+    { "id": "docs_path",    "type": "action",
+      "prompt": "Reply with one short sentence describing the docs topic." },
+    {
+      "id": "refine_loop",
+      "type": "loop",
+      "config": {
+        "body": ["refine_body"],
+        "while": "refine_iter < 2",
+        "max_iterations": 5,
+        "counter_var": "refine_iter"
+      }
+    },
+    { "id": "refine_body", "type": "action",
+      "prompt": "Reply: refined version" },
+    { "id": "final", "type": "action", "prompt": "Reply: done" }
+  ]
+}
+```
+
+#### 2.4.3 跑一次
+
+```http
+POST .../workflow-definitions/<def_id>/runs
+{ "initial_state": { "issue": "my app crashes on startup", "refine_iter": 0 },
+  "trigger": { "type": "manual" } }
+
+POST .../workflow-runs/<run_id>/drive
+{ "session_id": "sess_ef72c57b" }
+```
+
+#### 2.4.4 实测结果
+
+LLM 真的把 "my app crashes on startup" 分类成了 `bug`，branch 因此选了
+`bug_path`，loop 步迭代到 refine_iter=2 退出：
+
+```json
+{
+  "final_status": "completed",
+  "step_runs": [
+    { "step_id": "triage", "output": "bug" },
+    { "step_id": "route",  "output": { "branch_taken": "bug_path" } },
+    { "step_id": "bug_path", "output": "Application crashes on startup" },
+    { "step_id": "feature_path", "output": "As a user, I want..." },
+    { "step_id": "docs_path",    "output": "Troubleshooting application..." },
+    { "step_id": "refine_loop",  "output": { "iterations": 2 } },
+    { "step_id": "refine_body",  "output": "Troubleshooting application startup crashes: common causes, error codes, and solutions" },
+    { "step_id": "final", "output": "done" }
+  ],
+  "final_state": {
+    "refine_iter": 2,
+    "triage": "bug",
+    "route":  { "branch_taken": "bug_path" },
+    ...
+  }
+}
+```
+
+#### 2.4.5 这一遍验证了什么
+
+- **action 步真能让 LLM 输出可用结构**（自由文本 `"bug"`）
+- **branch 步能基于上一步的 LLM 输出做决策**（`triage == 'bug'`）——
+  这是 state-passing 的关键：上一步的 output 自动写入
+  `state["triage"]`，下一步的 `when` 表达式直接以 `triage` 为变量名
+- **loop 步用 counter_var 真的迭代了 2 次**（不是 LLM 想象的次数）
+- 多分支的"未命中"路径（feature_path / docs_path）也被 drive 一并跑完
+  ——这是 branch fall-through 特性的副作用（见第 4 节已知坑 3），
+  真实业务里通常用 `next: null` 或额外的 end 占位来收尾
+
 ---
 
 ## 3. 三类步骤对照速查
@@ -434,33 +643,27 @@ POST .../workflow-runs/wfrun_0b1f49d139/drive → 200 { "status": "completed" }
 
 ## 4. 已知坑 + 待修
 
-1. **TeammateSpawner 注册表 alive 标志不更新**（实测 1.5 命中）
-   - 现象：alice 收到 shutdown_request、回了 shutdown_response、写好
-     summary 消息后，`TeammateInfo.alive` 仍然 `True`
-   - 影响：`/agents` 卡片永远显示 alive；`/agents edit` / `delete`
-     守卫拒绝；UI 误判
-   - 推测根因：sub-AgentLoop 线程在 `persistent=True` 路径下退出时
-     没调用 `info.alive = False`，或线程根本没退出（卡在 idle poll）
-   - 修法：在 `_runner` 的 finally 块加 `info.alive = False;
-     info.stopped_at = time.time()`，并在 `request_shutdown` 处理完后
-     显式 break idle loop
-
-2. **action 步的 prompt 容易被 LLM 误解为自然语言对话**
+1. **action 步的 prompt 容易被 LLM 误解为自然语言对话**
    - 现象：prompt 写「Increment state.counter」时，LLM 看不到 workflow
      上下文，回了一堆解释而不是真去改 state
    - 缓解：action 步的 prompt 要写得像独立任务；要操作 state 优先用
-     `validate` 类型步（Python 表达式直接求值）
+     `validate` 类型步（Python 表达式直接求值）。下文 4.1 给了个
+     LLM 驱动的真实 triage 例子。
 
-3. **前端 workflow 列表缓存**（PW UI 命中）
+2. **前端 workflow 列表缓存**（PW UI 命中）
    - 现象：通过 HTTP 新建的 workflow 定义，UI 列表不刷新出来（即使
      `#/projects/.../workflows` 重新 navigate 也不行）
    - 推测：workflowV2Store 用了 swr-style cache，没正确 invalidate
    - 绕过：用 HTTP API 直接操作；UI 截图改用现有定义
 
-4. **branch 默认 fall-through 不终止**
+3. **branch 默认 fall-through 不终止**
    - 现象：`say_yes` 跑完后会继续线性跑到 `say_no`（如果 def 里它俩相邻）
    - 设计：branch 只是「跳到 X」，从 X 继续 linear；不会重置后续步
    - 缓解：在 `say_yes` 加 `next: null` 或在 def 末尾加 `end` 占位
+
+> ✅ 已修：persistent teammate 烧 LLM（旧版 1.5 "alive 标志不更新"的
+> 真实根因）。详见 1.7 节，回归测试
+> `tests/test_agents_persistent.py::test_persistent_teammate_does_not_burn_llm_calls_when_idle`。
 
 ---
 

@@ -97,6 +97,37 @@ def test_persistent_teammate_wakes_on_new_message(tmp_path):
         time.sleep(0.02)
 
 
+def test_persistent_teammate_does_not_burn_llm_calls_when_idle(tmp_path):
+    """Regression: persistent teammate must NOT re-invoke loop.run() every
+    idle_timeout cycle. Before the fix, ``continue`` re-entered the while
+    loop with stale ``next_input`` and burned one LLM call per minute
+    indefinitely (25+ identical "Work Complete Summary" messages observed
+    in lead.jsonl during Playwright e2e).
+
+    Fix: persistent teammates re-poll the inbox without re-running the
+    LLM; loop.run() is invoked only on initial spawn or when a real
+    inbox message arrives.
+    """
+    loop = _FakeLoop([{"type": "done"}])
+    spawner = TeammateSpawner(
+        tmp_path / "ws", loop_factory=lambda sid: loop,
+        idle_poll_interval=0.02, idle_timeout=0.1)
+    err = spawner.spawn("dave", "worker", "init prompt")
+    assert err is None
+    # Wait long enough for ~4 idle_timeout cycles (0.1s each). Pre-fix
+    # this would produce 4+ loop.run() calls (one per cycle).
+    time.sleep(0.55)
+    assert len(loop.runs) == 1, (
+        f"persistent idle teammate burned {len(loop.runs)} LLM calls "
+        "across 4+ idle cycles — expected exactly 1 (initial turn)")
+    assert spawner.list_alive(), (
+        "persistent teammate must remain alive while idle")
+    spawner.request_shutdown("dave")
+    deadline = time.time() + 2
+    while spawner.list_alive() and time.time() < deadline:
+        time.sleep(0.02)
+
+
 # ── /agents delete + edit subcommands (Task 1d) ─────────────────────────
 
 
