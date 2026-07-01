@@ -40,6 +40,17 @@ def _send(ctx: ToolContext, args: dict) -> str:
     if from_ == "lead" and hasattr(spawner, "bind_event_sink"):
         spawner.bind_event_sink(to, ctx.on_subagent_event)
     spawner.bus.send(from_, to, content, msg_type)
+    # debug.7.md Task 1e: warn when sending to a known-but-stopped
+    # teammate — the message is queued in the mailbox but won't be
+    # processed until the teammate is restarted. Without this hint the
+    # user stared at a silent tool_result and confused it with stale
+    # activities from the original spawn.
+    if from_ == "lead":
+        registry = getattr(spawner, "_teammates", {}) or {}
+        info = registry.get(to)
+        if info is not None and not getattr(info, "alive", False):
+            return (f"Sent to {to} (queued — {to} is stopped; "
+                    "restart via /agents spawn to process)")
     return f"Sent to {to}"
 
 
