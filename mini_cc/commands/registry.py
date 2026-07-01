@@ -530,17 +530,49 @@ def _render_session_markdown(session_id: str, msgs: list[dict]) -> str:
 
 
 def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
-    """List MCP servers registered for this project, as a list card.
+    """MCP server management, aligned with Claude Code's /mcp.
 
-    Rows are bucketed by state — connected (tone=ok), available
-    (default), failed-to-connect (err). Each row's subtitle shows tool
-    count for connected servers or the failure reason for failed ones.
+    Subcommands (debug.7.md Task 2):
+    - no args: roster card (connected / failed / available)
+    - ``tools [server]``: list tools, optionally filtered to one server
+    - ``connect <name>``: invoke pool.connect(name)
+    - ``disconnect <name>``: invoke pool.disconnect(name)
+    - ``reconnect <name>``: disconnect then connect
     """
     project = ctx.project
     if project is None or project.mcp_pool is None:
         yield {"type": "error", "message": "MCP not configured for this project"}
+        yield {"type": "done"}
         return
     pool = project.mcp_pool
+    parts = (ctx.args or "").split()
+    if parts:
+        sub = parts[0].lower()
+        if sub == "tools":
+            yield from _mcp_tools(pool, parts[1] if len(parts) > 1 else None,
+                                  ctx.project_id)
+            return
+        if sub in ("connect", "disconnect", "reconnect") and len(parts) >= 2:
+            yield from _mcp_lifecycle(pool, sub, parts[1])
+            return
+        if sub in ("connect", "disconnect", "reconnect"):
+            yield {"type": "error",
+                   "message": f"usage: `/mcp {sub} <name>`"}
+            yield {"type": "done"}
+            return
+        yield {"type": "error",
+               "message": (f"unknown subcommand '{sub}'. "
+                           "Use `/mcp`, `/mcp tools [server]`, "
+                           "`/mcp connect <name>`, "
+                           "`/mcp disconnect <name>`, or "
+                           "`/mcp reconnect <name>`.")}
+        yield {"type": "done"}
+        return
+    yield from _mcp_roster(pool, ctx.project_id)
+
+
+def _mcp_roster(pool, project_id: str) -> Iterator[dict]:
+    """Default `/mcp` roster card (the original behaviour)."""
     try:
         connected = list(pool.list_connected())
     except Exception:
@@ -568,7 +600,14 @@ def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
             subtitle=f"{tool_count} tools live",
             icon="mcp",
             badges=[CardBadge(text="connected", tone="ok")],
-            menu=[],
+            menu=[
+                CardAction(label="tools",
+                           command=f"/mcp tools {name}", tone="default"),
+                CardAction(label="reconnect",
+                           command=f"/mcp reconnect {name}", tone="default"),
+                CardAction(label="disconnect",
+                           command=f"/mcp disconnect {name}", tone="err"),
+            ],
         ))
     for name in failed:
         reason = getattr(attempts.get(name), "message", "") or "failed"
@@ -578,17 +617,22 @@ def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
             subtitle=reason,
             icon="mcp",
             badges=[CardBadge(text="failed", tone="err")],
-            menu=[],
+            menu=[
+                CardAction(label="reconnect",
+                           command=f"/mcp reconnect {name}", tone="accent"),
+            ],
         ))
     for name in connectable:
         items.append(CardListItem(
             id=f"mcp:{name}",
             title=name,
-            subtitle="available — ask the agent to `connect_mcp "
-                     f"{name}`",
+            subtitle="available — click connect",
             icon="mcp",
             badges=[CardBadge(text="available", tone="default")],
-            menu=[],
+            menu=[
+                CardAction(label="connect",
+                           command=f"/mcp connect {name}", tone="accent"),
+            ],
         ))
     summary_bits: list[str] = []
     if connected:
@@ -600,7 +644,7 @@ def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
     card = CardEvent(
         id="mcp",
         variant="list",
-        title=f"MCP servers · {ctx.project_id}",
+        title=f"MCP servers · {project_id}",
         icon="mcp",
         status="ok",
         payload=CardListPayload(
@@ -608,8 +652,128 @@ def _cmd_mcp(ctx: CommandContext) -> Iterator[dict]:
             summary=" · ".join(summary_bits) if items else None,
             empty_hint="no MCP servers registered. Drop a `.mcp.json` into any `.mini_cc/` tier, or register a factory at app startup via `MCPPool.register_factory(name, fn)`." if not items else None,
         ).__dict__,
+        actions=[
+            CardAction(label="＋ tools", command="/mcp tools", tone="default"),
+        ],
     )
     yield to_dict(card)
+    yield {"type": "done"}
+
+
+def _mcp_tools(pool, server: str | None, project_id: str) -> Iterator[dict]:
+    """``/mcp tools [server]`` — list tools from connected servers.
+
+    Server filter narrows to one named server; an unknown server name
+    emits an empty-state hint rather than a confusing empty list.
+    """
+    connected = list(pool.list_connected())
+    if server is not None and server not in connected:
+        card = CardEvent(
+            id="mcp-tools",
+            variant="list",
+            title=f"MCP tools · {project_id}",
+            icon="mcp",
+            status="ok",
+            payload=CardListPayload(
+                items=[],
+                empty_hint=(f"no such server '{server}' (or not connected). "
+                            "Use `/mcp` to see connected servers."),
+            ).__dict__,
+        )
+        yield to_dict(card)
+        yield {"type": "done"}
+        return
+    clients_dict = getattr(pool, "_clients", {})
+    items: list[CardListItem] = []
+    for srv in connected:
+        if server is not None and srv != server:
+            continue
+        client = clients_dict.get(srv)
+        tools = getattr(client, "tools", []) or []
+        for t in tools:
+            tname = t.get("name", "?")
+            desc = (t.get("description", "") or "").strip()
+            if len(desc) > 90:
+                desc = desc[:87] + "…"
+            items.append(CardListItem(
+                id=f"mcp-tool:{srv}:{tname}",
+                title=tname,
+                subtitle=desc or None,
+                icon="mcp",
+                badges=[CardBadge(text=srv, tone="default")],
+                menu=[],
+            ))
+    summary = (f"{len(items)} tool{'s' if len(items) != 1 else ''}"
+               if items else None)
+    card = CardEvent(
+        id="mcp-tools",
+        variant="list",
+        title=f"MCP tools · {project_id}",
+        icon="mcp",
+        status="ok",
+        payload=CardListPayload(
+            items=items,
+            summary=summary,
+            empty_hint=("no MCP tools available — connect a server via "
+                        "`/mcp connect <name>` first.")
+            if not items else None,
+        ).__dict__,
+    )
+    yield to_dict(card)
+    yield {"type": "done"}
+
+
+def _mcp_lifecycle(pool, action: str, name: str) -> Iterator[dict]:
+    """``/mcp connect|disconnect|reconnect <name>`` lifecycle op."""
+    if action == "connect":
+        try:
+            ok, msg = pool.connect(name)
+        except Exception as e:
+            yield {"type": "error",
+                   "message": f"connect failed: {e}"}
+            yield {"type": "done"}
+            return
+        if not ok:
+            yield {"type": "error", "message": msg}
+            yield {"type": "done"}
+            return
+        yield {"type": "text", "text": f"✓ {msg}"}
+        yield {"type": "done"}
+        return
+    if action == "disconnect":
+        try:
+            ok = pool.disconnect(name)
+        except Exception as e:
+            yield {"type": "error",
+                   "message": f"disconnect failed: {e}"}
+            yield {"type": "done"}
+            return
+        if not ok:
+            yield {"type": "error",
+                   "message": (f"MCP server '{name}' is not connected "
+                               "(nothing to disconnect)")}
+            yield {"type": "done"}
+            return
+        yield {"type": "text", "text": f"✓ disconnected {name}"}
+        yield {"type": "done"}
+        return
+    # reconnect
+    try:
+        pool.disconnect(name)
+    except Exception:
+        pass
+    try:
+        ok, msg = pool.connect(name)
+    except Exception as e:
+        yield {"type": "error",
+               "message": f"reconnect failed: {e}"}
+        yield {"type": "done"}
+        return
+    if not ok:
+        yield {"type": "error", "message": msg}
+        yield {"type": "done"}
+        return
+    yield {"type": "text", "text": f"✓ reconnected {name}"}
     yield {"type": "done"}
 
 
