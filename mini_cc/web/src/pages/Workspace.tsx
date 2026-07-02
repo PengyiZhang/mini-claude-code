@@ -13,6 +13,9 @@ import SlashMenu from "../components/SlashMenu";
 import TodoPanel from "../components/TodoPanel";
 import RunTablePanel from "../components/RunTablePanel";
 import TeammatesPanel from "../components/TeammatesPanel";
+import MentionPicker, { type MentionCandidate } from "../components/MentionPicker";
+import { runCommandForCard } from "../lib/commands";
+import type { CardEvent, CardListItem } from "../lib/types";
 import {
   ApiError,
   deleteSession,
@@ -100,6 +103,67 @@ export default function Workspace() {
   useEffect(() => {
     setSlashActive(0);
   }, [slashQuery]);
+
+  // ── Mention (@) autocomplete state ────────────────────────────────
+  // Mirrors the slash menu pattern but for `@<partial>`. Candidates
+  // come from a lightweight poll of /agents (every 4s — same cadence
+  // as TeammatesPanel) filtered to alive teammates. We only poll while
+  // a session is active; the roster is small (<= 10) so cheap.
+  const [teamCandidates, setTeamCandidates] = useState<MentionCandidate[]>([]);
+  useEffect(() => {
+    if (!sid) {
+      setTeamCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    const POLL_MS = 4000;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const card = await runCommandForCard(profile, pid, sid, "agents");
+        if (cancelled) return;
+        const items = (card?.payload as { items?: CardListItem[] } | undefined)?.items ?? [];
+        const alive = items
+          .filter((it) =>
+            it.badges.some((b) => b.text.toLowerCase() === "alive"),
+          )
+          .map((it) => ({ name: it.title, role: it.subtitle ?? "" }));
+        setTeamCandidates(alive);
+      } catch {
+        // swallow — next tick retries
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid, pid, profile.apiKey]);
+
+  // mentionOpen: true when the input ends with `@<partial>` (partial may
+  // be empty — that's the bare-`@` case). We match at end so `@bob hi`
+  // doesn't keep popping the menu after the user has moved on.
+  const mentionMatch = useMemo<null | { start: number; query: string }>(() => {
+    if (slashOpen) return null;
+    const m = input.match(/(?:^|\s)@([a-zA-Z0-9_一-龥-]*)$/);
+    if (!m) return null;
+    return { start: m.index! + m[0].length - m[1].length - 1, query: m[1] };
+  }, [input, slashOpen]);
+  const mentionOpen = mentionMatch !== null && teamCandidates.length > 0;
+  const mentionFiltered = useMemo(() => {
+    if (!mentionMatch) return [];
+    const q = mentionMatch.query.toLowerCase();
+    const matches = q
+      ? teamCandidates.filter((c) => c.name.toLowerCase().startsWith(q))
+      : teamCandidates;
+    return matches.slice(0, 8);
+  }, [mentionMatch, teamCandidates]);
+  const [mentionActive, setMentionActive] = useState(0);
+  useEffect(() => {
+    setMentionActive(0);
+  }, [mentionMatch?.query, mentionMatch?.start]);
 
   async function refreshSessions() {
     try {
@@ -497,6 +561,14 @@ export default function Workspace() {
     setInput(`/${cmd.name} `);
   }
 
+  function pickMention(name: string) {
+    if (!mentionMatch) return;
+    const before = input.slice(0, mentionMatch.start);
+    const after = input.slice(mentionMatch.start + mentionMatch.query.length + 1);
+    // Insert `@name ` so the user can keep typing the message body.
+    setInput(`${before}@${name} ${after}`);
+  }
+
   return (
     <div className="h-screen overflow-hidden flex flex-col">
       <TopBar title={`${pid}`} />
@@ -621,6 +693,28 @@ export default function Workspace() {
                       onPick={(c) => pickCommand(c)}
                     />
                   )}
+                  {mentionOpen && mentionFiltered.length > 0 && (
+                    <MentionPicker
+                      query={mentionMatch?.query ?? ""}
+                      candidates={mentionFiltered}
+                      activeIndex={Math.min(
+                        mentionActive,
+                        Math.max(mentionFiltered.length - 1, 0),
+                      )}
+                      onPick={(name) => pickMention(name)}
+                      onClose={() => {
+                        // Clear the @-token to dismiss the picker without
+                        // disturbing the rest of the input.
+                        if (mentionMatch) {
+                          const before = input.slice(0, mentionMatch.start);
+                          const after = input.slice(
+                            mentionMatch.start + mentionMatch.query.length + 1,
+                          );
+                          setInput(`${before}${after}`);
+                        }
+                      }}
+                    />
+                  )}
                   <textarea
                     rows={2}
                     placeholder={sid ? "send a message…  (type / for commands)" : "create a session first"}
@@ -628,6 +722,45 @@ export default function Workspace() {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => {
+                      if (mentionOpen && mentionFiltered.length > 0) {
+                        const n = mentionFiltered.length;
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          setMentionActive((i) => (i + 1) % n);
+                          return;
+                        }
+                        if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          setMentionActive((i) => (i - 1 + n) % n);
+                          return;
+                        }
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          const pick =
+                            mentionFiltered[Math.min(mentionActive, n - 1)];
+                          if (pick) pickMention(pick.name);
+                          return;
+                        }
+                        if (e.key === "Tab") {
+                          e.preventDefault();
+                          const pick =
+                            mentionFiltered[Math.min(mentionActive, n - 1)];
+                          if (pick) pickMention(pick.name);
+                          return;
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          // Strip the @-token to dismiss the picker.
+                          if (mentionMatch) {
+                            const before = input.slice(0, mentionMatch.start);
+                            const after = input.slice(
+                              mentionMatch.start + mentionMatch.query.length + 1,
+                            );
+                            setInput(`${before}${after}`);
+                          }
+                          return;
+                        }
+                      }
                       if (slashOpen) {
                         if (e.key === "ArrowDown") {
                           e.preventDefault();
