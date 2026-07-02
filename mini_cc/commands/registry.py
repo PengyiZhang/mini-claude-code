@@ -582,6 +582,13 @@ def _mcp_roster(pool, project_id: str) -> Iterator[dict]:
         available = list(_fn()) if callable(_fn) else []
     except Exception:
         available = []
+    # debug.8 Task B: servers known from a stored spec but currently
+    # disconnected — surface them in a "disconnected" state so the user
+    # can reconnect without a server restart.
+    try:
+        known = list(pool.list_known_servers()) if hasattr(pool, "list_known_servers") else []
+    except Exception:
+        known = []
     connectable = sorted(s for s in available if s not in connected)
     try:
         attempts = pool.list_attempts()
@@ -589,7 +596,11 @@ def _mcp_roster(pool, project_id: str) -> Iterator[dict]:
         attempts = {}
     failed = sorted(
         name for name, rec in attempts.items()
-        if not getattr(rec, "ok", False) and name not in connected)
+        if not getattr(rec, "ok", False)
+        and name not in connected
+        and name not in known)
+    disconnected = sorted(
+        s for s in known if s not in connected)
     items: list[CardListItem] = []
     for name in connected:
         client = getattr(pool, "_clients", {}).get(name)
@@ -607,6 +618,22 @@ def _mcp_roster(pool, project_id: str) -> Iterator[dict]:
                            command=f"/mcp reconnect {name}", tone="default"),
                 CardAction(label="disconnect",
                            command=f"/mcp disconnect {name}", tone="err"),
+            ],
+        ))
+    for name in disconnected:
+        # Spec retained, just not currently connected. Show transport
+        # type as the subtitle so the user knows what they're reconnecting.
+        spec = pool.get_spec(name) if hasattr(pool, "get_spec") else None
+        sub = f"{(spec or {}).get('type', 'mcp')} — click reconnect"
+        items.append(CardListItem(
+            id=f"mcp:{name}",
+            title=name,
+            subtitle=sub,
+            icon="mcp",
+            badges=[CardBadge(text="disconnected", tone="warn")],
+            menu=[
+                CardAction(label="reconnect",
+                           command=f"/mcp reconnect {name}", tone="accent"),
             ],
         ))
     for name in failed:
@@ -637,6 +664,8 @@ def _mcp_roster(pool, project_id: str) -> Iterator[dict]:
     summary_bits: list[str] = []
     if connected:
         summary_bits.append(f"{len(connected)} connected")
+    if disconnected:
+        summary_bits.append(f"{len(disconnected)} disconnected")
     if failed:
         summary_bits.append(f"{len(failed)} failed")
     if connectable:
@@ -757,18 +786,30 @@ def _mcp_lifecycle(pool, action: str, name: str) -> Iterator[dict]:
         yield {"type": "text", "text": f"✓ disconnected {name}"}
         yield {"type": "done"}
         return
-    # reconnect
-    try:
-        pool.disconnect(name)
-    except Exception:
-        pass
-    try:
-        ok, msg = pool.connect(name)
-    except Exception as e:
-        yield {"type": "error",
-               "message": f"reconnect failed: {e}"}
-        yield {"type": "done"}
-        return
+    # reconnect (debug.8 Task B): prefer pool.reconnect() which knows
+    # about stored specs; fall back to disconnect+connect for older pool
+    # implementations without the new method.
+    reconnect_fn = getattr(pool, "reconnect", None)
+    if callable(reconnect_fn):
+        try:
+            ok, msg = reconnect_fn(name)
+        except Exception as e:
+            yield {"type": "error",
+                   "message": f"reconnect failed: {e}"}
+            yield {"type": "done"}
+            return
+    else:
+        try:
+            pool.disconnect(name)
+        except Exception:
+            pass
+        try:
+            ok, msg = pool.connect(name)
+        except Exception as e:
+            yield {"type": "error",
+                   "message": f"reconnect failed: {e}"}
+            yield {"type": "done"}
+            return
     if not ok:
         yield {"type": "error", "message": msg}
         yield {"type": "done"}

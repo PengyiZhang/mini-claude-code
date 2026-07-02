@@ -86,6 +86,13 @@ class MCPPool:
         # name -> last outcome of a connect attempt. Populated by every
         # connect_* path so /mcp can show discovered-but-failed servers.
         self._attempts: dict[str, AttemptRecord] = {}
+        # name -> spec dict for servers connected via connect_from_spec
+        # OR connect_stdio/connect_http/connect_sse (we synthesize a spec
+        # from the call args). Kept across disconnect so /mcp can show a
+        # "disconnected" row and reconnect() has the data it needs
+        # (debug.8 Task B). Pre-fix, disconnect dropped the entry
+        # entirely and reconnect failed with "Unknown server".
+        self._specs: dict[str, dict] = {}
 
     def _record_attempt(self, name: str, ok: bool, message: str) -> None:
         self._attempts[name] = AttemptRecord(name=name, ok=ok, message=message)
@@ -123,6 +130,11 @@ class MCPPool:
             return False, f"Unknown server '{name}'. Available: {available}"
         client = factory()
         self._clients[name] = client
+        # debug.8 Task B: remember that this name is connectable via the
+        # factory so reconnect() works after disconnect(). The "spec" for
+        # a factory-registered server is a sentinel — we don't need to
+        # re-discover anything, just call connect(name) again.
+        self._specs[name] = {"type": "factory"}
         tool_names = [t["name"] for t in client.tools]
         msg = (f"Connected to MCP server '{name}'. "
                f"Discovered {len(client.tools)} tools: "
@@ -155,6 +167,9 @@ class MCPPool:
             self._record_attempt(name, False, str(e))
             return False, str(e)
         self._clients[name] = client
+        # debug.8 Task B: keep the spec for reconnect().
+        self._specs[name] = {"type": "stdio", "command": command,
+                             "env": env, "cwd": cwd}
         tool_names = [t["name"] for t in client.tools]
         msg = (f"Connected to MCP server '{name}' over stdio. "
                f"Discovered {len(client.tools)} tools: "
@@ -183,6 +198,8 @@ class MCPPool:
             self._record_attempt(name, False, str(e))
             return False, str(e)
         self._clients[name] = client
+        # debug.8 Task B: keep the spec for reconnect().
+        self._specs[name] = {"type": "http", "url": url, "headers": headers}
         tool_names = [t["name"] for t in client.tools]
         msg = (f"Connected to MCP server '{name}' over http. "
                f"Discovered {len(client.tools)} tools: "
@@ -207,6 +224,8 @@ class MCPPool:
             self._record_attempt(name, False, str(e))
             return False, str(e)
         self._clients[name] = client
+        # debug.8 Task B: keep the spec for reconnect().
+        self._specs[name] = {"type": "sse", "url": url, "headers": headers}
         tool_names = [t["name"] for t in client.tools]
         msg = (f"Connected to MCP server '{name}' over sse. "
                f"Discovered {len(client.tools)} tools: "
@@ -245,6 +264,42 @@ class MCPPool:
             return self.connect_sse(name, url, headers=spec.get("headers"))
         return False, f"MCP server '{name}': unknown type {spec_type!r}"
 
+    def reconnect(self, name: str) -> tuple[bool, str]:
+        """Re-establish a connection from the stored spec (debug.8 Task B).
+
+        - Still-connected: no-op success.
+        - Known (we have a spec): disconnect-then-connect for transport
+          types, or just :meth:`connect` for factory-registered servers.
+        - Unknown: helpful error listing every known server so the user
+          can see what's actually available.
+        """
+        if name in self._clients:
+            return True, f"MCP server '{name}' already connected"
+        spec = self._specs.get(name)
+        if spec is None:
+            known = ", ".join(sorted(self._specs.keys())) or "(none)"
+            return False, (f"Unknown server '{name}'. "
+                           f"Available: {known}")
+        # Drop any half-dead state, then re-run the connect path. The
+        # transport-specific connect_* methods already record attempts
+        # so /mcp's failed/disconnected/connected visibility stays
+        # accurate across reconnect cycles.
+        self.disconnect(name)  # no-op if not connected
+        if spec.get("type") == "factory":
+            return self.connect(name)
+        return self.connect_from_spec(name, spec)
+
+    def list_known_servers(self) -> list[str]:
+        """Every server we have a spec for, regardless of live state
+        (debug.8 Task B). Used by /mcp to render disconnected rows."""
+        return sorted(self._specs.keys())
+
+    def get_spec(self, name: str) -> dict | None:
+        """Return the stored spec for ``name`` (or None). Lets /mcp
+        render transport info for disconnected servers without needing
+        a live client."""
+        return self._specs.get(name)
+
     def disconnect(self, name: str) -> bool:
         """Disconnect from a server. Calls ``client.close()`` if the
         client exposes it (real stdio/http transports do; the in-process
@@ -255,6 +310,10 @@ class MCPPool:
         stdio subprocess running and the http connection pool held
         until GC happens to collect them — and on long-running servers
         that may be never.
+
+        debug.8 Task B: the spec is preserved (``self._specs``) so
+        ``reconnect()`` can find it later and ``/mcp`` can show the row
+        in a "disconnected" state instead of vanishing.
         """
         client = self._clients.pop(name, None)
         if client is None:
@@ -266,6 +325,14 @@ class MCPPool:
             except Exception:
                 pass
         return True
+
+    def forget(self, name: str) -> bool:
+        """Drop both the live client AND the stored spec. Use this when
+        the user explicitly removes a server (not just disconnects).
+        Returns True if anything was dropped."""
+        had_client = self.disconnect(name)
+        had_spec = self._specs.pop(name, None) is not None
+        return had_client or had_spec
 
     def disconnect_all(self) -> None:
         """Disconnect every connected client. Used at app shutdown so
