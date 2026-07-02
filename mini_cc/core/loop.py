@@ -443,6 +443,32 @@ class AgentLoop:
                 if isinstance(replaced, str):
                     user_input = replaced
             self.messages.append({"role": "user", "content": user_input})
+            # Lead-side @mention routing: if the user typed `@name …`,
+            # deliver a copy to each named teammate's inbox immediately.
+            # This runs BEFORE the LLM turn so the teammate's mailbox is
+            # populated by the time the lead's turn dispatches tools —
+            # deterministic routing that doesn't depend on the model
+            # remembering to call send_message. Only the lead session
+            # routes; teammate sessions (id starts with "teammate-")
+            # skip this to avoid echo loops.
+            if (self.project.teams is not None
+                    and not self.session_id.startswith("teammate-")):
+                from ..teams.mentions import route_mentions
+                try:
+                    recipients = route_mentions(
+                        self.project.teams.bus,
+                        from_agent="lead",
+                        text=user_input,
+                    )
+                except Exception:
+                    recipients = []
+                if recipients:
+                    self._emit({
+                        "type": "mention_routed",
+                        "from": "lead",
+                        "recipients": recipients,
+                        "content": user_input,
+                    })
         max_tokens = DEFAULT_MAX_TOKENS
 
         while not self._stop.is_set():
