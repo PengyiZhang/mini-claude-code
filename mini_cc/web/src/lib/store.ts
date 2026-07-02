@@ -97,6 +97,12 @@ export interface ChatMessage {
   cards?: CardEvent[];
   error?: string;
   notices?: string[];
+  // debug.8 Task A: distinguish teammate→lead messages from regular
+  // assistant turns so MessageBubble can render a distinct avatar/name.
+  // Absent on legacy messages → treated as ordinary assistant turn.
+  sender?: "lead" | "teammate";
+  // When sender === "teammate", name of the sender (e.g. "alice").
+  teammateName?: string;
 }
 
 interface ChatState {
@@ -111,6 +117,11 @@ interface ChatState {
   setCommandRunner: (fn: ((cmd: string) => void) | null) => void;
   runCommand: (command: string) => void;
   appendUser: (key: string, text: string) => void;
+  // debug.8 Task A: push a teammate→lead message into the chat log
+  // as its own bubble so it's visually distinguished from the lead's
+  // own assistant turns. Rendered with a distinct avatar/name by
+  // MessageBubble.
+  addTeammateMessage: (key: string, from: string, content: string) => void;
   startAssistant: (key: string) => void;
   appendText: (key: string, text: string) => void;
   addActivity: (key: string, act: ChatActivity) => void;
@@ -150,6 +161,21 @@ export const useChat = create<ChatState>((set, get) => ({
   appendUser: (key, text) =>
     set((s) => ({
       messages: { ...s.messages, [key]: [...(s.messages[key] ?? []), { role: "user", text }] },
+    })),
+  addTeammateMessage: (key, from, content) =>
+    set((s) => ({
+      messages: {
+        ...s.messages,
+        [key]: [
+          ...(s.messages[key] ?? []),
+          {
+            role: "assistant",
+            text: content,
+            sender: "teammate",
+            teammateName: from,
+          },
+        ],
+      },
     })),
   startAssistant: (key) =>
     set((s) => ({

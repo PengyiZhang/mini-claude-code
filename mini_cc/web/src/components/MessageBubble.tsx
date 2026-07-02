@@ -9,19 +9,46 @@ import { CardView } from "./cards"
 export default function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "user") {
     return (
-      <div className="flex justify-end">
-        <div className="bg-accent/15 border border-accent/30 text-ink rounded-lg rounded-br-sm px-4 py-2 max-w-[80%] whitespace-pre-wrap break-words">
-          {msg.text}
+      <div className="flex gap-3 justify-end">
+        <div className="flex-1 flex justify-end">
+          <div className="bg-accent/15 border border-accent/30 text-ink rounded-lg rounded-br-sm px-4 py-2 max-w-[80%] whitespace-pre-wrap break-words">
+            {msg.text}
+          </div>
+        </div>
+        <div className="size-8 rounded-md bg-gradient-to-br from-slate-500 to-slate-400 shrink-0 mt-0.5 flex items-center justify-center text-white text-xs font-semibold uppercase" title="You">
+          U
         </div>
       </div>
     );
   }
 
   const chatKey = (msg as unknown as { __key?: string }).__key;
+  // debug.8 Task A: teammate→lead messages get a distinct avatar + name
+  // so they're visually distinguishable from the lead's own assistant
+  // turns. Rendered through the same MarkdownRenderer pipeline so
+  // received markdown renders identically to agent output.
+  const isTeammate = msg.sender === "teammate";
+  const initial = isTeammate ? (msg.teammateName ?? "T").slice(0, 1).toUpperCase() : "L";
+  const nameBadge = isTeammate ? (
+    <div className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mb-0.5">
+      @{msg.teammateName ?? "teammate"}
+    </div>
+  ) : null;
   return (
     <div className="flex gap-3">
-      <div className="size-8 rounded-md bg-gradient-to-br from-accent to-indigo-400 shrink-0 mt-0.5" />
+      <div
+        className={
+          "size-8 rounded-md shrink-0 mt-0.5 flex items-center justify-center text-white text-xs font-semibold uppercase " +
+          (isTeammate
+            ? "bg-gradient-to-br from-emerald-500 to-teal-400"
+            : "bg-gradient-to-br from-accent to-indigo-400")
+        }
+        title={isTeammate ? `teammate: ${msg.teammateName ?? "?"}` : "Lead agent"}
+      >
+        {initial}
+      </div>
       <div className="flex-1 space-y-2 min-w-0">
+        {nameBadge}
         {msg.cards?.map((c) => (
           <CardView key={c.id} card={c} parentCardId={c.id} chatKey={chatKey} />
         ))}

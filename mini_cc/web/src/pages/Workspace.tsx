@@ -12,6 +12,7 @@ import SessionRow from "../components/SessionRow";
 import SlashMenu from "../components/SlashMenu";
 import TodoPanel from "../components/TodoPanel";
 import RunTablePanel from "../components/RunTablePanel";
+import TeammatesPanel from "../components/TeammatesPanel";
 import {
   ApiError,
   deleteSession,
@@ -52,6 +53,7 @@ export default function Workspace() {
   const chatMessages = useChat((s) => (chatKey ? (s.messages[chatKey] ?? EMPTY) : EMPTY));
   const streaming = useChat((s) => (chatKey ? Boolean(s.streaming[chatKey]) : false));
   const appendUser = useChat((s) => s.appendUser);
+  const addTeammateMessage = useChat((s) => s.addTeammateMessage);
   const startAssistant = useChat((s) => s.startAssistant);
   const appendText = useChat((s) => s.appendText);
   const addActivity = useChat((s) => s.addActivity);
@@ -381,6 +383,15 @@ export default function Workspace() {
             case "background_notification":
               addNotice(chatKey!, "background task reported back");
               break;
+            case "teammate_message":
+              // debug.8 Task A: live teammate→lead delivery via the
+              // spawner's lead side-channel. Render as its own bubble
+              // with a distinct avatar so the user can tell at a
+              // glance who's talking.
+              if (ev.from && ev.content) {
+                addTeammateMessage(chatKey!, ev.from, ev.content);
+              }
+              break;
           }
         },
         onError: (e) => {
@@ -550,8 +561,11 @@ export default function Workspace() {
           </div>
         </aside>
 
-        {/* Main */}
-        <main className="flex-1 flex flex-col min-w-0">
+        {/* Main + right-side TeammatesPanel (debug.8 Task A). Panel only
+            renders when there's at least one teammate in the project, so
+            for teammate-less sessions the chat pane owns the full width. */}
+        <main className="flex-1 flex min-h-0 min-w-0">
+          <div className="flex-1 flex flex-col min-w-0">
           {error && (
             <div className="text-sm text-err bg-err/10 border-b border-err/40 px-4 py-2">
               {error}
@@ -703,6 +717,10 @@ export default function Workspace() {
                 )}
               </div>
             </div>
+          )}
+          </div>
+          {tab === "chat" && sid && (
+            <TeammatesPanel pid={pid} sid={sid} />
           )}
         </main>
       </div>

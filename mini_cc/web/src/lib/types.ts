@@ -198,6 +198,9 @@ export type SendEvent =
   | { type: "max_tokens_escalation"; max_tokens: number }
   | { type: "cron_fired"; job_id: string; prompt: string }
   | { type: "background_notification" }
+  // debug.8 Task A: teammate→lead message delivered live through the
+  // spawner's lead side-channel. Shape mirrors the bus message dict.
+  | { type: "teammate_message"; from: string; to: string; content: string; msg_type: string; ts: number; metadata: Record<string, unknown> }
   | { type: "card" } & CardEvent;
 
 // ── Slash-command card schema ───────────────────────────────────────
