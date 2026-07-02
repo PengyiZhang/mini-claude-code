@@ -183,3 +183,94 @@ describe("rawToChatMessages — __card__ hydration", () => {
     expect(asst?.activities?.[0].result).toBe("data");
   });
 });
+
+// Bug 2 follow-up: hydrate-time dedup for adjacent same-id card bubbles.
+// TeammatesPanel polls /agents every 4s; pre-ephemeral-flag, every poll
+// persisted one __card__ bubble to disk. After refresh, the chat pane
+// filled with N stale roster snapshots. The dedup walks the assembled
+// message list and collapses runs of adjacent bubbles whose only
+// content is a single card with the same id — keeps the latest
+// snapshot, drops the orphaned older bubbles. Real usage (text or
+// other content between invocations) survives because the run is
+// broken by the interleaved content.
+describe("rawToChatMessages — adjacent same-id card dedup", () => {
+  const rosterBubble = (id: string, revision: number) => ({
+    role: "assistant",
+    content: [
+      {
+        type: "tool_use",
+        id: `card-${revision}`,
+        name: "__card__",
+        input: {
+          id,
+          variant: "list",
+          status: "ok",
+          payload: { items: [] },
+          actions: [],
+          emitted_at: 0,
+          revision,
+        },
+      },
+    ],
+  });
+  const toolResultFor = (revision: number) => ({
+    role: "user",
+    content: [
+      { type: "tool_result", tool_use_id: `card-${revision}`, content: "ok" },
+    ],
+  });
+
+  it("collapses three adjacent roster snapshots into the latest one", () => {
+    const raw = [
+      { role: "user", content: "/agents" },
+      rosterBubble("agents-roster", 1),
+      toolResultFor(1),
+      rosterBubble("agents-roster", 2),
+      toolResultFor(2),
+      rosterBubble("agents-roster", 3),
+      toolResultFor(3),
+    ];
+    const out = rawToChatMessages(raw as never);
+    const assistants = out.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].cards).toHaveLength(1);
+    expect(assistants[0].cards?.[0].revision).toBe(3);
+  });
+
+  it("preserves bubbles separated by real user text", () => {
+    const raw = [
+      { role: "user", content: "/agents" },
+      rosterBubble("agents-roster", 1),
+      toolResultFor(1),
+      // A real user message between two /agents calls — both should
+      // survive because the user explicitly re-ran the command.
+      { role: "user", content: "what does the roster look like now?" },
+      { role: "user", content: "/agents" },
+      rosterBubble("agents-roster", 2),
+      toolResultFor(2),
+    ];
+    const out = rawToChatMessages(raw as never);
+    const assistants = out.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(2);
+  });
+
+  it("does not collapse bubbles with different card ids", () => {
+    // rawToChatMessages merges consecutive assistant messages with no
+    // real user turn between them into a single bubble — so two
+    // different-id cards land in the SAME bubble's cards array. The
+    // dedup must keep both (they're not duplicates).
+    const raw = [
+      { role: "user", content: "/agents" },
+      rosterBubble("agents-roster", 1),
+      toolResultFor(1),
+      rosterBubble("workflow-runs", 1),
+      toolResultFor(1),
+    ];
+    const out = rawToChatMessages(raw as never);
+    const assistants = out.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    const ids = assistants[0].cards?.map((c) => c.id);
+    expect(ids).toContain("agents-roster");
+    expect(ids).toContain("workflow-runs");
+  });
+});

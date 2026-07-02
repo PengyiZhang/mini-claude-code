@@ -463,6 +463,78 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
       });
     }
   }
+  return dedupAdjacentCardBubbles(out);
+}
+
+/**
+ * Collapse runs of adjacent assistant bubbles whose only content is a
+ * single __card__ with the same id. Bug 2 follow-up: TeammatesPanel
+ * polls /agents every 4s; pre-ephemeral-flag every poll wrote one
+ * card bubble to disk, so a page refresh showed a wall of stale
+ * roster snapshots.
+ *
+ * Rule: walk the array, find maximal runs of consecutive assistant
+ * bubbles where each bubble has empty text, empty activities, and
+ * exactly one card. Within a run, drop all but the LAST bubble whose
+ * card id matches. Bubbles whose card id differs from the run's lead
+ * id break the run (so two different cards adjacent stay distinct).
+ * Bubbles with text or activities always survive (real user-driven
+ * invocations are preserved).
+ */
+function dedupAdjacentCardBubbles(msgs: ChatMessage[]): ChatMessage[] {
+  // Step 1: within each assistant bubble, collapse same-id cards to
+  // the latest revision. rawToChatMessages merges consecutive
+  // assistant messages into one bubble, so N polls → one bubble with
+  // N cards (same id, increasing revision). Keep only the newest.
+  for (const m of msgs) {
+    if (m.role !== "assistant" || !m.cards || m.cards.length <= 1) continue;
+    const latestById = new Map<string, CardEvent>();
+    for (const c of m.cards) {
+      const prev = latestById.get(c.id);
+      if (prev === undefined || (c.revision ?? 0) >= (prev.revision ?? 0)) {
+        latestById.set(c.id, c);
+      }
+    }
+    const seen = new Set<string>();
+    const deduped: CardEvent[] = [];
+    for (const c of m.cards) {
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      deduped.push(latestById.get(c.id)!);
+    }
+    m.cards = deduped;
+  }
+
+  // Step 2: collapse runs of adjacent lonely-card bubbles sharing the
+  // same card id — keep only the last snapshot. Catches bubbles
+  // separated by real user turns (e.g. user typed between two polls).
+  const isLonelyCardBubble = (m: ChatMessage): boolean => {
+    if (m.role !== "assistant") return false;
+    if ((m.text ?? "").length > 0) return false;
+    if ((m.activities ?? []).length > 0) return false;
+    return (m.cards ?? []).length === 1;
+  };
+  const out: ChatMessage[] = [];
+  let i = 0;
+  while (i < msgs.length) {
+    const m = msgs[i];
+    if (!isLonelyCardBubble(m)) {
+      out.push(m);
+      i++;
+      continue;
+    }
+    // Start a run; collect indices of consecutive lonely-card bubbles
+    // sharing the same card id. Keep the last; skip the rest.
+    const cardId = m.cards![0].id;
+    out.push(m);
+    let j = i + 1;
+    while (j < msgs.length && isLonelyCardBubble(msgs[j])
+           && msgs[j].cards![0].id === cardId) {
+      out[out.length - 1] = msgs[j]; // overwrite with newer snapshot
+      j++;
+    }
+    i = j;
+  }
   return out;
 }
 
