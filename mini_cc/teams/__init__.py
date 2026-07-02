@@ -58,6 +58,11 @@ class MessageBus:
     reflects the current mode for diagnostics.
     """
 
+    # Maximum number of history entries kept per agent. History logs
+    # outlive the live inbox and would otherwise grow unbounded across
+    # the lifetime of a project. Older entries are dropped FIFO.
+    _HISTORY_CAP = 200
+
     def __init__(self, workspace: Path):
         self.workspace = Path(workspace)
         self.dir = self.workspace / ".mailboxes"
@@ -67,6 +72,13 @@ class MessageBus:
         # cache is the source of truth for peek/drain; the file mirrors
         # it for cross-process visibility and crash recovery.
         self._cache: dict[str, list[dict]] = {}
+        # Append-only history (debug.8 Task B): per-agent log of every
+        # message ever received, surviving read_inbox drains and process
+        # restarts. Used by /agents inbox <name> and TeammatesPanel so
+        # the lead can review messages that arrived while they were
+        # looking elsewhere — the live inbox is drained by the
+        # teammate's own _idle_poll within seconds of arrival.
+        self._history: dict[str, list[dict]] = {}
         # File lock availability flag — flipped to False if portalocker
         # import or repeated acquires fail. Once degraded the bus keeps
         # running but loses cross-process safety.
@@ -80,6 +92,7 @@ class MessageBus:
         # Rebuild cache from existing .jsonl files so a process restart
         # doesn't lose unread messages.
         self._rebuild_cache_from_disk()
+        self._rebuild_history_from_disk()
 
     def _rebuild_cache_from_disk(self) -> None:
         """Populate the in-memory cache from any pre-existing .jsonl
@@ -87,6 +100,10 @@ class MessageBus:
         with self._lock:
             for path in self.dir.glob("*.jsonl"):
                 if not path.is_file():
+                    continue
+                # Skip history files — they're handled by
+                # _rebuild_history_from_disk to avoid double-parsing.
+                if path.name.endswith(".history.jsonl"):
                     continue
                 name = path.stem
                 try:
@@ -108,6 +125,42 @@ class MessageBus:
                 if msgs:
                     self._cache[name] = msgs
 
+    def _rebuild_history_from_disk(self) -> None:
+        """Populate the history cache from <name>.history.jsonl files.
+
+        Lives parallel to the live inbox (.jsonl) but is never drained.
+        Capped at _HISTORY_CAP entries per agent on rebuild — older
+        files past the cap keep their full contents on disk (we don't
+        rewrite them on load), but the cache only holds the tail.
+        """
+        with self._lock:
+            for path in self.dir.glob("*.history.jsonl"):
+                if not path.is_file():
+                    continue
+                # Strip the ".history" infix to recover the agent name.
+                # path.stem is "<name>.history" → drop the suffix.
+                stem = path.stem
+                name = stem[:-len(".history")] if stem.endswith(".history") else stem
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                msgs: list[dict] = []
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msgs.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+                if msgs:
+                    # Apply the cap on rebuild so a long-running project
+                    # doesn't pin unbounded history into memory.
+                    if len(msgs) > self._HISTORY_CAP:
+                        msgs = msgs[-self._HISTORY_CAP:]
+                    self._history[name] = msgs
+
     def set_lead_hook(self, hook: Callable[[dict], None] | None) -> None:
         """Install/replace the lead-delivery hook (or pass None to clear)."""
         self._lead_hook = hook
@@ -115,6 +168,13 @@ class MessageBus:
     def _path(self, agent: str) -> Path:
         safe = "".join(c for c in agent if c.isalnum() or c in "._-") or "anon"
         return self.dir / f"{safe}.jsonl"
+
+    def _history_path(self, agent: str) -> Path:
+        """Path to the append-only history log for ``agent``. Kept
+        separate from _path() so draining the live inbox never wipes
+        the history."""
+        safe = "".join(c for c in agent if c.isalnum() or c in "._-") or "anon"
+        return self.dir / f"{safe}.history.jsonl"
 
     @contextmanager
     def _try_file_lock(self, path: Path) -> Iterator[None]:
@@ -194,6 +254,20 @@ class MessageBus:
         with self._lock:
             self._cache.setdefault(to_agent, []).append(msg)
             self._append_disk(self._path(to_agent), msg)
+            # Append to the per-agent history log (debug.8 Task B). The
+            # history survives read_inbox drains and process restarts
+            # so /agents inbox <name> can show every received message
+            # even after the teammate's _idle_poll has drained the live
+            # inbox.
+            hist = self._history.setdefault(to_agent, [])
+            hist.append(msg)
+            if len(hist) > self._HISTORY_CAP:
+                # Drop oldest in memory; the on-disk file keeps the full
+                # tail (truncation is expensive and not worth the disk
+                # traffic — see _rebuild_history_from_disk which re-cap
+                # on next restart).
+                del hist[0:len(hist) - self._HISTORY_CAP]
+            self._append_disk(self._history_path(to_agent), msg)
         # debug.8 Task A: fire the lead hook OUTSIDE the lock so a slow
         # sink can't stall mailbox writes for other agents. The hook is
         # only for messages addressed to "lead" — that's the only case
@@ -205,6 +279,16 @@ class MessageBus:
                 # A broken hook must never block mailbox delivery.
                 pass
         return msg
+
+    def history(self, agent: str) -> list[dict]:
+        """Return a copy of every message ever sent to ``agent`` (in
+        send order). Survives read_inbox drains and process restarts.
+
+        Capped at _HISTORY_CAP entries; oldest dropped FIFO. The
+        returned list is a shallow copy — callers may mutate freely.
+        """
+        with self._lock:
+            return list(self._history.get(agent, []))
 
     def read_inbox(self, agent: str) -> list[dict]:
         """Drain and return all messages for `agent`. Clears the cache

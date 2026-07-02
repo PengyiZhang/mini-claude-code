@@ -1101,7 +1101,7 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
                        "text": f"marked `{name}` ts={ts} as {verb}"}
                 yield {"type": "done"}
                 return
-            inbox = _peek_inbox(spawner, name)
+            inbox = _inbox_view(spawner, name)
             if inbox is None:
                 yield {"type": "error",
                        "message": f"no MessageBus or unknown teammate {name!r}"}
@@ -1405,6 +1405,45 @@ def _peek_inbox(spawner, name: str) -> list[dict] | None:
         return list(bus.peek_inbox(name))
     except (FileNotFoundError, ValueError, KeyError, json.JSONDecodeError):
         return None
+
+
+def _inbox_view(spawner, name: str) -> list[dict] | None:
+    """Return the user-facing inbox for ``name``: history + any messages
+    that arrived after the last history write (still in the live cache).
+
+    History is the source of truth — the live inbox is drained every
+    few seconds by TeammateSpawner._idle_poll, so peek_inbox alone
+    returns an empty list moments after delivery. We union live with
+    history, dedupe by ts, and return most-recent-last so the Card list
+    reads top-down chronologically.
+
+    Returns None if no bus is wired (so the caller can emit an error).
+    """
+    bus = getattr(spawner, "bus", None)
+    if bus is None:
+        return None
+    history_fn = getattr(bus, "history", None)
+    if not callable(history_fn):
+        # Bus without history support — fall back to peek-only.
+        return _peek_inbox(spawner, name)
+    try:
+        hist = list(history_fn(name))
+    except (FileNotFoundError, ValueError, KeyError, json.JSONDecodeError):
+        hist = []
+    try:
+        live = list(bus.peek_inbox(name))
+    except (FileNotFoundError, ValueError, KeyError, json.JSONDecodeError):
+        live = []
+    if not live:
+        return hist
+    if not hist:
+        return live
+    # Merge: append live entries not already in history (by ts).
+    seen = {m.get("ts") for m in hist if isinstance(m, dict)}
+    for m in live:
+        if isinstance(m, dict) and m.get("ts") not in seen:
+            hist.append(m)
+    return hist
 
 
 def _count_inbox(spawner, name: str) -> int:

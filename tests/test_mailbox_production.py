@@ -234,3 +234,63 @@ def test_cross_process_locking_is_attempted(tmp_path):
     # safe) mode. After construction with portalocker available, it
     # should report True.
     assert getattr(bus, "cross_process_safe", True) is True
+
+
+# ── History log (drained inbox history) ──────────────────────────────
+# Regression: TeammateSpawner._idle_poll drains alice's inbox every 5s
+# via read_inbox, so by the time the lead opens the TeammatesPanel the
+# live inbox is empty. The history log is an append-only record per
+# agent that survives drain AND process restart, so /agents inbox <name>
+# can show every received message regardless of when it was read.
+
+
+def test_history_returns_messages_after_drain(tmp_path):
+    """read_inbox empties the live cache, but history() must still
+    return every message ever sent to the agent."""
+    bus = MessageBus(tmp_path)
+    bus.send("lead", "alice", "first")
+    bus.send("lead", "alice", "second")
+    drained = bus.read_inbox("alice")
+    assert len(drained) == 2
+    # Live inbox is now empty...
+    assert bus.peek_inbox("alice") == []
+    # ...but history still has both messages in send order.
+    hist = bus.history("alice")
+    assert [m["content"] for m in hist] == ["first", "second"]
+
+
+def test_history_rebuilt_from_disk_on_startup(tmp_path):
+    """A fresh bus instance must rebuild history from <name>.history.jsonl
+    so messages received before a process restart remain visible."""
+    bus1 = MessageBus(tmp_path)
+    bus1.send("lead", "alice", "persisted message")
+    bus1.read_inbox("alice")  # drain — must not affect history
+    bus2 = MessageBus(tmp_path)
+    hist = bus2.history("alice")
+    assert len(hist) == 1
+    assert hist[0]["content"] == "persisted message"
+
+
+def test_history_does_not_mutate_on_read(tmp_path):
+    """history() returns a copy; callers must not be able to mutate the
+    internal log by appending to the returned list."""
+    bus = MessageBus(tmp_path)
+    bus.send("lead", "alice", "msg")
+    out = bus.history("alice")
+    out.append({"content": "forged"})
+    assert len(bus.history("alice")) == 1
+
+
+def test_history_cap_drops_oldest(tmp_path):
+    """History logs grow unbounded across the lifetime of a project, so
+    the bus caps each agent's history at _HISTORY_CAP entries and drops
+    the oldest. Without a cap, a chatty teammate could fill the disk."""
+    bus = MessageBus(tmp_path)
+    cap = getattr(bus, "_HISTORY_CAP", 200)
+    for i in range(cap + 5):
+        bus.send("lead", "alice", f"msg-{i}")
+    hist = bus.history("alice")
+    assert len(hist) == cap
+    # Oldest 5 should be dropped; the first kept entry is msg-5.
+    assert hist[0]["content"] == "msg-5"
+    assert hist[-1]["content"] == f"msg-{cap + 4}"

@@ -69,12 +69,15 @@ def test_bus_persists_to_disk(tmp_path):
 def test_bus_sanitizes_agent_name(tmp_path):
     bus = MessageBus(tmp_path)
     bus.send("a", "../escape", "x")
-    # Should land in .mailboxes/, not escape the dir
+    # Should land in .mailboxes/, not escape the dir. Both the live
+    # inbox and the append-only history land inside .mailboxes/.
     files = list((tmp_path / ".mailboxes").glob("*.jsonl"))
-    assert len(files) == 1
-    # No path separator in the filename
-    name = files[0].name
-    assert "/" not in name and "\\" not in name
+    assert len(files) == 2
+    # No path separator in any filename (path-traversal blocked)
+    for f in files:
+        assert "/" not in f.name and "\\" not in f.name
+    # All inside .mailboxes/
+    assert all(f.parent == (tmp_path / ".mailboxes") for f in files)
 
 
 # ── Teams tools ───────────────────────────────────────────────────────────

@@ -133,12 +133,17 @@ def test_agents_command_stop_missing_name_errors():
 
 
 def test_agents_command_inbox_peek():
-    """`/agents inbox <name>` shows inbox contents via bus.peek_inbox.
+    """`/agents inbox <name>` shows inbox contents as a list card.
 
-    Uses the REAL MessageBus serialization keys (`from` / `type`) —
-    earlier versions of this test used `from_agent` / `kind`, which
-    matched a buggy reader in `_cmd_agents` and masked a P1 production
-    bug where the rendered inbox always showed `? (message): ...`.
+    The card payload uses the REAL MessageBus serialization keys
+    (`from` / `type`) — earlier versions of this test used
+    `from_agent` / `kind`, which matched a buggy reader in
+    `_cmd_agents` and masked a P1 production bug where the rendered
+    inbox always showed `? (message): ...`.
+
+    Reads from bus.history() when available (drain-surviving record);
+    falls back to peek_inbox for legacy buses. This test wires a
+    history-less mock bus so the fallback path is exercised.
     """
     @dataclass
     class _Info:
@@ -163,15 +168,62 @@ def test_agents_command_inbox_peek():
         teams = _Spawner()
         tenant_id = "t1"
     events = _run_cmd("agents", project=_P(), args="inbox alice")
-    text = next(e["text"] for e in events if e["type"] == "text")
-    assert "Inbox for `alice`" in text
-    assert "lead" in text
-    assert "Please stop now" in text
+    card = next(e["card"] for e in events if e["type"] == "card")
+    assert card["kind"] == "list"
+    assert "@alice" in card["title"]
+    items = card["items"]
+    assert len(items) == 2
     # Sender and type render correctly (regression for the
     # `from_agent`/`kind` mock-drift bug).
-    assert "(shutdown_request)" in text
-    assert "(message)" in text
-    assert "?" not in text  # no placeholder sender
+    titles = [it["title"] for it in items]
+    assert any("lead" in t and "shutdown_request" in t for t in titles)
+    assert any("bob" in t and "message" in t for t in titles)
+    assert "?" not in "".join(titles)  # no placeholder sender
+    # Body content survives into subtitle.
+    subs = [it["subtitle"] for it in items]
+    assert "Please stop now" in subs[0]
+
+
+def test_agents_command_inbox_reads_history_after_drain(tmp_path):
+    """`/agents inbox <name>` must show messages from history even
+    after the live inbox has been drained by _idle_poll.
+
+    Regression: pre-Bug-1 fix, the panel showed an empty inbox moments
+    after delivery because the teammate's own worker thread drained the
+    cache every 5s via read_inbox. The fix adds an append-only
+    <name>.history.jsonl log and unions it into the inbox view.
+    """
+    from mini_cc.teams import MessageBus
+
+    bus = MessageBus(tmp_path)
+    bus.send("lead", "alice", "first message")
+    bus.send("bob", "alice", "second message")
+    # Simulate _idle_poll draining the live inbox.
+    bus.read_inbox("alice")
+    assert bus.peek_inbox("alice") == []
+
+    @dataclass
+    class _Info:
+        name: str = "alice"
+        role: str = "r"
+        alive: bool = True
+    class _Spawner:
+        def __init__(self):
+            self._teammates = {"alice": _Info()}
+            self.bus = bus
+        def list_alive(self):
+            return list(self._teammates.values())
+    class _P:
+        teams = _Spawner()
+        tenant_id = "t1"
+
+    events = _run_cmd("agents", project=_P(), args="inbox alice")
+    card = next(e["card"] for e in events if e["type"] == "card")
+    items = card["items"]
+    assert len(items) == 2
+    titles = [it["title"] for it in items]
+    assert any("lead" in t for t in titles)
+    assert any("bob" in t for t in titles)
 
 
 def test_agents_command_error_paths_emit_done():
