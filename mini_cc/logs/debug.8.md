@@ -19,8 +19,7 @@ python环境
 
 具体测试使用 真实LLM 开展，确保覆盖如下流程验证：
 
-使用 playwright mcp，在前端 spawn 两个teammates，由主Agents发动，让两个teammates开始讨论关于 DeepResearch的技术进展 ，而主Agents则监视进展，发现问题时，可以**广播**（如果不支持，则需要设计支持一下，如果当前的消息系统不满足需要，则考虑升级更加鲁棒的消息架构）或者**单播**，且两个teammates需要有选择时，则发送给消息给Lead去批准或者做决定，当 Lead 发送批准后或者拒绝feedback后，teammates根据指示继续开展推进，最终所有结果都要能够汇总至主Agent Lead，然后由主Agent生成任务完成报告、输出等任务状态与收尾工作
-
+使用 playwright mcp，在前端 spawn 两个teammates，由主Agents发动，让三个teammates以不同的角色分工分别开始讨论关于 **多模态大模型最新的技术进展** ，而主Agents则监视进展，发现问题时，可以**广播**（如果不支持，则需要设计支持一下，如果当前的消息系统不满足需要，则考虑升级更加鲁棒的消息架构）或者 **单播**给具体的某个teammates，且两个teammates需要有选择时，则发送给消息给Lead去批准或者做决定，当 Lead 发送批准后或者拒绝feedback后，teammates根据指示继续开展推进，最终所有结果都要能够汇总至主Agent Lead，然后由主Agent生成任务完成报告、输出等任务状态与收尾工作
 
 ## slash /mcp 管理状态调试
 
