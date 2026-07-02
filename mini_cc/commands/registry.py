@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Literal, Optional
 
@@ -1074,6 +1075,32 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
             return
         if sub == "inbox" and len(parts) >= 2:
             name = parts[1]
+            # Sub-verbs: `ack <ts>` marks read; `ignore <ts>` marks ignored.
+            # Otherwise default to listing the inbox (no 10-cap since
+            # peek_inbox is O(1) post-cache-upgrade).
+            verb = parts[2] if len(parts) >= 3 else None
+            disp = getattr(spawner, "disposition", None)
+            if verb in ("ack", "ignore") and len(parts) >= 4:
+                if disp is None:
+                    yield {"type": "error",
+                           "message": "disposition tracking unavailable"}
+                    yield {"type": "done"}
+                    return
+                try:
+                    ts = float(parts[3])
+                except ValueError:
+                    yield {"type": "error",
+                           "message": f"invalid ts: {parts[3]!r}"}
+                    yield {"type": "done"}
+                    return
+                if verb == "ack":
+                    disp.mark_read(name, ts)
+                else:
+                    disp.mark_ignored(name, ts)
+                yield {"type": "text",
+                       "text": f"marked `{name}` ts={ts} as {verb}"}
+                yield {"type": "done"}
+                return
             inbox = _peek_inbox(spawner, name)
             if inbox is None:
                 yield {"type": "error",
@@ -1085,20 +1112,57 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
                        "text": f"_`{name}` has an empty inbox._"}
                 yield {"type": "done"}
                 return
-            lines = [f"**Inbox for `{name}` ({len(inbox)}):**", ""]
-            for i, m in enumerate(inbox[:10], 1):
-                # MessageBus.send writes keys `from`/`type` (teams/__init__.py:57).
-                # Older readers used `from_agent`/`kind`, which silently fell
-                # back to `?`/`message` for every real message.
+            # Build a CardEvent with one item per message so the
+            # TeammatesPanel can render disposition badges + actions
+            # without re-parsing markdown.
+            states = disp.dispositions_for(name) if disp else {}
+            items: list[dict] = []
+            for i, m in enumerate(inbox, 1):
                 sender = m.get("from") or m.get("from_agent") or "?"
                 kind = m.get("type") or m.get("kind") or "message"
+                ts = m.get("ts")
                 body = (m.get("content") or "").strip()
                 if len(body) > 80:
                     body = body[:80] + "…"
-                lines.append(f"{i}. _{sender}_ ({kind}): {body}")
-            if len(inbox) > 10:
-                lines.append(f"\n_… {len(inbox) - 10} more_")
-            yield {"type": "text", "text": "\n".join(lines)}
+                state = states.get(str(ts), "unread") if ts else "unread"
+                tone = {"read": "ok",
+                        "ignored": "muted"}.get(state, "warn")
+                # Embed ack/ignore actions so the CardShell menu can
+                # trigger them without the frontend needing to know
+                # the ts separately. ts is encoded in the command string.
+                ts_str = f"{ts}" if ts else ""
+                menu = []
+                if state != "read" and ts:
+                    menu.append({
+                        "label": "ack",
+                        "command": f"/agents inbox {name} ack {ts_str}",
+                        "tone": "ok",
+                    })
+                if state != "ignored" and ts:
+                    menu.append({
+                        "label": "ignore",
+                        "command": f"/agents inbox {name} ignore {ts_str}",
+                        "tone": "muted",
+                    })
+                items.append({
+                    "id": f"{name}-inbox-{i}",
+                    "title": f"@{sender} · {kind}",
+                    "subtitle": body,
+                    "meta": _fmt_ts(ts) if ts else "",
+                    "badges": [{"text": state, "tone": tone}],
+                    "menu": menu,
+                })
+            yield {
+                "type": "card",
+                "card": {
+                    "kind": "list",
+                    "title": f"Inbox · @{name} ({len(inbox)})",
+                    "items": items,
+                    "expandable_command": (
+                        f"/agents inbox {name} ack <ts> | ignore <ts>"
+                    ),
+                },
+            }
             yield {"type": "done"}
             return
         if sub == "delete" and len(parts) >= 2:
@@ -1346,6 +1410,21 @@ def _peek_inbox(spawner, name: str) -> list[dict] | None:
 def _count_inbox(spawner, name: str) -> int:
     inbox = _peek_inbox(spawner, name)
     return len(inbox) if inbox is not None else 0
+
+
+def _fmt_ts(ts: float | None) -> str:
+    """Render an inbox message timestamp as a short relative-age string
+    for the TeammatesPanel history view. Returns '' for missing ts."""
+    if ts is None:
+        return ""
+    delta = time.time() - ts
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
 
 
 def _format_age(started_at: float) -> str:

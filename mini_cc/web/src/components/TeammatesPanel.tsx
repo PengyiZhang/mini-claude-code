@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useAuth } from "../lib/store";
+import { useAuth, useChat } from "../lib/store";
 import { runCommandForCard } from "../lib/commands";
 import type { CardEvent, CardListItem } from "../lib/types";
 
@@ -53,6 +53,7 @@ export default function TeammatesPanel({
   sid: string;
 }) {
   const profile = useAuth((s) => s.current());
+  const runCommand = useChat((s) => s.runCommand);
   const [rows, setRows] = useState<TeamRow[]>([]);
   const [collapsed, setCollapsed] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -93,9 +94,10 @@ export default function TeammatesPanel({
             const items = card
               ? ((card.payload as { items?: CardListItem[] }).items ?? [])
               : [];
-            const lines = items.map((it) =>
-              `${it.title}${it.subtitle ? ` — ${it.subtitle}` : ""}`);
-            setInboxPeek((s) => ({ ...s, [r.name]: lines }));
+            // Keep the full item so we can render disposition badges
+            // + ack/ignore buttons. The previous string-only shape was
+            // a placeholder from before the history enrichment.
+            setInboxPeek((s) => ({ ...s, [r.name]: items as unknown as string[] }));
           })
           .catch(() => {
             setInboxPeek((s) => ({ ...s, [r.name]: ["(failed to peek)"] }));
@@ -103,6 +105,23 @@ export default function TeammatesPanel({
       }
     }
   }, [rows, expanded, profile, pid, sid, inboxPeek]);
+
+  // Refresh a single teammate's inbox after an ack/ignore click so the
+  // badge updates immediately. Re-uses the same fetch path as expand.
+  const refreshInbox = (name: string) => {
+    if (!profile) return;
+    setInboxPeek((s) => ({ ...s, [name]: [] }));
+    runCommandForCard(profile, pid, sid, "agents", `inbox ${name}`)
+      .then((card) => {
+        const items = card
+          ? ((card.payload as { items?: CardListItem[] }).items ?? [])
+          : [];
+        setInboxPeek((s) => ({ ...s, [name]: items as unknown as string[] }));
+      })
+      .catch(() => {
+        setInboxPeek((s) => ({ ...s, [name]: ["(failed to peek)"] }));
+      });
+  };
 
   // No teammates → collapse to a thin edge tab so the chat pane owns the space.
   if (rows.length === 0) {
@@ -182,22 +201,112 @@ export default function TeammatesPanel({
                 </button>
                 {isOpen && (
                   <div className="border-t border-border p-2 space-y-1 bg-bg">
-                    <div className="text-xs text-ink-dim uppercase tracking-wide">
-                      inbox (peek)
+                    <div className="flex items-center justify-between text-xs text-ink-dim uppercase tracking-wide">
+                      <span>inbox (history)</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          refreshInbox(r.name);
+                        }}
+                        className="text-ink-faint hover:text-ink normal-case"
+                        title="refresh inbox"
+                      >
+                        ↻
+                      </button>
                     </div>
                     {(inboxPeek[r.name] ?? []).length === 0 ? (
                       <div className="text-xs text-ink-faint italic">
                         empty
                       </div>
                     ) : (
-                      (inboxPeek[r.name] ?? []).map((line, i) => (
-                        <div
-                          key={i}
-                          className="text-xs text-ink whitespace-pre-wrap break-words border-l-2 border-border pl-2"
-                        >
-                          {line}
-                        </div>
-                      ))
+                      (inboxPeek[r.name] ?? []).map((raw, i) => {
+                        // inboxPeek holds either CardListItem-shaped
+                        // objects (post-history-enrichment) or fallback
+                        // strings (error/legacy). Render accordingly.
+                        if (typeof raw === "string") {
+                          return (
+                            <div
+                              key={i}
+                              className="text-xs text-ink whitespace-pre-wrap break-words border-l-2 border-border pl-2"
+                            >
+                              {raw}
+                            </div>
+                          );
+                        }
+                        const it = raw as CardListItem;
+                        const badge = it.badges[0];
+                        const tone = badge?.tone ?? "warn";
+                        const badgeColor =
+                          tone === "ok"
+                            ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                            : tone === "muted"
+                              ? "bg-bg-hover text-ink-faint"
+                              : "bg-amber-500/20 text-amber-700 dark:text-amber-300";
+                        return (
+                          <div
+                            key={it.id ?? i}
+                            className="text-xs border-l-2 border-border pl-2 space-y-1"
+                          >
+                            <div className="flex items-start gap-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="truncate text-ink">
+                                  {it.title}
+                                </div>
+                                {it.subtitle && (
+                                  <div className="text-ink-dim truncate">
+                                    {it.subtitle}
+                                  </div>
+                                )}
+                                {it.meta && (
+                                  <div className="text-ink-faint text-[10px]">
+                                    {it.meta}
+                                  </div>
+                                )}
+                              </div>
+                              {badge && (
+                                <span
+                                  className={
+                                    "text-[10px] px-1.5 py-0.5 rounded uppercase font-semibold shrink-0 " +
+                                    badgeColor
+                                  }
+                                >
+                                  {badge.text}
+                                </span>
+                              )}
+                            </div>
+                            {it.menu.length > 0 && (
+                              <div className="flex gap-1">
+                                {it.menu.map((act) => (
+                                  <button
+                                    key={act.label}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (runCommand) {
+                                        runCommand(act.command);
+                                        // Optimistic refresh — backend
+                                        // updates disposition under the
+                                        // hood, this swaps the badge.
+                                        setTimeout(
+                                          () => refreshInbox(r.name),
+                                          400,
+                                        );
+                                      }
+                                    }}
+                                    className={
+                                      "text-[10px] px-1.5 py-0.5 rounded border hover:bg-bg-hover " +
+                                      (act.tone === "ok"
+                                        ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                                        : "border-border text-ink-dim")
+                                    }
+                                  >
+                                    {act.label}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 )}

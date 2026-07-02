@@ -212,7 +212,7 @@ export type SendEvent =
 // The Python-side source of truth is mini_cc/commands/cards.py — keep this
 // interface in sync with the dataclass fields there. Tests pin the shape.
 
-export type CardTone = "default" | "ok" | "warn" | "err" | "accent";
+export type CardTone = "default" | "ok" | "warn" | "err" | "accent" | "muted";
 export type CardVariant = "list" | "table" | "key_value" | "steps";
 export type CardStatus = "ok" | "warning" | "error";
 

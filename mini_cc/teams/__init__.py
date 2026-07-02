@@ -370,6 +370,10 @@ class TeammateSpawner:
                  idle_timeout: float = 60.0,
                  plan_approval_timeout: float = 600.0):
         self.bus = MessageBus(workspace)
+        # Per-message read/ignored state for the TeammatesPanel history
+        # view. Sidecar JSON; survives inbox drain and process restart.
+        from .disposition import InboxDisposition
+        self.disposition = InboxDisposition(self.bus.dir)
         self.protocol = ProtocolTracker()
         self._loop_factory = loop_factory
         self.project_id = project_id
