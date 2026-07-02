@@ -46,6 +46,15 @@ class MessageBus:
         self.dir = self.workspace / ".mailboxes"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # debug.8 Task A: optional hook fired after every successful send
+        # to a "lead" recipient. Installed by TeammateSpawner so a
+        # teammate's reply can flow into the lead's live SSE stream
+        # without polling lead.jsonl. The hook receives the message dict.
+        self._lead_hook: Callable[[dict], None] | None = None
+
+    def set_lead_hook(self, hook: Callable[[dict], None] | None) -> None:
+        """Install/replace the lead-delivery hook (or pass None to clear)."""
+        self._lead_hook = hook
 
     def _path(self, agent: str) -> Path:
         safe = "".join(c for c in agent if c.isalnum() or c in "._-") or "anon"
@@ -60,6 +69,16 @@ class MessageBus:
         with self._lock:
             with self._path(to_agent).open("a", encoding="utf-8") as f:
                 f.write(json.dumps(msg) + "\n")
+        # debug.8 Task A: fire the lead hook OUTSIDE the lock so a slow
+        # sink can't stall mailbox writes for other agents. The hook is
+        # only for messages addressed to "lead" — that's the only case
+        # where the UI is waiting for live delivery.
+        if to_agent == "lead" and self._lead_hook is not None:
+            try:
+                self._lead_hook(msg)
+            except Exception:
+                # A broken hook must never block mailbox delivery.
+                pass
         return msg
 
     def read_inbox(self, agent: str) -> list[dict]:
@@ -80,6 +99,52 @@ class MessageBus:
         with self._lock:
             text = path.read_text(encoding="utf-8")
         return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+    def broadcast(self, from_agent: str, to_agents: list[str],
+                  content: str, msg_type: str = "message",
+                  metadata: dict | None = None) -> list[str]:
+        """Send the same message to multiple recipients atomically.
+
+        debug.8 Task A: a teammate workflow needs a real broadcast (one
+        send, many inboxes) so the lead can address the whole team at
+        once without burning N send_message tool calls. Each copy:
+
+        - is its own mailbox write (recipients see it independently)
+        - carries ``metadata.broadcast = True`` and a shared
+          ``broadcast_id`` so receivers can tell broadcast from unicast
+          and decide whether to reply-to-all or to sender
+
+        ``from_agent`` is excluded from recipients (silently) so a lead
+        broadcasting to a list that happens to include itself doesn't
+        end up reading its own broadcast. Duplicates are deduped to
+        guard against careless callers. Returns the de-duplicated list
+        of recipients actually written to (in input order, minus the
+        sender).
+        """
+        # Dedupe while preserving order. dict.fromlist does both in one
+        # pass on Python 3.7+ where dict preserves insertion order.
+        seen: set[str] = set()
+        unique: list[str] = []
+        for who in to_agents:
+            if who == from_agent or who in seen:
+                continue
+            seen.add(who)
+            unique.append(who)
+        if not unique:
+            return []
+        bid = uuid.uuid4().hex[:12]
+        meta = dict(metadata or {})
+        meta["broadcast"] = True
+        meta["broadcast_id"] = bid
+        ts = time.time()
+        with self._lock:
+            for who in unique:
+                msg = {"from": from_agent, "to": who,
+                       "content": content, "type": msg_type,
+                       "ts": ts, "metadata": meta}
+                with self._path(who).open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(msg) + "\n")
+        return unique
 
 
 # ── Protocol state ────────────────────────────────────────────────────────
@@ -193,6 +258,17 @@ class TeammateSpawner:
         self._teammates: dict[str, TeammateInfo] = {}
         # name -> request_id the teammate is currently blocked on
         self._waiting_plan: dict[str, str] = {}
+        # debug.8 Task A: side-channel queue for teammate→lead messages.
+        # The lead's HTTP /send route drains this between loop events so
+        # the lead's SSE stream surfaces teammate activity in real time
+        # even after the spawn-time sink goes stale. Pre-fix, late
+        # teammate sends were dropped silently — the user saw a frozen
+        # UI while lead.jsonl filled up off-screen.
+        import collections
+        self._lead_events: "collections.deque[dict]" = collections.deque()
+        # Hook fired on every bus.send when to_agent == "lead". Lets us
+        # push the message into _lead_events without polling lead.jsonl.
+        self.bus.set_lead_hook(self._emit_to_lead)
 
     # ── Public API (used by lead tools) ────────────────────────────────
     def list_alive(self) -> list[TeammateInfo]:
@@ -368,6 +444,36 @@ class TeammateSpawner:
 
     def list_pending_requests(self) -> list[ProtocolState]:
         return self.protocol.list_pending()
+
+    # ── Lead side-channel (debug.8 Task A) ─────────────────────────────
+    def _emit_to_lead(self, msg: dict) -> None:
+        """Push a teammate→lead message onto the side-channel queue as a
+        synthetic ``teammate_message`` event. The lead's HTTP /send route
+        drains this between loop events so the SSE stream shows the
+        teammate's reply in real time, even when the original
+        spawn-time sink has gone stale.
+
+        The event shape mirrors the bus message plus ``type`` so the
+        frontend SSE switch can dispatch on it like any other event."""
+        ev = {
+            "type": "teammate_message",
+            "from": msg.get("from"),
+            "to": msg.get("to"),
+            "content": msg.get("content", ""),
+            "msg_type": msg.get("type", "message"),
+            "ts": msg.get("ts", time.time()),
+            "metadata": msg.get("metadata") or {},
+        }
+        self._lead_events.append(ev)
+
+    def drain_lead_events(self) -> list[dict]:
+        """Pop every queued teammate→lead event. Called by the lead's
+        send route between loop iterations. Returns in insertion order."""
+        if not self._lead_events:
+            return []
+        out = list(self._lead_events)
+        self._lead_events.clear()
+        return out
 
     # ── Runner (worker thread body) ────────────────────────────────────
     def _runner(self, info: TeammateInfo, prompt: str):

@@ -54,6 +54,38 @@ def _send(ctx: ToolContext, args: dict) -> str:
     return f"Sent to {to}"
 
 
+def _broadcast(ctx: ToolContext, args: dict) -> str:
+    """debug.8 Task A: lead-side broadcast to every alive teammate at once.
+
+    Re-binds the live event sink on every alive teammate (same reason
+    as ``send_message``: the spawn-time sink goes stale). Then writes
+    the same message into every alive teammate's mailbox via the bus's
+    broadcast primitive.
+
+    Teammates are NOT allowed to call this — the recursion/coordination
+    fan-out gets out of hand too quickly; if a teammate needs to share
+    work with another teammate, it should send_message directly.
+    """
+    spawner = ctx.teams
+    if spawner is None:
+        return "Teams subsystem not configured for this project"
+    if _name_from_session(ctx) is not None:
+        return ("broadcast_teammates is only available to the lead. "
+                "Use send_message to address a specific teammate.")
+    content = args["content"]
+    msg_type = args.get("msg_type", "broadcast")
+    alive = spawner.list_alive()
+    if not alive:
+        return "No alive teammates to broadcast to."
+    # Re-bind sinks so the wake-up turn flows into the current SSE.
+    if hasattr(spawner, "bind_event_sink"):
+        for info in alive:
+            spawner.bind_event_sink(info.name, ctx.on_subagent_event)
+    names = [info.name for info in alive]
+    spawner.bus.broadcast("lead", names, content, msg_type)
+    return f"Broadcast to {len(names)} teammate(s): {', '.join(names)}"
+
+
 def _check_inbox(ctx: ToolContext, args: dict) -> str:
     spawner = ctx.teams
     if spawner is None:
@@ -237,6 +269,24 @@ REVIEW_PLAN_TOOL = FunctionTool(
     fn=_review_plan,
 )
 
+BROADCAST_TOOL = FunctionTool(
+    name="broadcast_teammates",
+    description=("Broadcast a single message to every alive teammate at "
+                 "once. Lead-only. Use for announcements, status checks, "
+                 "or coordination directives that the whole team must "
+                 "see simultaneously."),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "content": {"type": "string"},
+            "msg_type": {"type": "string"},
+        },
+        "required": ["content"],
+    },
+    fn=_broadcast,
+)
+
 ALL = [SEND_TOOL, CHECK_TOOL, LIST_TOOL, SHUTDOWN_TOOL, SPAWN_TOOL,
-       SUBMIT_PLAN_TOOL, REQUEST_PLAN_TOOL, REVIEW_PLAN_TOOL]
+       SUBMIT_PLAN_TOOL, REQUEST_PLAN_TOOL, REVIEW_PLAN_TOOL,
+       BROADCAST_TOOL]
 

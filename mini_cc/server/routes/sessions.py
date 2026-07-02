@@ -216,6 +216,12 @@ def send_message(body: SendMessageRequest,
 
     def sync_iter():
         try:
+            # debug.8 Task A: drain teammate→lead side-channel events
+            # between loop iterations so the SSE stream surfaces
+            # teammate replies in real time. Pre-fix, late teammate
+            # sends were dropped silently — the spawn-time sink goes
+            # stale once the lead's tool call returns.
+            teams = getattr(sess.loop.project, "teams", None)
             for ev in sm.send(pid, sid, body.user_input):
                 # Persist every emitted event so a reconnecting client
                 # can replay from disk. Best-effort: a write failure
@@ -226,6 +232,27 @@ def send_message(body: SendMessageRequest,
                 except Exception:
                     pass
                 yield ev
+                # Drain any teammate→lead events that landed during the
+                # loop's yield. These arrive from a separate thread
+                # (teammate worker) via the bus's lead hook.
+                if teams is not None:
+                    for tev in teams.drain_lead_events():
+                        try:
+                            sess.loop.project.storage.append_session_event(
+                                pid, sid, tev)
+                        except Exception:
+                            pass
+                        yield tev
+            # Final drain: catch any events that landed after the loop
+            # finished yielding but before this generator exits.
+            if teams is not None:
+                for tev in teams.drain_lead_events():
+                    try:
+                        sess.loop.project.storage.append_session_event(
+                            pid, sid, tev)
+                    except Exception:
+                        pass
+                    yield tev
         except Exception as e:
             err = {"type": "error",
                    "message": f"{type(e).__name__}: {e}"}
