@@ -20,25 +20,42 @@ Behaviour deltas vs s20 (documented simplifications):
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Iterator
 
 if TYPE_CHECKING:
     from ..core.loop import AgentLoop
     from ..storage import Storage, Task
 
+try:
+    import portalocker  # type: ignore
+    _PORTALOCKER_AVAILABLE = True
+except ImportError:  # pragma: no cover — exercised only when dep missing
+    portalocker = None  # type: ignore
+    _PORTALOCKER_AVAILABLE = False
+
 
 # ── Message bus ───────────────────────────────────────────────────────────
 
 class MessageBus:
-    """Per-project append-only JSONL mailboxes.
+    """Per-project mailboxes with dual in-memory cache + JSONL persistence.
 
     Each agent (including "lead") has one file <workspace>/.mailboxes/<name>.jsonl.
-    read_inbox drains and deletes the file so each message is consumed once.
+    On startup the cache is rebuilt from disk so peek_inbox is O(1) on the
+    hot path (idle poll reads inbox every 5s for every teammate). Writes
+    append to BOTH the cache and the file under a portalocker file lock
+    (cross-process safe); a thread lock guards the cache itself.
+
+    If portalocker import or repeated lock acquisition fails, the bus
+    degrades to lock-free mode: still functional within one process,
+    but multi-process safety is no longer guaranteed. ``cross_process_safe``
+    reflects the current mode for diagnostics.
     """
 
     def __init__(self, workspace: Path):
@@ -46,11 +63,50 @@ class MessageBus:
         self.dir = self.workspace / ".mailboxes"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # In-memory cache: agent_name → list of pending messages. The
+        # cache is the source of truth for peek/drain; the file mirrors
+        # it for cross-process visibility and crash recovery.
+        self._cache: dict[str, list[dict]] = {}
+        # File lock availability flag — flipped to False if portalocker
+        # import or repeated acquires fail. Once degraded the bus keeps
+        # running but loses cross-process safety.
+        self.cross_process_safe: bool = _PORTALOCKER_AVAILABLE
+        self._degrade_until: float = 0.0  # backoff timestamp
         # debug.8 Task A: optional hook fired after every successful send
         # to a "lead" recipient. Installed by TeammateSpawner so a
         # teammate's reply can flow into the lead's live SSE stream
         # without polling lead.jsonl. The hook receives the message dict.
         self._lead_hook: Callable[[dict], None] | None = None
+        # Rebuild cache from existing .jsonl files so a process restart
+        # doesn't lose unread messages.
+        self._rebuild_cache_from_disk()
+
+    def _rebuild_cache_from_disk(self) -> None:
+        """Populate the in-memory cache from any pre-existing .jsonl
+        files in the mailboxes dir. Called once at construction."""
+        with self._lock:
+            for path in self.dir.glob("*.jsonl"):
+                if not path.is_file():
+                    continue
+                name = path.stem
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                msgs: list[dict] = []
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msgs.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        # Skip a torn write from a prior crash. Better
+                        # to lose one malformed line than to crash the
+                        # whole bus on startup.
+                        continue
+                if msgs:
+                    self._cache[name] = msgs
 
     def set_lead_hook(self, hook: Callable[[dict], None] | None) -> None:
         """Install/replace the lead-delivery hook (or pass None to clear)."""
@@ -60,6 +116,75 @@ class MessageBus:
         safe = "".join(c for c in agent if c.isalnum() or c in "._-") or "anon"
         return self.dir / f"{safe}.jsonl"
 
+    @contextmanager
+    def _try_file_lock(self, path: Path) -> Iterator[None]:
+        """Cross-process file lock around a disk write/truncate.
+
+        On repeated failure we degrade to lock-free mode for a backoff
+        window so a flaky filesystem doesn't stall the bus forever.
+        """
+        # Already degraded within the backoff window → skip locking.
+        if not self.cross_process_safe or time.time() < self._degrade_until:
+            yield
+            return
+        if not _PORTALOCKER_AVAILABLE:
+            yield
+            return
+        lock_path = path.with_suffix(path.suffix + ".lock")
+        try:
+            with portalocker.Lock(str(lock_path), fail_when_locked=False,
+                                  timeout=5.0):
+                yield
+        except Exception:
+            # Lock failed — flip into degraded mode for 30s and proceed
+            # unlocked. We still surface cross_process_safe=False so
+            # callers can detect the loss of guarantee.
+            self.cross_process_safe = False
+            self._degrade_until = time.time() + 30.0
+            yield
+
+    def _append_disk(self, path: Path, msg: dict) -> None:
+        """Append a single message to the agent's JSONL file under the
+        cross-process lock. On lock failure we still attempt the write
+        (degraded mode) so in-process semantics stay intact."""
+        try:
+            cm = self._try_file_lock(path)
+        except Exception:
+            # The lock helper itself raised (e.g. portalocker blew up).
+            # Flip into degraded mode and write unlocked.
+            self.cross_process_safe = False
+            self._degrade_until = time.time() + 30.0
+            cm = None
+        if cm is None:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(msg) + "\n")
+            return
+        with cm:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(msg) + "\n")
+
+    def _truncate_disk(self, path: Path) -> None:
+        """Atomically clear the JSONL file under the file lock."""
+        try:
+            cm = self._try_file_lock(path)
+        except Exception:
+            self.cross_process_safe = False
+            self._degrade_until = time.time() + 30.0
+            cm = None
+        if cm is None:
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            return
+        with cm:
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
     def send(self, from_agent: str, to_agent: str, content: str,
              msg_type: str = "message",
              metadata: dict | None = None) -> dict:
@@ -67,8 +192,8 @@ class MessageBus:
                "content": content, "type": msg_type,
                "ts": time.time(), "metadata": metadata or {}}
         with self._lock:
-            with self._path(to_agent).open("a", encoding="utf-8") as f:
-                f.write(json.dumps(msg) + "\n")
+            self._cache.setdefault(to_agent, []).append(msg)
+            self._append_disk(self._path(to_agent), msg)
         # debug.8 Task A: fire the lead hook OUTSIDE the lock so a slow
         # sink can't stall mailbox writes for other agents. The hook is
         # only for messages addressed to "lead" — that's the only case
@@ -82,23 +207,24 @@ class MessageBus:
         return msg
 
     def read_inbox(self, agent: str) -> list[dict]:
-        """Drain and return all messages for `agent`. Deletes the mailbox file."""
+        """Drain and return all messages for `agent`. Clears the cache
+        and truncates the JSONL file."""
         path = self._path(agent)
-        if not path.exists():
-            return []
         with self._lock:
-            text = path.read_text(encoding="utf-8")
-            path.unlink()
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
+            msgs = self._cache.pop(agent, [])
+            if msgs:
+                self._truncate_disk(path)
+            elif path.exists():
+                # Defensive: a write raced in via a non-cache path
+                # (legacy message from before the upgrade). Clear it.
+                self._truncate_disk(path)
+        return msgs
 
     def peek_inbox(self, agent: str) -> list[dict]:
-        """Read without draining (used by tests and idle polling)."""
-        path = self._path(agent)
-        if not path.exists():
-            return []
+        """Read without draining. Returns a shallow copy so callers
+        can't mutate the live cache."""
         with self._lock:
-            text = path.read_text(encoding="utf-8")
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
+            return list(self._cache.get(agent, []))
 
     def broadcast(self, from_agent: str, to_agents: list[str],
                   content: str, msg_type: str = "message",
@@ -142,8 +268,8 @@ class MessageBus:
                 msg = {"from": from_agent, "to": who,
                        "content": content, "type": msg_type,
                        "ts": ts, "metadata": meta}
-                with self._path(who).open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(msg) + "\n")
+                self._cache.setdefault(who, []).append(msg)
+                self._append_disk(self._path(who), msg)
         return unique
 
 
