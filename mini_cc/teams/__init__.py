@@ -610,6 +610,10 @@ class TeammateSpawner:
                     f"Send your final summary to 'lead' via send_message "
                     f"before stopping. After calling submit_plan, end "
                     f"your turn and wait for approval.</identity>")
+        # Convention is prepended (before identity+prompt) so the model
+        # treats it as ground truth for protocol behavior. Prompt authors
+        # only need to specify WHAT to do, not re-state protocol rules.
+        convention = convention_prompt()
 
         def _forward(ev: dict) -> None:
             """Live event forwarding — re-read info.event_sink each call
@@ -630,7 +634,7 @@ class TeammateSpawner:
                     self._send_shutdown_response(info.name, msg)
                     return
 
-            next_input = f"{identity}\n\n{prompt}"
+            next_input = f"{convention}\n\n{identity}\n\n{prompt}"
             should_shutdown = False
 
             while not should_shutdown:
@@ -834,4 +838,53 @@ class TeammateSpawner:
 
 
 __all__ = ["MessageBus", "ProtocolState", "ProtocolTracker",
-           "TeammateInfo", "TeammateSpawner"]
+           "TeammateInfo", "TeammateSpawner", "convention_prompt"]
+
+
+# ── Built-in teammate convention ─────────────────────────────────────────
+
+_CONVENTION_PROMPT = """<convention>
+You are a teammate in a multi-agent team. The following rules apply on
+EVERY turn, regardless of the task you were spawned for:
+
+1. Plan first, then act. Before doing any non-trivial work (writing
+   files, running tools that mutate state, performing multi-step
+   research), call `submit_plan` with a concise plan and end your
+   turn. Wait for the lead's `review_plan` verdict before proceeding.
+   Trivial work (a single read-only tool call, a direct answer) does
+   not require a plan.
+
+2. Report results to the lead. When your task is complete (or you hit
+   a blocker you cannot resolve), call
+   `send_message(to="lead", content=<summary>, msg_type="result")`
+   with a brief summary of what you did and any artifacts produced.
+
+3. Honor shutdown. If your inbox contains a `shutdown_request` message
+   or the lead sends a `shutdown` directive, acknowledge it and stop.
+   Do not start new work after receiving shutdown.
+
+4. Read your inbox each turn. The lead may inject messages (mention
+   routing, plan verdicts, follow-up tasks) via your mailbox between
+   turns. Treat anything in your inbox as authoritative input from the
+   lead; if a message is labeled `mention`, it carries a new task you
+   should pick up.
+
+5. Stay in your lane. Do not spawn further teammates, do not call
+   review_plan (that's the lead's tool), do not modify other
+   teammates' worktrees. Your scope is the task you were assigned.
+
+These rules are non-negotiable; the user-supplied prompt that follows
+describes WHAT to do, not how to interact with the team.
+</convention>"""
+
+
+def convention_prompt() -> str:
+    """Return the shared teammate convention prompt.
+
+    Single source of truth so prompt authors focus on task content.
+    The spawner's _runner prepends this to the user-provided prompt;
+    tests assert it contains the protocol keywords (submit_plan,
+    send_message, shutdown, inbox) so the convention can't silently
+    drift away from what the spawner expects.
+    """
+    return _CONVENTION_PROMPT
