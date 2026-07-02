@@ -222,6 +222,16 @@ def send_message(body: SendMessageRequest,
             # sends were dropped silently — the spawn-time sink goes
             # stale once the lead's tool call returns.
             teams = getattr(sess.loop.project, "teams", None)
+            # Bug 3: bind the lead's session id so any teammate→lead
+            # messages that land while this /send (or any future one)
+            # is NOT running still persist into the transcript.
+            # set_lead_session is a no-op when teams lacks the method
+            # (older spawner without the fix).
+            if teams is not None and hasattr(teams, "set_lead_session"):
+                try:
+                    teams.set_lead_session(sid)
+                except Exception:
+                    pass
             for ev in sm.send(pid, sid, body.user_input):
                 # Persist every emitted event so a reconnecting client
                 # can replay from disk. Best-effort: a write failure
@@ -233,25 +243,16 @@ def send_message(body: SendMessageRequest,
                     pass
                 yield ev
                 # Drain any teammate→lead events that landed during the
-                # loop's yield. These arrive from a separate thread
-                # (teammate worker) via the bus's lead hook.
+                # loop's yield. Bug 3: _emit_to_lead already persisted
+                # these via append_session_event at emit time, so we
+                # only yield to the live SSE here — no double-write.
                 if teams is not None:
                     for tev in teams.drain_lead_events():
-                        try:
-                            sess.loop.project.storage.append_session_event(
-                                pid, sid, tev)
-                        except Exception:
-                            pass
                         yield tev
             # Final drain: catch any events that landed after the loop
             # finished yielding but before this generator exits.
             if teams is not None:
                 for tev in teams.drain_lead_events():
-                    try:
-                        sess.loop.project.storage.append_session_event(
-                            pid, sid, tev)
-                    except Exception:
-                        pass
                     yield tev
         except Exception as e:
             err = {"type": "error",

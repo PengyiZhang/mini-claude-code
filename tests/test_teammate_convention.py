@@ -15,6 +15,7 @@ task content instead of re-stating protocol rules in every spawn.
 """
 from __future__ import annotations
 
+import threading
 import re
 
 from mini_cc.teams import convention_prompt
@@ -110,3 +111,65 @@ def test_runner_prepends_convention(tmp_path):
         "convention must come before user prompt in assembled input; "
         f"conv@{conv_idx} user@{user_idx}"
     )
+
+
+# ── Bug 3: teammate→lead events must persist into the lead session ──
+
+
+def _make_spawner_for_lead_events(tmp_path):
+    """Build a minimal TeammateSpawner wired with a fake storage so we
+    can verify teammate→lead events land in the session transcript even
+    when no /send SSE stream is running to drain them."""
+    from collections import deque
+    from mini_cc.teams import MessageBus, TeammateSpawner
+    spawner = TeammateSpawner.__new__(TeammateSpawner)
+    spawner.bus = MessageBus(tmp_path)
+    spawner.bus.set_lead_hook(spawner._emit_to_lead)
+    spawner._lock = threading.Lock()
+    spawner._lead_events = deque()
+    spawner.project_id = "proj-L"
+    persisted = []
+    class _FakeStorage:
+        def append_session_event(self, pid, sid, ev):
+            persisted.append((pid, sid, ev))
+    spawner.storage = _FakeStorage()
+    spawner._lead_session_id = None
+    return spawner, persisted
+
+
+def test_emit_to_lead_persists_when_session_bound(tmp_path):
+    """When set_lead_session has been called, every teammate→lead
+    message persists to that session's transcript so a page refresh
+    replays it. Pre-fix the event queued in _lead_events was only
+    drained inside /send — a refresh while lead was idle lost the
+    message entirely."""
+    spawner, persisted = _make_spawner_for_lead_events(tmp_path)
+    spawner.set_lead_session("sess-lead")
+    spawner.bus.send("alice", "lead", "hi lead", "result")
+    assert len(persisted) == 1
+    pid, sid, ev = persisted[0]
+    assert pid == "proj-L"
+    assert sid == "sess-lead"
+    assert ev["type"] == "teammate_message"
+    assert ev["from"] == "alice"
+    assert ev["content"] == "hi lead"
+
+
+def test_emit_to_lead_skips_persist_when_no_session(tmp_path):
+    """Without a bound lead session, persistence is skipped — but the
+    event still queues in _lead_events so a live /send can drain it."""
+    spawner, persisted = _make_spawner_for_lead_events(tmp_path)
+    spawner.bus.send("alice", "lead", "hi lead")
+    assert persisted == []
+    drained = spawner.drain_lead_events()
+    assert len(drained) == 1
+
+
+def test_set_lead_session_round_trip(tmp_path):
+    """Basic set/clear contract: passing None clears it."""
+    spawner, _ = _make_spawner_for_lead_events(tmp_path)
+    assert spawner._lead_session_id is None
+    spawner.set_lead_session("s1")
+    assert spawner._lead_session_id == "s1"
+    spawner.set_lead_session(None)
+    assert spawner._lead_session_id is None

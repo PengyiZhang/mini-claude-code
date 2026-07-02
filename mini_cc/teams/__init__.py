@@ -480,9 +480,27 @@ class TeammateSpawner:
         # UI while lead.jsonl filled up off-screen.
         import collections
         self._lead_events: "collections.deque[dict]" = collections.deque()
+        # Bug 3: lead session binding. When Alice sends a reply while
+        # the lead is NOT in an active /send SSE stream, the
+        # teammate_message event queued in _lead_events was previously
+        # lost on the next refresh — the /send drain path is the only
+        # caller of append_session_event. Recording the lead's active
+        # sid here lets _emit_to_lead persist the event directly so
+        # hydrate can replay it even if /send never runs again.
+        self._lead_session_id: str | None = None
         # Hook fired on every bus.send when to_agent == "lead". Lets us
         # push the message into _lead_events without polling lead.jsonl.
         self.bus.set_lead_hook(self._emit_to_lead)
+
+    def set_lead_session(self, sid: str | None) -> None:
+        """Record (or clear) the lead's active session id.
+
+        Called by the /send route at start of turn so subsequent
+        teammate→lead messages can be persisted directly into that
+        session's transcript — the message survives a page refresh
+        even when no /send is running to drain the side-channel.
+        """
+        self._lead_session_id = sid
 
     # ── Public API (used by lead tools) ────────────────────────────────
     def list_alive(self) -> list[TeammateInfo]:
@@ -667,6 +685,14 @@ class TeammateSpawner:
         teammate's reply in real time, even when the original
         spawn-time sink has gone stale.
 
+        Bug 3: also persist the event directly into the lead's bound
+        session transcript so a page refresh replays it. Pre-fix the
+        event was only persisted when /send happened to be running to
+        drain it — if the lead was idle, the message queued in
+        _lead_events was orphaned and hydrate lost it on the next
+        refresh. Persistence is best-effort: a missing binding or
+        storage error must never block the live path.
+
         The event shape mirrors the bus message plus ``type`` so the
         frontend SSE switch can dispatch on it like any other event."""
         ev = {
@@ -679,6 +705,15 @@ class TeammateSpawner:
             "metadata": msg.get("metadata") or {},
         }
         self._lead_events.append(ev)
+        sid = self._lead_session_id
+        if sid and self.project_id and self.storage is not None:
+            try:
+                self.storage.append_session_event(self.project_id, sid, ev)
+            except Exception:
+                # Best-effort: a storage failure must not block the
+                # live side-channel. The message is still in
+                # _lead_events for an active /send to drain.
+                pass
 
     def drain_lead_events(self) -> list[dict]:
         """Pop every queued teammate→lead event. Called by the lead's
