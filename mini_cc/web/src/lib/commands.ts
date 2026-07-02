@@ -33,6 +33,7 @@ export async function streamRunCommand(
   },
   args?: string,
   signal?: AbortSignal,
+  options?: { ephemeral?: boolean },
 ): Promise<void> {
   let res: Response;
   try {
@@ -45,7 +46,13 @@ export async function streamRunCommand(
           Accept: "text/event-stream",
           ...authHeaders(profile),
         },
-        body: JSON.stringify({ args: args ?? "" }),
+        // ephemeral=true tells the server to skip persist_card_event +
+        // save_messages. Used by panel-polling helpers so the
+        // transcript doesn't fill with one __card__ bubble per tick.
+        body: JSON.stringify({
+          args: args ?? "",
+          ephemeral: options?.ephemeral ?? false,
+        }),
         signal,
       },
     );
@@ -177,6 +184,11 @@ export async function runCommandForCard(
         onDone: () => resolve(card),
       },
       args,
+      // ephemeral: panels use this helper to poll silently — the result
+      // must not be written to the session transcript. Bug 2 fix: pre-fix,
+      // every TeammatesPanel /agents tick wrote one __card__ bubble to
+      // disk, and refresh replayed a flood of stale roster snapshots.
+      { ephemeral: true },
     );
   });
 }

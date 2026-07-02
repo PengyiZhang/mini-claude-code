@@ -40,6 +40,13 @@ class CommandOut(BaseModel):
 
 class RunCommandRequest(BaseModel):
     args: str | None = None
+    # When True, the route streams the response live but skips
+    # persist_card_event + save_messages. Used by panel-polling helpers
+    # (TeammatesPanel's 4s /agents refresh) so the session transcript
+    # doesn't accumulate one __card__ bubble per poll tick. Default
+    # False preserves the "cards survive refresh" contract for
+    # user-initiated slash commands.
+    ephemeral: bool = False
 
 
 @router.get("/{sid}/commands", response_model=list[CommandOut])
@@ -108,10 +115,15 @@ def run_command(name: str,
                 # page reload rehydrates the same cards. Buffered and
                 # flushed once at the end (instead of save_messages per
                 # card) so a multi-card command stays O(1) on disk.
+                #
+                # Skipped when body.ephemeral is set — panel-polling
+                # callers (TeammatesPanel /agents every 4s) want the
+                # live SSE stream but must not pollute the transcript
+                # with one card bubble per tick.
                 if isinstance(ev, dict) and ev.get("type") == "card":
                     card_buffer.append(ev)
                 yield ev
-            if card_buffer:
+            if card_buffer and not body.ephemeral:
                 for c in card_buffer:
                     persist_card_event(sess.loop.messages, c)
                 try:
