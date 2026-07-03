@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth, useChat } from "../lib/store";
 import { runCommandForCard } from "../lib/commands";
-import type { CardEvent, CardListItem } from "../lib/types";
+import { useTeamActivity } from "../lib/teamActivity";
+import type { CardEvent, CardListItem, TeamEvent } from "../lib/types";
 
 /**
  * TeammatesPanel (debug.8 Task A)
@@ -23,6 +24,11 @@ import type { CardEvent, CardListItem } from "../lib/types";
  */
 
 const POLL_MS = 4000;
+// Stable empty array reference for the activity selector. Returning a
+// fresh `[]` literal from the selector on every render (when pid has no
+// activity yet) makes useSyncExternalStore see a "changed" snapshot and
+// re-render forever; a module-level constant keeps the snapshot stable.
+const EMPTY_ACTIVITY: TeamEvent[] = [];
 
 interface TeamRow {
   name: string;
@@ -45,6 +51,63 @@ function parseRoster(card: CardEvent | null): TeamRow[] {
   });
 }
 
+// Truncate to `n` chars, appending … if anything was dropped. Used for
+// one-line event summaries so the panel rows stay scannable.
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, n) + "…";
+}
+
+// Render one TeamEvent as a single-line summary. The event shapes come
+// from the I.C.1 backend (mini_cc/server/routes/team.py), which spreads
+// the original assistant/event payload fields alongside session_id and
+// ts. We coerce defensively since the type is permissive.
+function summarizeEvent(e: TeamEvent): string {
+  switch (e.type) {
+    case "tool_use": {
+      const name = (e.name as string) ?? "tool";
+      const input = e.input as Record<string, unknown> | undefined;
+      // Try a few common fields, fall back to JSON of the whole input.
+      const preview = String(
+        (typeof input?.command === "string" ? input.command : "") ||
+          (typeof input?.path === "string" ? input.path : "") ||
+          (typeof input?.query === "string" ? input.query : "") ||
+          (typeof input?.pattern === "string" ? input.pattern : "") ||
+          JSON.stringify(input ?? {}),
+      );
+      return `${name} ${truncate(preview, 80)}`;
+    }
+    case "tool_result": {
+      const content =
+        (typeof e.content === "string" && e.content) ||
+        (typeof e.message === "string" && e.message) ||
+        "";
+      return truncate(content, 80);
+    }
+    case "send_message": {
+      const to = (e.to as string) ?? "?";
+      const message =
+        (typeof e.message === "string" && e.message) ||
+        (typeof e.text === "string" && e.text) ||
+        "";
+      return `→ ${to}: ${truncate(message, 80)}`;
+    }
+    case "text": {
+      const text = typeof e.text === "string" ? e.text : "";
+      return truncate(text, 80);
+    }
+    default:
+      return `[${e.type}]`;
+  }
+}
+
+// Format the ts as HH:MM:SS for compactness in the panel. Falls back to
+// the raw string on any parse failure (ts comes from backend ISO stamps).
+function shortTs(ts: string): string {
+  const t = ts.slice(11, 19); // YYYY-MM-DDTHH:MM:SSZ -> HH:MM:SS
+  return t || ts;
+}
+
 export default function TeammatesPanel({
   pid,
   sid,
@@ -59,6 +122,12 @@ export default function TeammatesPanel({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [inboxPeek, setInboxPeek] = useState<Record<string, string[]>>({});
   const abortRef = useRef<AbortController | null>(null);
+  // Subscribe to this project's merged activity feed. Selecting just the
+  // pid slice keeps re-renders narrow (the store allocates per-pid state
+  // on first poll, so default to [] until then).
+  const activity = useTeamActivity(
+    (s) => s.perProjectActivity[pid] ?? EMPTY_ACTIVITY,
+  );
 
   // Poll /agents for the live roster.
   useEffect(() => {
@@ -81,6 +150,19 @@ export default function TeammatesPanel({
       abortRef.current?.abort();
     };
   }, [profile, pid, sid]);
+
+  // Poll /team/activity in parallel so the activity feed stays fresh
+  // without piling re-renders onto the roster poll. Uses getState() for
+  // the action so the component doesn't re-subscribe to the whole store.
+  useEffect(() => {
+    if (!profile) return;
+    const tick = () => {
+      useTeamActivity.getState().poll(profile, pid).catch(() => {});
+    };
+    tick();
+    const id = window.setInterval(tick, POLL_MS);
+    return () => window.clearInterval(id);
+  }, [profile, pid]);
 
   // Peek inbox for a teammate on expand.
   useEffect(() => {
@@ -215,9 +297,51 @@ export default function TeammatesPanel({
                   </span>
                 </button>
                 {isOpen && (
-                  <div className="border-t border-border p-2 space-y-1 bg-bg">
-                    <div className="flex items-center justify-between text-xs text-ink-dim uppercase tracking-wide">
-                      <span>inbox (history)</span>
+                  <div className="border-t border-border p-2 space-y-2 bg-bg">
+                    <div>
+                      <div className="flex items-center justify-between text-xs text-ink-dim uppercase tracking-wide">
+                        <span>recent activity</span>
+                      </div>
+                      {(() => {
+                        // Teammate session_id is `teammate-<name>` (see
+                        // mini_cc/teams/__init__.py spawn-time loop name).
+                        // Take the last 10 events for this teammate and
+                        // render newest-first.
+                        const events = activity
+                          .filter(
+                            (e) => e.session_id === `teammate-${r.name}`,
+                          )
+                          .slice(-10)
+                          .reverse();
+                        if (events.length === 0) {
+                          return (
+                            <div className="text-xs text-ink-faint italic">
+                              (no recent activity)
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="space-y-0.5">
+                            {events.map((e, i) => (
+                              <div
+                                key={`${e.ts}-${i}`}
+                                className="text-xs flex gap-2 items-start border-l-2 border-border pl-2"
+                              >
+                                <span className="text-ink-faint shrink-0 font-mono text-[10px]">
+                                  {shortTs(e.ts)}
+                                </span>
+                                <span className="text-ink whitespace-pre-wrap break-words">
+                                  {summarizeEvent(e)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between text-xs text-ink-dim uppercase tracking-wide">
+                        <span>inbox (history)</span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -323,6 +447,7 @@ export default function TeammatesPanel({
                         );
                       })
                     )}
+                    </div>
                   </div>
                 )}
               </div>
