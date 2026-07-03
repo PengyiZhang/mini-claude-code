@@ -274,3 +274,47 @@ describe("rawToChatMessages — adjacent same-id card dedup", () => {
     expect(ids).toContain("workflow-runs");
   });
 });
+
+// Regression: persisted transcripts from before commit 6b0157b contain
+// __card__ blocks in the legacy nested shape {card:{kind,items,...}}
+// instead of the flat CardEvent shape. rawToChatMessages must NOT pass
+// those through as CardEvent — they lack variant/id/status, so
+// CardShell reads STATUS_BADGE[undefined] and crashes on render.
+// Drop them at hydrate time; the backend no longer emits this shape.
+describe("rawToChatMessages — legacy nested-shape cards", () => {
+  it("skips __card__ blocks missing variant/id/status", () => {
+    const raw = [
+      { role: "user", content: "/agents inbox alice" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "card_legacy",
+            name: "__card__",
+            // Legacy nested shape — what OLD registry.py:1155 emitted
+            // before the CardEvent rewrite.
+            input: {
+              card: {
+                kind: "list",
+                title: "Inbox · @alice (1)",
+                items: [{ id: "alice-inbox-1" }],
+                expandable_command: "/agents inbox alice ack <ts>",
+              },
+            },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "card_legacy", content: "ok" },
+        ],
+      },
+    ];
+    const out = rawToChatMessages(raw as never);
+    const asst = out.find((m) => m.role === "assistant");
+    // The stale snapshot is dropped — no card rendered, no crash.
+    expect(asst?.cards ?? []).toHaveLength(0);
+  });
+});

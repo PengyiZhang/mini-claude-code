@@ -450,6 +450,12 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
       // already stripped the SSE-only `type` field).
       if (b.name === "__card__") {
         const card = (b.input ?? {}) as unknown as CardEvent;
+        // Drop stale snapshots from the legacy nested emit shape
+        // ({card:{kind,...}}) — these lack variant/id/status and
+        // crash CardShell on render (STATUS_BADGE[undefined].label).
+        // The backend stopped emitting this shape in commit 6b0157b;
+        // this guard handles pre-fix transcripts persisted on disk.
+        if (!card.variant || !card.id || !card.status) continue;
         cur.cards = [...(cur.cards ?? []), card];
         continue;
       }
