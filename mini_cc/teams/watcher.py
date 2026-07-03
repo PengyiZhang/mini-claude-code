@@ -163,6 +163,26 @@ class LeadWatcher:
         """True if the worker thread is currently running."""
         return self._thread is not None and self._thread.is_alive()
 
+    def rebind(
+        self,
+        lead_loop_getter: "Callable[[], AgentLoop | None]",
+        event_persister: "Callable[[dict], None] | None",
+    ) -> None:
+        """Swap in a fresh ``lead_loop_getter`` and ``event_persister`` on
+        a running watcher. Called by ``TeammateSpawner.start_lead_watcher``
+        when the user opens a new session — without this, the FIRST
+        /send's closures would win forever and daemon-path events would
+        keep being persisted into the FIRST session's events.jsonl even
+        after the user moved on.
+
+        Safe to call from any thread; ``_tick`` reads these fields
+        without a lock (worst case: one tick uses the old getter before
+        the new one takes effect — that's fine, the old session is
+        still alive for one more cycle).
+        """
+        self._lead_loop_getter = lead_loop_getter
+        self._event_persister = event_persister
+
     # ── Worker loop ──────────────────────────────────────────────────
     def _run(self) -> None:
         """Main poll loop. Exits cleanly when ``_stop`` is set."""

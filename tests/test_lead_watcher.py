@@ -380,3 +380,51 @@ def test_spawner_start_lead_watcher_idempotent(tmp_path):
         )
     finally:
         spawner.stop_lead_watcher(join_timeout=2.0)
+
+
+def test_start_lead_watcher_rebinds_loop_getter_and_persister(tmp_path):
+    """Regression for code-review finding: if start_lead_watcher is
+    idempotent (no-op when alive), the FIRST /send's lead_loop_getter
+    and event_persister win forever. Opening session B and triggering
+    a daemon turn would persist into session A's events.jsonl.
+
+    Fix: re-bind on every call. The watcher instance stays alive but
+    its getter/persister fields are swapped in place."""
+    spawner = _build_spawner(tmp_path)
+    marker_a: list[str] = []
+    marker_b: list[str] = []
+
+    def _getter_a():
+        marker_a.append("called")
+        return None  # no loop bound — watcher ticks but does nothing
+
+    def _persister_a(ev):
+        marker_a.append(f"persist:{ev.get('type', '?')}")
+
+    def _getter_b():
+        marker_b.append("called")
+        return None
+
+    def _persister_b(ev):
+        marker_b.append(f"persist:{ev.get('type', '?')}")
+
+    spawner.start_lead_watcher(_getter_a, event_persister=_persister_a,
+                               poll_interval=0.05)
+    try:
+        # First call binds A.
+        assert spawner._lead_watcher._lead_loop_getter is _getter_a
+        assert spawner._lead_watcher._event_persister is _persister_a
+        # Second call with B closures must re-bind.
+        spawner.start_lead_watcher(_getter_b, event_persister=_persister_b,
+                                   poll_interval=0.05)
+        assert spawner._lead_watcher._lead_loop_getter is _getter_b, (
+            "start_lead_watcher did not rebind lead_loop_getter on the "
+            "existing watcher — daemon events would route to session A "
+            "forever after the user switches to session B"
+        )
+        assert spawner._lead_watcher._event_persister is _persister_b, (
+            "start_lead_watcher did not rebind event_persister on the "
+            "existing watcher"
+        )
+    finally:
+        spawner.stop_lead_watcher(join_timeout=2.0)

@@ -556,9 +556,11 @@ class TeammateSpawner:
         I.B-1.3). The /send route passes a closure over
         ``storage.append_session_event``.
 
-        Idempotent: if a watcher is already running, this is a no-op.
-        Pass a fresh ``lead_loop_getter`` only if you also call
-        ``stop_lead_watcher`` first — otherwise the old getter wins.
+        Re-binds on every call: if a watcher is already running, its
+        ``lead_loop_getter`` and ``event_persister`` are swapped in
+        place. Without this, the FIRST /send's closures would win
+        forever — opening session B would still persist daemon events
+        into session A's events.jsonl.
 
         Not wired into ``__init__`` deliberately: existing tests build
         spawners without expecting a background thread, and the server
@@ -566,7 +568,10 @@ class TeammateSpawner:
         """
         from .watcher import LeadWatcher
         with self._lock:
-            if self._lead_watcher is not None and self._lead_watcher.is_alive():
+            existing = self._lead_watcher
+            if existing is not None and existing.is_alive():
+                # Re-bind so the new /send's session gets the events.
+                existing.rebind(lead_loop_getter, event_persister)
                 return
             watcher = LeadWatcher(
                 bus=self.bus,

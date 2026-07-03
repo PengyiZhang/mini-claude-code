@@ -70,6 +70,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # B6: gracefully shutdown teammates so mailbox writes aren't mid-
     # flight when the process exits. Each TeammateSpawner sends a
     # shutdown_request via the bus and joins the worker threads.
+    # Phase I.B-1.3: also stop each spawner's LeadWatcher so daemon
+    # threads don't outlive the storage they're writing to.
     pm: ProjectManager = app.state.pm
     for pid in list(pm._projects.keys()) if hasattr(pm, "_projects") else []:
         try:
@@ -77,6 +79,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             spawner = getattr(project, "teams", None)
             if spawner is not None and hasattr(spawner, "shutdown"):
                 spawner.shutdown(timeout=5.0)
+            if spawner is not None and hasattr(spawner, "stop_lead_watcher"):
+                spawner.stop_lead_watcher()
         except Exception:
             pass
     # A3: disconnect MCP clients so stdio subprocesses / HTTP pools
