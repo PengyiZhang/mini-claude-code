@@ -45,7 +45,12 @@ interface TeamActivityState {
 }
 
 function dedupKey(e: TeamEvent): string {
-  return `${e.session_id}|${e.ts}|${e.type}`;
+  // Enrich with a content facet so two same-session events that share
+  // a ts tick AND a type (e.g. two consecutive text deltas written
+  // within the same second-resolution ISO stamp) don't collapse.
+  // Backend has no stable event id, so this is best-effort.
+  const content = (e.text ?? e.tool_use_id ?? e.message ?? "") as string;
+  return `${e.session_id}|${e.ts}|${e.type}|${content}`;
 }
 
 function sortByTsAsc(a: TeamEvent, b: TeamEvent): number {
