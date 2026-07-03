@@ -441,12 +441,14 @@ class AgentLoop:
         without appending a fresh user_input (nudge has already
         appended the wake-up content before calling us).
 
-        Thread-safety: callers must ensure only ONE _run_until_idle (or
-        run()) is active at a time. nudge checks _running first under
-        _running_lock. Events emitted by the loop's _emit path still
-        fire (so /send SSE / events.jsonl still get them), but the
-        yielded events go nowhere — there is no consumer for a
-        watcher-triggered turn, by design (the user isn't around)."""
+        Thread-safety: the inner lock below is the real guard — if two
+        callers race in, only one wins _running=True and the other
+        returns immediately. nudge's pre-check under _running_lock is
+        just an optimization to skip spawning a thread that would exit
+        at once. Events emitted by the loop's _emit path still fire
+        (so /send SSE / events.jsonl still get them), but the yielded
+        events go nowhere — there is no consumer for a watcher-triggered
+        turn, by design (the user isn't around)."""
         with self._running_lock:
             if self._running:
                 # Lost the race with another nudge or a /send — let
@@ -458,7 +460,25 @@ class AgentLoop:
             # Drain the generator so every yield runs to completion.
             # user_input=None tells _run_impl the caller already
             # appended the user message (nudge did so before calling).
-            for _ in self._run_impl(None):
+            # Route every yielded event through _emit so SSE /
+            # events.jsonl observers see them — there is no caller
+            # iterating this generator, so without this routing the
+            # watcher-triggered turn would be invisible (including
+            # any {"type": "error", ...} event _run_impl yields when
+            # it catches an exception internally).
+            for ev in self._run_impl(None):
+                self._emit(ev)
+        except Exception as e:
+            # Defense-in-depth: _run_impl catches most exceptions
+            # internally and yields an error event, but if something
+            # escapes (e.g. a bug in _inject_*), surface it as an
+            # error event so the daemon doesn't die silently.
+            try:
+                self._emit({
+                    "type": "error",
+                    "message": f"[nudge worker] {type(e).__name__}: {e}",
+                })
+            except Exception:
                 pass
         finally:
             with self._running_lock:
@@ -479,7 +499,9 @@ class AgentLoop:
           will pick up the new content. Does NOT start a second thread.
 
         Idempotent: multiple nudges queue multiple messages.
-        Thread-safe: may be called from any thread."""
+        Thread-safe: may be called from any thread. The pre-check of
+        _running under _running_lock is best-effort; _run_until_idle
+        re-checks under the lock and is the actual single-flight guard."""
         self._stop.clear()
         self.messages.append({"role": "user", "content": content})
         with self._running_lock:

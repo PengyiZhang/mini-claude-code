@@ -177,3 +177,36 @@ def test_nudge_idempotent_multiple_calls(tmp_path):
     assert any("Milestone 1" in c for c in contents)
     assert any("Milestone 2" in c for c in contents)
     assert any("Milestone 3" in c for c in contents)
+
+
+def test_nudge_worker_emits_error_event_on_exception(tmp_path):
+    """If _run_impl raises inside the nudge worker thread, the daemon
+    must emit an `error` event so SSE / events.jsonl observers can see
+    the failure instead of the thread dying silently. Regression for
+    the code-review observation that daemon threads have no caller to
+    propagate exceptions to."""
+    # An empty script makes _MockClient.stream raise "script exhausted"
+    # — _run_impl will surface this as an exception inside the worker.
+    loop, _ = _build_loop(tmp_path, [])
+    captured: list[dict] = []
+    loop.on_event = captured.append
+
+    loop.nudge("[Teammate milestone] trigger crash")
+    # Wait for the daemon thread to either emit an error event or
+    # timeout (no silent death).
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if any(ev.get("type") == "error" for ev in captured):
+            break
+        time.sleep(0.02)
+    errs = [ev for ev in captured if ev.get("type") == "error"]
+    assert errs, (
+        "nudge worker swallowed the exception without emitting an "
+        f"error event; captured events: {captured}"
+    )
+    # _run_impl catches the exception and yields an error event with
+    # the original message; the daemon must route it through _emit
+    # (this is the regression — pre-fix, the daemon dropped it).
+    assert "script exhausted" in errs[0].get("message", "")
+    # _running must have been released — no deadlock.
+    assert not loop._running
