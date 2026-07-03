@@ -474,6 +474,7 @@ class AgentLoop:
         while not self._stop.is_set():
             self._inject_cron_fired()
             self._inject_background_notifications()
+            self._inject_teammate_replies()
             self._maybe_remind_todos()
             self._refresh_tools()
             prepare_context(self.messages, before_compact=self._save_transcript)
@@ -779,6 +780,33 @@ class AgentLoop:
             self.messages.append({"role": "user", "content": "\n".join(notes)})
             for _ in notes:
                 self._emit({"type": "background_notification"})
+
+    def _inject_teammate_replies(self) -> None:
+        """Drain pending teammate→lead mailbox messages into loop.messages
+        so the lead's LLM sees late replies in context on the next turn.
+
+        Without this, a reply that lands while the lead is idle
+        (between /send calls, or mid-turn after the lead's check_inbox
+        already returned empty) sits in the mailbox drainable only by
+        an explicit check_inbox call — which the model has no reason
+        to retry. Mirrors the teammate subsystem's own _idle_poll,
+        which similarly drains a teammate's mailbox into the next
+        turn's prompt. Skipped for teammate sessions so a teammate's
+        loop never steals lead's mail."""
+        teams = self.project.teams
+        if teams is None or self.session_id.startswith("teammate-"):
+            return
+        try:
+            pending = teams.bus.read_inbox("lead")
+        except Exception:
+            return
+        if not pending:
+            return
+        import json as _json
+        note = ("<teammate_messages>"
+                + _json.dumps(pending, ensure_ascii=False)
+                + "</teammate_messages>")
+        self.messages.append({"role": "user", "content": note})
 
     def _make_ctx(self) -> ToolContext:
         def _mark():
