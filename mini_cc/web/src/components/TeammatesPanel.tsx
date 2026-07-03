@@ -123,11 +123,10 @@ export default function TeammatesPanel({
       });
   };
 
-  // No teammates → collapse to a thin edge tab so the chat pane owns the space.
-  if (rows.length === 0) {
-    return null;
-  }
-
+  // Always render the panel — empty state shows a placeholder so the
+  // user can see the panel exists and discover how to spawn a
+  // teammate. Pre-fix, returning null on empty roster made the panel
+  // invisible, which looked like a bug ("where did Teammates go?").
   const aliveCount = rows.filter((r) => r.alive).length;
 
   return (
@@ -141,9 +140,11 @@ export default function TeammatesPanel({
         {!collapsed && (
           <div className="text-xs uppercase tracking-wide text-ink-dim">
             Teammates
-            <span className="ml-2 text-ink-faint normal-case">
-              {aliveCount} alive · {rows.length - aliveCount} stopped
-            </span>
+            {rows.length > 0 && (
+              <span className="ml-2 text-ink-faint normal-case">
+                {aliveCount} alive · {rows.length - aliveCount} stopped
+              </span>
+            )}
           </div>
         )}
         <button
@@ -157,6 +158,20 @@ export default function TeammatesPanel({
       </div>
       {!collapsed && (
         <div className="flex-1 overflow-auto p-2 space-y-2">
+          {rows.length === 0 && (
+            <div className="border border-dashed border-border rounded-md p-4 text-center">
+              <div className="text-xs text-ink-faint">
+                No teammates in this project.
+              </div>
+              <div className="mt-2 text-xs text-ink-dim">
+                Try{" "}
+                <span className="font-mono text-ink">
+                  /agents spawn &lt;name&gt; &lt;role&gt;
+                </span>{" "}
+                in chat.
+              </div>
+            </div>
+          )}
           {rows.map((r) => {
             const isOpen = expanded[r.name] ?? false;
             return (
