@@ -238,6 +238,33 @@ class LeadWatcher:
         drained = self.bus.read_inbox("lead")
         if not drained:
             return
+        # Phase I.C.5: emit a single ``lead_nudged`` notice event BEFORE
+        # nudging so the frontend can render a gray "Alice reported a
+        # milestone → lead is responding..." toast on the bubble the
+        # daemon turn is about to drive. Order matters: the notice must
+        # be the FIRST persisted event of this drain so it lands on the
+        # streaming bubble the daemon-thread turn creates, not on the
+        # tail of the previous bubble. Burst-collapsed: one drain → one
+        # notice carrying every drained teammate name + kind. Best-effort
+        # — if the persister is absent (legacy / unmonitored session) we
+        # still nudge, the notice is observability sugar not correctness.
+        if self._event_persister is not None:
+            try:
+                self._event_persister({
+                    "type": "lead_nudged",
+                    "items": [
+                        {
+                            "from": m.get("from", "?"),
+                            "kind": m.get("type", "message"),
+                        }
+                        for m in drained
+                    ],
+                })
+            except Exception:
+                # The persister is best-effort. Never block the nudge
+                # path on event persistence — the user's next /send
+                # still surfaces the content via the normal flow.
+                pass
         # Nudge while holding the drained batch. If nudge itself raises
         # (loop is shutting down, etc.) we re-inject the messages so
         # the next /send picks them up rather than dropping them. We

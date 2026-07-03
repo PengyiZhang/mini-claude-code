@@ -201,6 +201,12 @@ export type SendEvent =
   // debug.8 Task A: teammate→lead message delivered live through the
   // spawner's lead side-channel. Shape mirrors the bus message dict.
   | { type: "teammate_message"; from: string; to: string; content: string; msg_type: string; ts: number; metadata: Record<string, unknown> }
+  // Phase I.C.5: watcher fired a nudge (drained teammate milestone /
+  // blocker / result messages) and is about to drive a daemon-thread
+  // lead turn. The frontend renders a gray notice on the streaming
+  // bubble so the user can see "Alice reported a milestone → lead is
+  // responding..." at a glance. Burst-collapsed: one event per drain.
+  | { type: "lead_nudged"; items: { from: string; kind: string }[] }
   | { type: "card" } & CardEvent;
 
 // ── Slash-command card schema ───────────────────────────────────────

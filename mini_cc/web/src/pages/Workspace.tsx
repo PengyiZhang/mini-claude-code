@@ -474,6 +474,17 @@ export default function Workspace() {
                 addTeammateMessage(chatKey!, ev.from, ev.content);
               }
               break;
+            case "lead_nudged":
+              // Phase I.C.5: watcher triggered a lead turn (teammate
+              // milestone/blocker/result landed while the user was
+              // away). Show a gray notice on the streaming bubble so
+              // the user can see why the lead is responding on its
+              // own. addNotice no-ops gracefully if no streaming
+              // assistant bubble exists yet (e.g. mid-resume).
+              if (ev.items && ev.items.length > 0) {
+                addNotice(chatKey!, formatLeadNudgedNotice(ev.items));
+              }
+              break;
           }
         },
         onError: (e) => {
@@ -892,6 +903,30 @@ export default function Workspace() {
       </div>
     </div>
   );
+}
+
+// Phase I.C.5: format a lead_nudged event payload as a single-line gray
+// notice. The shape is "Alice reported a milestone → lead is responding...".
+// Multiple teammates in one drain collapse to a comma-separated list so
+// the notice stays one line. Kinds are mapped to a human verb (milestone
+// → reported a milestone, blocker → hit a blocker, result → reported a
+// result, anything else → reported an update).
+export function formatLeadNudgedNotice(
+  items: { from: string; kind: string }[],
+): string {
+  const parts = items.map((it) => {
+    const verb = (
+      it.kind === "milestone"
+        ? "reported a milestone"
+        : it.kind === "blocker"
+          ? "hit a blocker"
+          : it.kind === "result"
+            ? "reported a result"
+            : "reported an update"
+    );
+    return `${it.from} ${verb}`;
+  });
+  return `${parts.join(", ")} → lead is responding...`;
 }
 
 function MessageBubbleWithKey({ msg, chatKey }: { msg: ReturnType<typeof useChat.getState>["messages"][string][number]; chatKey: string }) {

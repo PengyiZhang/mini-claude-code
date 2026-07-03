@@ -347,3 +347,102 @@ def test_send_route_starts_lead_watcher(app, tmp_path):
     )
     # Cleanup so the daemon doesn't leak into other tests.
     teams.stop_lead_watcher()
+
+
+# ── Phase I.C.5: lead_nudged notice event ────────────────────────────
+
+
+def test_watcher_emits_lead_nudged_notice_event(tmp_path):
+    """Phase I.C.5: when the watcher fires a nudge, it must emit a single
+    ``lead_nudged`` event through the persister carrying the teammate
+    names + kinds so the frontend can show a gray "Alice reported a
+    milestone → lead is responding..." notice in the main chat.
+
+    The event MUST arrive before the daemon-thread turn's other events
+    (text/tool_use/etc.) so the UI can attach the notice to the bubble
+    the daemon turn is about to start. Asserts on:
+    - Exactly one lead_nudged event per drain batch (debounce collapses
+      a burst into one nudge → one notice).
+    - The event carries the teammate name and the kind (milestone).
+    - The event is the FIRST persisted event (so the frontend sees the
+      notice before it starts streaming the daemon turn's text).
+    """
+    script = [
+        _MockResponse([_Block(type="text", text="watcher-fired turn")]),
+    ]
+    loop, bus = _build_loop(tmp_path, script)
+
+    persisted: list[dict] = []
+
+    def _persist(ev):
+        persisted.append(ev)
+
+    watcher = LeadWatcher(
+        bus=bus,
+        project_id="proj-x",
+        lead_loop_getter=lambda: loop,
+        poll_interval=0.05,
+        debounce=0.2,
+        event_persister=_persist,
+    )
+    watcher.start()
+    try:
+        bus.send("alice", "charlie", "feature X done",
+                 msg_type="milestone")
+        ok = _wait_for(
+            lambda: any("watcher-fired turn" in str(m)
+                        for m in loop.messages),
+            timeout=8.0,
+        )
+        assert ok, (
+            "watcher-triggered turn did not run — messages: "
+            f"{loop.messages}"
+        )
+        _wait_for(lambda: len(persisted) > 0, timeout=2.0)
+        notices = [ev for ev in persisted if ev.get("type") == "lead_nudged"]
+        assert len(notices) == 1, (
+            f"expected exactly one lead_nudged event, got "
+            f"{len(notices)} in {persisted}"
+        )
+        ev = notices[0]
+        assert ev["items"], "lead_nudged event must carry items list"
+        assert ev["items"][0]["from"] == "alice"
+        assert ev["items"][0]["kind"] == "milestone"
+        # The notice MUST be the first event so the frontend can attach
+        # it to the streaming bubble the daemon turn is about to drive.
+        assert persisted[0] is ev, (
+            "lead_nudged must be the first persisted event; got: "
+            f"{persisted[0]}"
+        )
+    finally:
+        watcher.stop(join_timeout=2.0)
+
+
+def test_watcher_lead_nudged_skipped_when_no_persister(tmp_path):
+    """No event_persister wired (legacy / unmonitored session). The
+    watcher must still nudge the loop and must NOT crash trying to emit
+    the lead_nudged notice. The notice is observability sugar, not a
+    correctness invariant."""
+    script = [
+        _MockResponse([_Block(type="text", text="ok")]),
+    ]
+    loop, bus = _build_loop(tmp_path, script)
+
+    watcher = LeadWatcher(
+        bus=bus,
+        project_id="proj-x",
+        lead_loop_getter=lambda: loop,
+        poll_interval=0.05,
+        debounce=0.1,
+        # event_persister deliberately omitted
+    )
+    watcher.start()
+    try:
+        bus.send("alice", "charlie", "done", msg_type="result")
+        ok = _wait_for(
+            lambda: any("ok" in str(m) for m in loop.messages),
+            timeout=6.0,
+        )
+        assert ok, "watcher failed to nudge without persister"
+    finally:
+        watcher.stop(join_timeout=2.0)
