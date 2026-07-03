@@ -276,6 +276,16 @@ class AgentLoop:
         # would race on self.messages and corrupt the transcript.
         self._running_lock = threading.RLock()
         self._running = False
+        # Phase I.B-2.1: pending nudges queued by the watcher daemon
+        # thread. ``nudge`` ONLY appends to this list (GIL-atomic);
+        # ``_inject_pending_nudges`` (called from _run_impl on the loop
+        # thread) is the sole consumer/writer of self.messages from the
+        # nudge path. This closes the pre-fix race where nudge's direct
+        # ``self.messages.append`` raced with _run_impl's mutations
+        # (specifically, lost writes when a nudge landed between
+        # ``compact_history(...)`` returning and the slice assignment
+        # ``self.messages[:] = ...`` overwriting the live list).
+        self._pending_nudges: list[str] = []
 
     # ── Tool pool ───────────────────────────────────────────────────────
     def _build_tools(self) -> list[Tool]:
@@ -520,21 +530,30 @@ class AgentLoop:
         turn ended. Used by Phase I.B-1.2 mailbox watcher to wake lead
         when teammate milestones land while the user is away.
 
-        - Appends ``{"role": "user", "content": content}`` to messages
+        - Queues ``content`` into ``_pending_nudges`` (GIL-atomic)
         - Clears ``_stop`` so the loop can iterate again
         - If the loop is idle (no run() / _run_until_idle in flight),
           spawns a daemon thread that drains the loop until it ends
           naturally
         - If the loop is currently running (a /send is in flight),
-          just appends — the running iteration's next _inject_* pass
-          will pick up the new content. Does NOT start a second thread.
+          the queued content is picked up by ``_inject_pending_nudges``
+          on the running iteration's next pass. Does NOT start a second
+          thread.
+
+        Phase I.B-2.1 contract: nudge no longer writes to
+        ``self.messages`` directly. It only queues; ``_run_impl`` is
+        the sole writer of ``self.messages`` from the nudge path (via
+        ``_inject_pending_nudges``). This closes the lost-write race
+        where a direct append landed between ``compact_history(...)``
+        returning and ``self.messages[:] = ...`` executing, getting
+        silently overwritten.
 
         Idempotent: multiple nudges queue multiple messages.
         Thread-safe: may be called from any thread. The pre-check of
         _running under _running_lock is best-effort; _run_until_idle
         re-checks under the lock and is the actual single-flight guard."""
         self._stop.clear()
-        self.messages.append({"role": "user", "content": content})
+        self._pending_nudges.append(content)
         with self._running_lock:
             already_running = self._running
         if not already_running:
@@ -585,6 +604,7 @@ class AgentLoop:
             self._inject_cron_fired()
             self._inject_background_notifications()
             self._inject_teammate_replies()
+            self._inject_pending_nudges()
             self._maybe_remind_todos()
             self._refresh_tools()
             prepare_context(self.messages, before_compact=self._save_transcript)
@@ -917,6 +937,37 @@ class AgentLoop:
                 + _json.dumps(pending, ensure_ascii=False)
                 + "</teammate_messages>")
         self.messages.append({"role": "user", "content": note})
+
+    def _inject_pending_nudges(self) -> None:
+        """Phase I.B-2.1: drain queued nudge contents into loop.messages.
+
+        ``nudge`` is the only appender to ``_pending_nudges`` (called
+        from the watcher daemon thread); this method is the only
+        remover/consumer (called from _run_impl on the loop thread).
+        The list swap below is a single atomic attribute assignment
+        under CPython's GIL — the old list reference is captured and
+        a fresh empty list is installed in one opcode, so a
+        concurrently-appending watcher lands either on the captured
+        list (drained this iteration) or on the new list (drained
+        next iteration). No nudge is lost. The only writer of
+        ``self.messages`` from the nudge path is this method itself
+        — so there is no race on ``self.messages``.
+
+        Without this indirection, ``nudge``'s direct
+        ``self.messages.append`` raced with _run_impl's mutations; in
+        particular a nudge landing between ``compact_history(...)``
+        returning and the slice assignment
+        ``self.messages[:] = compacted`` was silently overwritten.
+        """
+        if not self._pending_nudges:
+            return
+        # Atomic swap: capture the old list and install a fresh one.
+        # Concurrent ``nudge.append`` lands on either side of the swap,
+        # never lost.
+        pending = self._pending_nudges
+        self._pending_nudges = []
+        for content in pending:
+            self.messages.append({"role": "user", "content": content})
 
     def _make_ctx(self) -> ToolContext:
         def _mark():

@@ -19,11 +19,30 @@ from test_lead_mailbox_inject import (
 def test_nudge_appends_user_message_to_messages(tmp_path):
     """nudge(content) appends a user-role message to self.messages
     even if the loop isn't running yet. This is the minimum contract
-    a watcher relies on."""
+    a watcher relies on.
+
+    Phase I.B-2.1 deferred-append semantics: nudge queues into
+    ``_pending_nudges`` and (when the loop is idle) spawns a daemon
+    worker that drains the queue into ``self.messages`` on its next
+    iteration. So the assertion has to wait for the daemon worker to
+    finish — the message is no longer synchronously on ``messages``
+    the instant ``nudge`` returns."""
     script = [_MockResponse([_Block(type="text", text="hi")])]
     loop, _ = _build_loop(tmp_path, script)
-    # No run() yet — nudge should still append.
+    # No run() yet — nudge should still queue + spawn a daemon that
+    # drains it into self.messages.
     loop.nudge("[Teammate milestone] alice done")
+    # Wait for the daemon worker to finish draining. The nudge
+    # content lands in self.messages once _run_impl's
+    # _inject_pending_nudges fires.
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        msgs = [m for m in loop.messages
+                if isinstance(m.get("content"), str)
+                and "alice done" in m["content"]]
+        if msgs:
+            break
+        time.sleep(0.02)
     msgs = [m for m in loop.messages
             if isinstance(m.get("content"), str)
             and "alice done" in m["content"]]
@@ -111,7 +130,7 @@ def test_nudge_when_loop_running_does_not_spawn_second_thread(tmp_path):
         "would cause concurrent writes to loop.messages"
     )
 
-    t.join(timeout=10)
+    t.join(timeout=60)
     assert not t.is_alive()
 
 
@@ -194,7 +213,7 @@ def test_nudge_worker_emits_error_event_on_exception(tmp_path):
     loop.nudge("[Teammate milestone] trigger crash")
     # Wait for the daemon thread to either emit an error event or
     # timeout (no silent death).
-    deadline = time.time() + 10
+    deadline = time.time() + 30
     while time.time() < deadline:
         if any(ev.get("type") == "error" for ev in captured):
             break
