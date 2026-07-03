@@ -62,6 +62,11 @@ class MessageBus:
     # outlive the live inbox and would otherwise grow unbounded across
     # the lifetime of a project. Older entries are dropped FIFO.
     _HISTORY_CAP = 200
+    # Phase I.A: msg_types that trigger an automatic CC to "lead" when
+    # sent between teammates. Plain chitchat (msg_type=message) and
+    # coordination types (shutdown_*, plan_approval_*, mention) stay
+    # private — lead only needs to know about progress signals.
+    _LEAD_CC_TYPES: frozenset[str] = frozenset({"result", "milestone", "blocker"})
 
     def __init__(self, workspace: Path):
         self.workspace = Path(workspace)
@@ -251,6 +256,20 @@ class MessageBus:
         msg = {"from": from_agent, "to": to_agent,
                "content": content, "type": msg_type,
                "ts": time.time(), "metadata": metadata or {}}
+        # Phase I.A: determine whether this send triggers an auto-CC to
+        # lead. CC fires only for teammate→teammate progress signals
+        # (result/milestone/blocker); if lead is already the direct
+        # recipient there's nothing to copy. The CC copy is what the
+        # lead hook (if any) should see, since downstream consumers
+        # expect a lead-addressed payload.
+        cc_msg: dict | None = None
+        if to_agent != "lead" and msg_type in self._LEAD_CC_TYPES:
+            cc_meta = dict(msg["metadata"])
+            cc_meta["cc"] = True
+            cc_meta["original_to"] = to_agent
+            cc_msg = {"from": from_agent, "to": "lead",
+                      "content": content, "type": msg_type,
+                      "ts": msg["ts"], "metadata": cc_meta}
         with self._lock:
             self._cache.setdefault(to_agent, []).append(msg)
             self._append_disk(self._path(to_agent), msg)
@@ -268,13 +287,29 @@ class MessageBus:
                 # on next restart).
                 del hist[0:len(hist) - self._HISTORY_CAP]
             self._append_disk(self._history_path(to_agent), msg)
+        # Phase I.A: write the CC copy to lead's mailbox + history.
+        # Separate lock block so the (potential) lead hook below still
+        # fires OUTSIDE the lock — same invariant as the original.
+        if cc_msg is not None:
+            with self._lock:
+                self._cache.setdefault("lead", []).append(cc_msg)
+                self._append_disk(self._path("lead"), cc_msg)
+                lead_hist = self._history.setdefault("lead", [])
+                lead_hist.append(cc_msg)
+                if len(lead_hist) > self._HISTORY_CAP:
+                    del lead_hist[0:len(lead_hist) - self._HISTORY_CAP]
+                self._append_disk(self._history_path("lead"), cc_msg)
         # debug.8 Task A: fire the lead hook OUTSIDE the lock so a slow
         # sink can't stall mailbox writes for other agents. The hook is
         # only for messages addressed to "lead" — that's the only case
-        # where the UI is waiting for live delivery.
-        if to_agent == "lead" and self._lead_hook is not None:
+        # where the UI is waiting for live delivery. Phase I.A: when a
+        # CC copy was made, the hook sees that copy (lead-addressed)
+        # rather than the original teammate-addressed message; this
+        # keeps the hook payload shape stable for downstream consumers.
+        hook_msg = cc_msg if cc_msg is not None else msg
+        if hook_msg["to"] == "lead" and self._lead_hook is not None:
             try:
-                self._lead_hook(msg)
+                self._lead_hook(hook_msg)
             except Exception:
                 # A broken hook must never block mailbox delivery.
                 pass
