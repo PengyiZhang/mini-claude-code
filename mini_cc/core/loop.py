@@ -435,6 +435,63 @@ class AgentLoop:
             with self._running_lock:
                 self._running = False
 
+    def _run_until_idle(self) -> None:
+        """Background-thread entry point for nudge. Drives the same
+        loop body as run() but without the generator wrapper and
+        without appending a fresh user_input (nudge has already
+        appended the wake-up content before calling us).
+
+        Thread-safety: callers must ensure only ONE _run_until_idle (or
+        run()) is active at a time. nudge checks _running first under
+        _running_lock. Events emitted by the loop's _emit path still
+        fire (so /send SSE / events.jsonl still get them), but the
+        yielded events go nowhere — there is no consumer for a
+        watcher-triggered turn, by design (the user isn't around)."""
+        with self._running_lock:
+            if self._running:
+                # Lost the race with another nudge or a /send — let
+                # the existing run pick up the appended content via
+                # _inject_* on its next iteration.
+                return
+            self._running = True
+        try:
+            # Drain the generator so every yield runs to completion.
+            # user_input=None tells _run_impl the caller already
+            # appended the user message (nudge did so before calling).
+            for _ in self._run_impl(None):
+                pass
+        finally:
+            with self._running_lock:
+                self._running = False
+
+    def nudge(self, content: str) -> None:
+        """Re-enter the loop with a new user message after the previous
+        turn ended. Used by Phase I.B-1.2 mailbox watcher to wake lead
+        when teammate milestones land while the user is away.
+
+        - Appends ``{"role": "user", "content": content}`` to messages
+        - Clears ``_stop`` so the loop can iterate again
+        - If the loop is idle (no run() / _run_until_idle in flight),
+          spawns a daemon thread that drains the loop until it ends
+          naturally
+        - If the loop is currently running (a /send is in flight),
+          just appends — the running iteration's next _inject_* pass
+          will pick up the new content. Does NOT start a second thread.
+
+        Idempotent: multiple nudges queue multiple messages.
+        Thread-safe: may be called from any thread."""
+        self._stop.clear()
+        self.messages.append({"role": "user", "content": content})
+        with self._running_lock:
+            already_running = self._running
+        if not already_running:
+            t = threading.Thread(
+                target=self._run_until_idle,
+                name="AgentLoop-nudge",
+                daemon=True,
+            )
+            t.start()
+
     def _run_impl(self, user_input: str | None = None) -> Iterator[dict]:
         if user_input is not None:
             if self.hooks is not None and self.hooks.has(Hooks.UserPromptSubmit):
