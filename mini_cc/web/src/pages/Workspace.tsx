@@ -13,9 +13,11 @@ import SlashMenu from "../components/SlashMenu";
 import TodoPanel from "../components/TodoPanel";
 import RunTablePanel from "../components/RunTablePanel";
 import TeammatesPanel from "../components/TeammatesPanel";
+import TeamTimeline from "../components/TeamTimeline";
 import MentionPicker, { type MentionCandidate } from "../components/MentionPicker";
 import { runCommandForCard } from "../lib/commands";
-import type { CardEvent, CardListItem } from "../lib/types";
+import { useTeamActivity } from "../lib/teamActivity";
+import type { CardEvent, CardListItem, TeamEvent } from "../lib/types";
 import {
   ApiError,
   deleteSession,
@@ -32,7 +34,7 @@ import { streamSend } from "../lib/sse";
 import { fetchCommands, streamRunCommand } from "../lib/commands";
 import type { CommandDef } from "../lib/commands";
 
-type Tab = "chat" | "files" | "run";
+type Tab = "chat" | "files" | "run" | "team";
 
 const EMPTY: ChatMessage[] = [];
 const EMPTY_PERMS: PermissionPromptData[] = [];
@@ -220,6 +222,22 @@ export default function Workspace() {
     refreshSessions().then((list) => {
       if (list.length > 0 && !sid) setSid(list[0]);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, profile.apiKey]);
+
+  // Phase I.C.4 — poll team activity at the Workspace level so the
+  // Team tab has data regardless of whether TeammatesPanel is mounted
+  // (TeammatesPanel only renders for the chat tab when a session is
+  // active). The store's busy guard dedups the parallel poll inside
+  // TeammatesPanel, so the redundant fetch is cheap.
+  useEffect(() => {
+    if (!profile || !pid) return;
+    const tick = () => {
+      useTeamActivity.getState().poll(profile, pid).catch(() => {});
+    };
+    tick();
+    const id = window.setInterval(tick, 4000);
+    return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, profile.apiKey]);
 
@@ -577,7 +595,7 @@ export default function Workspace() {
         {/* Sidebar */}
         <aside className="w-64 border-r border-border bg-bg-panel p-3 flex flex-col gap-3 overflow-y-auto shrink-0">
           <div className="flex gap-1 text-sm">
-            {(["chat", "files", "run"] as Tab[]).map((t) => (
+            {(["chat", "files", "run", "team"] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -627,6 +645,16 @@ export default function Workspace() {
 
           {tab === "run" && (
             <RunTablePanel profile={profile} pid={pid} sid={sid} />
+          )}
+
+          {tab === "team" && (
+            <div className="space-y-2">
+              <div className="text-xs text-ink-dim uppercase tracking-wide">team</div>
+              <div className="text-xs text-ink-faint">
+                Merged timeline of teammate + lead activity. Use the checkboxes above the timeline to filter by session.
+              </div>
+              <TeamRoster pid={pid} />
+            </div>
           )}
 
           <div className="mt-auto text-xs text-ink-faint">
@@ -852,6 +880,10 @@ export default function Workspace() {
               </div>
             </div>
           )}
+
+          {tab === "team" && (
+            <TeamTimeline pid={pid} sid={sid} setSid={setSid} />
+          )}
           </div>
           {tab === "chat" && sid && (
             <TeammatesPanel pid={pid} sid={sid} />
@@ -867,3 +899,40 @@ function MessageBubbleWithKey({ msg, chatKey }: { msg: ReturnType<typeof useChat
   const augmented = { ...msg, __key: chatKey } as typeof msg & { __key: string };
   return <MessageBubble msg={augmented} />;
 }
+
+// Read-only roster summary for the team tab sidebar. Lists every
+// session that has produced events in the merged feed, with a count.
+// The actual filter UI lives inline in TeamTimeline so the component
+// remains self-sufficient for testing.
+function TeamRoster({ pid }: { pid: string }) {
+  const activity = useTeamActivity(
+    (s) => s.perProjectActivity[pid] ?? EMPTY_TEAM_ACTIVITY,
+  );
+  const counts: Record<string, number> = {};
+  for (const e of activity) {
+    counts[e.session_id] = (counts[e.session_id] ?? 0) + 1;
+  }
+  const entries = Object.entries(counts).sort();
+  if (entries.length === 0) {
+    return (
+      <div className="text-xs text-ink-faint italic">
+        (no teammates yet — try{" "}
+        <span className="font-mono not-italic">/agents spawn &lt;name&gt; &lt;role&gt;</span>)
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      {entries.map(([sid, n]) => (
+        <div key={sid} className="text-xs flex items-center justify-between">
+          <span className="font-mono text-ink">
+            {sid.startsWith("teammate-") ? `@${sid.slice("teammate-".length)}` : sid}
+          </span>
+          <span className="text-ink-faint">{n} event{n === 1 ? "" : "s"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const EMPTY_TEAM_ACTIVITY: TeamEvent[] = [];

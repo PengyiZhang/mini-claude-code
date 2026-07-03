@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth, useChat } from "../lib/store";
 import { runCommandForCard } from "../lib/commands";
 import { useTeamActivity } from "../lib/teamActivity";
+import { summarizeEvent, shortTs } from "../lib/teamEvent";
 import type { CardEvent, CardListItem, TeamEvent } from "../lib/types";
 
 /**
@@ -49,63 +50,6 @@ function parseRoster(card: CardEvent | null): TeamRow[] {
       meta: it.meta ?? "",
     };
   });
-}
-
-// Truncate to `n` chars, appending … if anything was dropped. Used for
-// one-line event summaries so the panel rows stay scannable.
-function truncate(s: string, n: number): string {
-  if (s.length <= n) return s;
-  return s.slice(0, n) + "…";
-}
-
-// Render one TeamEvent as a single-line summary. The event shapes come
-// from the I.C.1 backend (mini_cc/server/routes/team.py), which spreads
-// the original assistant/event payload fields alongside session_id and
-// ts. We coerce defensively since the type is permissive.
-function summarizeEvent(e: TeamEvent): string {
-  switch (e.type) {
-    case "tool_use": {
-      const name = (e.name as string) ?? "tool";
-      const input = e.input as Record<string, unknown> | undefined;
-      // Try a few common fields, fall back to JSON of the whole input.
-      const preview = String(
-        (typeof input?.command === "string" ? input.command : "") ||
-          (typeof input?.path === "string" ? input.path : "") ||
-          (typeof input?.query === "string" ? input.query : "") ||
-          (typeof input?.pattern === "string" ? input.pattern : "") ||
-          JSON.stringify(input ?? {}),
-      );
-      return `${name} ${truncate(preview, 80)}`;
-    }
-    case "tool_result": {
-      const content =
-        (typeof e.content === "string" && e.content) ||
-        (typeof e.message === "string" && e.message) ||
-        "";
-      return truncate(content, 80);
-    }
-    case "send_message": {
-      const to = (e.to as string) ?? "?";
-      const message =
-        (typeof e.message === "string" && e.message) ||
-        (typeof e.text === "string" && e.text) ||
-        "";
-      return `→ ${to}: ${truncate(message, 80)}`;
-    }
-    case "text": {
-      const text = typeof e.text === "string" ? e.text : "";
-      return truncate(text, 80);
-    }
-    default:
-      return `[${e.type}]`;
-  }
-}
-
-// Format the ts as HH:MM:SS for compactness in the panel. Falls back to
-// the raw string on any parse failure (ts comes from backend ISO stamps).
-function shortTs(ts: string): string {
-  const t = ts.slice(11, 19); // YYYY-MM-DDTHH:MM:SSZ -> HH:MM:SS
-  return t || ts;
 }
 
 export default function TeammatesPanel({
