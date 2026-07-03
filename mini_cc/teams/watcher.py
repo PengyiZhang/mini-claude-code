@@ -133,6 +133,13 @@ class LeadWatcher:
         self._event_persister = event_persister
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Guards the swap of _lead_loop_getter / _event_persister in
+        # rebind() against the read+use window in _tick(). Without it,
+        # a rebind landing between capturing the sink onto loop and
+        # invoking the persister could route the lead_nudged notice to
+        # the new session's events.jsonl while the sink still points
+        # at the old session.
+        self._rebind_lock = threading.Lock()
 
     # ── Lifecycle ────────────────────────────────────────────────────
     def start(self) -> None:
@@ -175,13 +182,16 @@ class LeadWatcher:
         keep being persisted into the FIRST session's events.jsonl even
         after the user moved on.
 
-        Safe to call from any thread; ``_tick`` reads these fields
-        without a lock (worst case: one tick uses the old getter before
-        the new one takes effect — that's fine, the old session is
-        still alive for one more cycle).
+        Safe to call from any thread. The swap is taken under
+        ``_rebind_lock`` so ``_tick`` can capture both fields into
+        locals atomically — without the lock, a rebind landing between
+        sink-install and persister-call could route the ``lead_nudged``
+        notice to the new session's storage while the loop's sink still
+        points at the old session.
         """
-        self._lead_loop_getter = lead_loop_getter
-        self._event_persister = event_persister
+        with self._rebind_lock:
+            self._lead_loop_getter = lead_loop_getter
+            self._event_persister = event_persister
 
     # ── Worker loop ──────────────────────────────────────────────────
     def _run(self) -> None:
@@ -211,11 +221,19 @@ class LeadWatcher:
         # stop() during debounce still exits promptly.
         if self._stop.wait(self.debounce):
             return
+        # Capture the getter + persister under _rebind_lock so a
+        # concurrent rebind() can't swap them between the sink-install
+        # and the persister-call below — that window would route the
+        # lead_nudged notice to the new session's storage while the
+        # loop's sink still points at the old session.
+        with self._rebind_lock:
+            getter = self._lead_loop_getter
+            persister = self._event_persister
         # Resolve the lead loop BEFORE draining. If no lead session is
         # bound, we skip without touching the mailbox — the spec says
         # the watcher should "tick but do nothing, no crash" when the
         # lead isn't around. The mailbox content stays for next /send.
-        loop = self._lead_loop_getter()
+        loop = getter()
         if loop is None:
             return
         # Route daemon-path events (from _run_until_idle) to the
@@ -230,8 +248,8 @@ class LeadWatcher:
         # dedicated ``watcher_event_sink`` is only routed from
         # ``_run_until_idle`` (the daemon path), so the /send yield
         # path is untouched. See ``AgentLoop._run_until_idle``.
-        if self._event_persister is not None:
-            loop.watcher_event_sink = self._event_persister
+        if persister is not None:
+            loop.watcher_event_sink = persister
         # TOCTOU re-check: the lead's own /send may have drained the
         # mailbox while we were debouncing. If so, the user is back and
         # their /send will surface the content — we must NOT nudge.
@@ -248,9 +266,9 @@ class LeadWatcher:
         # notice carrying every drained teammate name + kind. Best-effort
         # — if the persister is absent (legacy / unmonitored session) we
         # still nudge, the notice is observability sugar not correctness.
-        if self._event_persister is not None:
+        if persister is not None:
             try:
-                self._event_persister({
+                persister({
                     "type": "lead_nudged",
                     "items": [
                         {

@@ -522,6 +522,12 @@ class AgentLoop:
             except Exception:
                 pass
         finally:
+            # Clear the sink so the persister closure isn't pinned alive
+            # by the loop between nudges. Only _run_until_idle reads the
+            # sink, so a normally-driven /send turn never invokes it —
+            # but the reference lingered, keeping the previous session's
+            # storage closure alive until the next nudge overwrote it.
+            self.watcher_event_sink = None
             with self._running_lock:
                 self._running = False
 
