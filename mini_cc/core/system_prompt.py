@@ -22,9 +22,19 @@ def assemble_system_prompt(*,
                            mcp_servers: list[str] | None = None,
                            skills_catalog: str = "",
                            project_guide: str = "") -> str:
+    now = datetime.now()
     sections = [PROMPT_IDENTITY, PROMPT_TOOLS,
                 f"Working directory: {project_root}",
-                f"Current time: {datetime.now().isoformat(timespec='seconds')}"]
+                # Surface the date as its own line + explicit year so the
+                # model doesn't fall back to its training-cutoff year in
+                # time-sensitive tool calls (e.g. web search queries that
+                # hard-code the year). debug.9.md: agent searched
+                # "福田汽车股价 2025年7月" when today was 2026-07-03.
+                (f"Today's date: {now.strftime('%Y-%m-%d')} "
+                 f"({now.strftime('%A')}). Use this date for any "
+                 f"'today', 'this week', 'current' reference; do NOT "
+                 f"fall back to your training-cutoff year."),
+                f"Current time: {now.isoformat(timespec='seconds')}"]
     if project_guide:
         sections.append("Project guide (authoritative — follow these conventions):\n"
                         + project_guide.strip())

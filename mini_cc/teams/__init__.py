@@ -499,7 +499,19 @@ class TeammateSpawner:
         teammate→lead messages can be persisted directly into that
         session's transcript — the message survives a page refresh
         even when no /send is running to drain the side-channel.
+
+        Switching to a DIFFERENT session clears the side-channel
+        deque: events still pending from a previous session's
+        lifetime belong to that session (they were already
+        persisted at emit time), not this new one. Pre-fix, a new
+        /send drained stale events from a previous lead session
+        into the new session's live SSE stream — the persisted
+        transcript stayed clean (emit-time persistence is
+        session-scoped), but the live UI showed contaminated output
+        until refresh (debug.9.md).
         """
+        if sid != self._lead_session_id:
+            self._lead_events.clear()
         self._lead_session_id = sid
 
     # ── Public API (used by lead tools) ────────────────────────────────
