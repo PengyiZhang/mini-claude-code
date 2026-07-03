@@ -62,8 +62,17 @@ _TRIGGER_TYPES: frozenset[str] = frozenset({"result", "milestone", "blocker"})
 
 
 def _is_trigger(msg: dict) -> bool:
-    """True if ``msg`` should wake the watcher's debounce + nudge path."""
-    if msg.get("metadata", {}).get("cc"):
+    """True if ``msg`` should wake the watcher's debounce + nudge path.
+
+    Returns False for messages the watcher already re-injected after a
+    failed nudge — without this guard, a persistently-failing nudge
+    would loop forever (re-drain the re-injected message, fail again,
+    re-inject again). Re-injected messages stay in the mailbox for the
+    next /send to consume naturally."""
+    meta = msg.get("metadata") or {}
+    if meta.get("watcher_reinjected"):
+        return False
+    if meta.get("cc"):
         return True
     return msg.get("type") in _TRIGGER_TYPES
 
@@ -195,16 +204,23 @@ class LeadWatcher:
             return
         # Nudge while holding the drained batch. If nudge itself raises
         # (loop is shutting down, etc.) we re-inject the messages so
-        # the next /send picks them up rather than dropping them.
+        # the next /send picks them up rather than dropping them. We
+        # tag re-injected messages with watcher_reinjected=True so the
+        # next tick's trigger check ignores them — otherwise a
+        # persistently-failing nudge would loop forever (re-drain →
+        # re-inject → re-drain). The re-injected content still reaches
+        # the user's next /send via the normal mailbox drain path.
         try:
             loop.nudge(_format_nudge(drained))
         except Exception:
             for m in drained:
+                meta = dict(m.get("metadata") or {})
+                meta["watcher_reinjected"] = True
                 self.bus.send(
                     m.get("from", "teammate"), "lead",
                     m.get("content", ""),
                     msg_type=m.get("type", "message"),
-                    metadata=m.get("metadata") or {},
+                    metadata=meta,
                 )
 
 

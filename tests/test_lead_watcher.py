@@ -278,6 +278,59 @@ def test_watcher_does_not_nudge_if_mailbox_emptied_during_debounce(tmp_path):
         watcher.stop(join_timeout=2.0)
 
 
+def test_watcher_reinjection_does_not_loop_on_persistent_nudge_failure(tmp_path):
+    """Regression for code-review finding: if loop.nudge() consistently
+    raises, the re-injection path must NOT loop forever. Pre-fix, each
+    re-injected CC message would re-trigger _is_trigger on the next
+    tick, leading to re-drain → re-nudge-fail → re-inject forever.
+
+    Fix: tag re-injected messages with metadata.watcher_reinjected=True
+    and have _is_trigger ignore them. The message stays in the mailbox
+    for the next /send to consume naturally."""
+    # Empty script — nudge will drive the loop, but we'll force nudge
+    # to raise to exercise the failure path.
+    loop, bus = _build_loop(tmp_path, [])
+    nudge_calls = [0]
+
+    def _broken_nudge(_content):
+        nudge_calls[0] += 1
+        raise RuntimeError("simulated persistent failure")
+
+    loop.nudge = _broken_nudge
+
+    watcher = LeadWatcher(
+        bus=bus,
+        project_id="proj-x",
+        lead_loop_getter=lambda: loop,
+        poll_interval=0.05,
+        debounce=0.1,
+    )
+    watcher.start()
+    try:
+        # One CC'd message lands.
+        bus.send("alice", "charlie", "result X", msg_type="result")
+        # Wait long enough for several poll+debounce cycles to fire
+        # if the re-injection loop were unbounded.
+        time.sleep(1.0)
+    finally:
+        watcher.stop(join_timeout=2.0)
+
+    # nudge should have been attempted only ONCE (the initial drain).
+    # The re-injected message must be invisible to subsequent ticks
+    # via watcher_reinjected=True, so the daemon stops waking.
+    assert nudge_calls[0] == 1, (
+        f"watcher re-nudged {nudge_calls[0]} times — re-injection loop "
+        "is not terminating"
+    )
+    # The re-injected message must still be in the mailbox, tagged,
+    # waiting for the user's next /send.
+    inbox = bus.peek_inbox("lead")
+    assert inbox, (
+        "re-injected message was dropped — must stay for next /send"
+    )
+    assert inbox[0].get("metadata", {}).get("watcher_reinjected") is True
+
+
 # ── TeammateSpawner integration ─────────────────────────────────────────
 
 

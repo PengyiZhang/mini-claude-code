@@ -558,24 +558,30 @@ class TeammateSpawner:
         routes opt in via an explicit call (Task I.B-1.3).
         """
         from .watcher import LeadWatcher
-        if self._lead_watcher is not None and self._lead_watcher.is_alive():
-            return
-        self._lead_watcher = LeadWatcher(
-            bus=self.bus,
-            project_id=self.project_id or "unknown",
-            lead_loop_getter=lead_loop_getter,
-            poll_interval=poll_interval,
-            debounce=debounce,
-        )
-        self._lead_watcher.start()
+        with self._lock:
+            if self._lead_watcher is not None and self._lead_watcher.is_alive():
+                return
+            watcher = LeadWatcher(
+                bus=self.bus,
+                project_id=self.project_id or "unknown",
+                lead_loop_getter=lead_loop_getter,
+                poll_interval=poll_interval,
+                debounce=debounce,
+            )
+            self._lead_watcher = watcher
+        # Start outside the lock — LeadWatcher.start() spawns the
+        # thread and returns; we don't want to hold the spawner lock
+        # across thread-spawn boundaries.
+        watcher.start()
 
     def stop_lead_watcher(self, *, join_timeout: float = 5.0) -> None:
         """Stop the LeadWatcher daemon if one is running. Safe to call
         when no watcher was started (no-op)."""
-        if self._lead_watcher is None:
-            return
-        self._lead_watcher.stop(join_timeout=join_timeout)
-        self._lead_watcher = None
+        with self._lock:
+            watcher = self._lead_watcher
+            self._lead_watcher = None
+        if watcher is not None:
+            watcher.stop(join_timeout=join_timeout)
 
     def set_lead_session(self, sid: str | None) -> None:
         """Record (or clear) the lead's active session id.
