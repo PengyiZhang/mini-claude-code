@@ -528,6 +528,54 @@ class TeammateSpawner:
         # Hook fired on every bus.send when to_agent == "lead". Lets us
         # push the message into _lead_events without polling lead.jsonl.
         self.bus.set_lead_hook(self._emit_to_lead)
+        # Phase I.B-1.2: LeadWatcher daemon — null until explicitly
+        # started via start_lead_watcher. Tests / legacy callers that
+        # don't care about auto-wake keep this None forever.
+        self._lead_watcher: "LeadWatcher | None" = None
+
+    # ── Lead watcher (Phase I.B-1.2) ──────────────────────────────────
+    def start_lead_watcher(
+        self,
+        lead_loop_getter: "Callable[[], AgentLoop | None]",
+        *,
+        poll_interval: float = 1.0,
+        debounce: float = 5.0,
+    ) -> None:
+        """Construct and start the LeadWatcher daemon bound to this
+        spawner's bus + project_id.
+
+        The watcher polls lead's mailbox and nudges the lead loop when
+        teammate result/milestone/blocker messages land while the user
+        is away. See ``mini_cc.teams.watcher.LeadWatcher`` for the full
+        threading model.
+
+        Idempotent: if a watcher is already running, this is a no-op.
+        Pass a fresh ``lead_loop_getter`` only if you also call
+        ``stop_lead_watcher`` first — otherwise the old getter wins.
+
+        Not wired into ``__init__`` deliberately: existing tests build
+        spawners without expecting a background thread, and the server
+        routes opt in via an explicit call (Task I.B-1.3).
+        """
+        from .watcher import LeadWatcher
+        if self._lead_watcher is not None and self._lead_watcher.is_alive():
+            return
+        self._lead_watcher = LeadWatcher(
+            bus=self.bus,
+            project_id=self.project_id or "unknown",
+            lead_loop_getter=lead_loop_getter,
+            poll_interval=poll_interval,
+            debounce=debounce,
+        )
+        self._lead_watcher.start()
+
+    def stop_lead_watcher(self, *, join_timeout: float = 5.0) -> None:
+        """Stop the LeadWatcher daemon if one is running. Safe to call
+        when no watcher was started (no-op)."""
+        if self._lead_watcher is None:
+            return
+        self._lead_watcher.stop(join_timeout=join_timeout)
+        self._lead_watcher = None
 
     def set_lead_session(self, sid: str | None) -> None:
         """Record (or clear) the lead's active session id.
