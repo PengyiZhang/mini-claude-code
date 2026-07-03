@@ -7,6 +7,7 @@ import type {
   ProjectOut,
   RotateKeyOut,
   SessionMeta,
+  TeamEvent,
   TenantProfile,
   TodoItem,
   TreeNode,
@@ -637,4 +638,27 @@ export async function resolveWorkflowV2Gate(
   });
   if (!res.ok) await parseErr(res);
   return res.json();
+}
+
+// ── Team Activity (Phase I.C.2) ──────────────────────────────────────
+// Aggregated team event feed (I.C.1 backend endpoint). since/limit/teammate
+// are optional query params. Returns merged events sorted ascending by ts
+// alongside a has_more cursor flag.
+
+export async function fetchTeamActivity(
+  profile: TenantProfile,
+  pid: string,
+  opts?: { since?: string; limit?: number; teammate?: string },
+): Promise<{ events: TeamEvent[]; has_more: boolean }> {
+  const params = new URLSearchParams();
+  if (opts?.since) params.set("since", opts.since);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.teammate) params.set("teammate", opts.teammate);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/team/activity${qs}`),
+    { headers: authHeaders(profile) },
+  );
+  if (!res.ok) await parseErr(res);
+  return (await res.json()) as { events: TeamEvent[]; has_more: boolean };
 }

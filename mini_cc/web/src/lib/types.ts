@@ -275,3 +275,15 @@ export interface CardEvent {
   refresh_command?: string | null;
   refresh_interval_ms?: number | null;
 }
+
+// ── Team Activity (Phase I.C.2) ──────────────────────────────────────
+// Backend /team/activity spreads each event's payload fields alongside
+// session_id and ts, so any extra fields are accessible via indexing.
+// Keep this permissive to absorb new backend payload fields without a
+// type round-trip.
+export interface TeamEvent {
+  session_id: string;
+  ts: string; // ISO timestamp from backend
+  type: string; // "text" | "tool_use" | "tool_result" | "send_message" | "error" | ...
+  [key: string]: unknown;
+}
