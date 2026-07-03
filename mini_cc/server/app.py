@@ -24,6 +24,7 @@ from .ratelimit import TenantRateLimiter
 from .routes import projects as projects_routes
 from .routes import resources as resources_routes
 from .routes import sessions as sessions_routes
+from .routes import team as team_routes
 from .routes import permissions as permissions_routes
 from .routes import admin as admin_routes
 from .routes import commands as commands_routes
@@ -164,6 +165,7 @@ def build_app(*, data_dir: Path,
 
     app.include_router(projects_routes.router)
     app.include_router(sessions_routes.router)
+    app.include_router(team_routes.router)
     app.include_router(resources_routes.router)
     app.include_router(resources_routes.download_router)
     app.include_router(permissions_routes.router)

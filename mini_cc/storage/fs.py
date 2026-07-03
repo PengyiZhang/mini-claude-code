@@ -395,11 +395,43 @@ class FSStorage:
         return (self._proj(project_id) / "sessions"
                 / f"{self._safe_session(session_id)}.events.jsonl")
 
+    def list_session_event_logs(self, project_id) -> list[str]:
+        """Return session ids that have an on-disk ``events.jsonl`` log.
+
+        Phase I.C.1: the unified team-activity timeline needs to see
+        every session that has emitted events, even if its entry in the
+        sessions index hasn't been written yet (e.g. a teammate session
+        that has produced events but hasn't flushed its first message
+        batch). Scanning the ``sessions/`` directory for
+        ``*.events.jsonl`` is more reliable for this read-only view
+        than ``list_sessions``, which only reflects the message index.
+        """
+        sess_dir = self._proj(project_id) / "sessions"
+        if not sess_dir.exists():
+            return []
+        out: list[str] = []
+        try:
+            for fp in sess_dir.glob("*.events.jsonl"):
+                # stem is "<safe_session>.events" — strip the suffix.
+                stem = fp.name[: -len(".events.jsonl")]
+                out.append(stem)
+        except OSError:
+            return []
+        return out
+
     def append_session_event(self, project_id, session_id, event: dict) -> int:
         """Append one event to the session's event log, returning the
         assigned sequence id (1-based monotonic per session).
 
-        The event is written as a single JSON line: ``{"seq": N, "payload": ...}``.
+        The record is written as a single JSON line:
+        ``{"seq": N, "ts": "<iso>", "payload": ...}``.
+
+        ``ts`` is stamped at append time (Phase I.C.1) so the unified
+        team-activity timeline can sort/filter events without having to
+        introspect payload shape (which varies — text, card,
+        todos_updated, etc.). Existing seq-based readers
+        (``read_session_events_since``) ignore ``ts`` and keep working.
+
         Reads scan from the start, so this is adequate for sessions up to
         ~10k events; beyond that, swap to a sqlite-backed implementation
         without changing the call site.
@@ -410,7 +442,7 @@ class FSStorage:
             seq = current + 1
             with fp.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(
-                    {"seq": seq, "payload": event},
+                    {"seq": seq, "ts": _iso_now(), "payload": event},
                     ensure_ascii=False, default=str) + "\n")
             return seq
 
@@ -449,6 +481,43 @@ class FSStorage:
         fp = self._session_events_path(project_id, session_id)
         with self._lock(f"{project_id}:evt:{session_id}"):
             return self._session_event_count_locked(fp)
+
+    def iter_session_events_with_ts(self, project_id, session_id):
+        """Yield raw records for the session's event log, including the
+        ``ts`` stamp added at append time.
+
+        Each yielded dict is ``{"seq": N, "ts": str, "payload": dict,
+        "session_id": sid}``. Records missing ``ts`` (written before the
+        Phase I.C.1 stamping change) are skipped — the unified timeline
+        can't sort them. Records with unparseable JSON are skipped too.
+
+        Used by the team-activity endpoint (Phase I.C.1) to build a
+        cross-session timeline. Seq-based SSE replay should keep using
+        ``read_session_events_since`` — this method is read-only and
+        intentionally does NOT touch that code path.
+        """
+        fp = self._session_events_path(project_id, session_id)
+        if not fp.exists():
+            return
+        with self._lock(f"{project_id}:evt:{session_id}"):
+            try:
+                with fp.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        ts = rec.get("ts")
+                        if not ts:
+                            continue
+                        yield {
+                            "seq": rec.get("seq", 0),
+                            "ts": ts,
+                            "payload": rec.get("payload", {}),
+                            "session_id": session_id,
+                        }
+            except OSError:
+                return
 
     def write_tool_result(self, project_id, tool_use_id, text):
         fp = self._proj(project_id) / "tool_results" / f"{tool_use_id}.txt"
