@@ -32,8 +32,8 @@ export async function streamRunCommand(
     onDone?: () => void;
   },
   args?: string,
-  signal?: AbortSignal,
   options?: { ephemeral?: boolean },
+  signal?: AbortSignal,
 ): Promise<void> {
   let res: Response;
   try {
