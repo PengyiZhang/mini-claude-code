@@ -162,8 +162,12 @@ describe("TeammatesPanel", () => {
       .mockResolvedValue(undefined);
 
     render(<TeammatesPanel pid="p1" sid="s1" />);
-    // The mount tick fires poll() synchronously inside an effect.
-    expect(pollSpy).toHaveBeenCalledWith(profile, "p1");
+    // The mount tick fires poll() inside an effect; wrap in waitFor
+    // because React 18 may batch the effect commit across microtasks
+    // and a synchronous assertion races the scheduler.
+    await waitFor(() => {
+      expect(pollSpy).toHaveBeenCalledWith(profile, "p1");
+    });
 
     pollSpy.mockRestore();
   });
