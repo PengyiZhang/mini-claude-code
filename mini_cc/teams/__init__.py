@@ -263,7 +263,9 @@ class MessageBus:
         # lead hook (if any) should see, since downstream consumers
         # expect a lead-addressed payload.
         cc_msg: dict | None = None
-        if to_agent != "lead" and msg_type in self._LEAD_CC_TYPES:
+        if (to_agent != "lead"
+                and from_agent != "lead"
+                and msg_type in self._LEAD_CC_TYPES):
             cc_meta = dict(msg["metadata"])
             cc_meta["cc"] = True
             cc_meta["original_to"] = to_agent

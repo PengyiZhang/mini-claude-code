@@ -38,13 +38,32 @@ def test_cc_does_not_duplicate_when_recipient_is_lead(tmp_path):
 
 
 def test_cc_fires_lead_hook_once(tmp_path):
-    """Lead hook fires exactly once per send, even on CC path."""
+    """Lead hook fires exactly once per send, even on CC path, and
+    the payload is always lead-addressed (CC copy when CC fired,
+    original when not). Downstream consumers rely on this stable
+    shape to attribute messages correctly."""
     fired: list[dict] = []
     bus = MessageBus(tmp_path / "ws")
     bus.set_lead_hook(lambda m: fired.append(m))
     bus.send("alice", "bob", "done", msg_type="result")
     assert len(fired) == 1
+    # Payload shape contract: always addressed to lead.
+    assert fired[0]["to"] == "lead"
     assert fired[0]["content"] == "done"
+    assert fired[0]["metadata"]["cc"] is True
+    assert fired[0]["metadata"]["original_to"] == "bob"
+
+
+def test_lead_as_sender_does_not_self_cc(tmp_path):
+    """Lead sending a result-class message to a teammate must not
+    generate a CC receipt back into lead's own mailbox — that would
+    echo every outgoing milestone into the inbox."""
+    bus = MessageBus(tmp_path / "ws")
+    bus.send("lead", "bob", "ok done", msg_type="result")
+    assert bus.peek_inbox("lead") == [], (
+        "lead-as-sender must not self-CC; lead's mailbox should be "
+        f"empty, got {bus.peek_inbox('lead')}"
+    )
 
 
 def test_cc_message_carries_metadata_for_origin(tmp_path):
