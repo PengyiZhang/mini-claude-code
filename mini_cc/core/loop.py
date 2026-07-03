@@ -248,6 +248,16 @@ class AgentLoop:
         self.tools: list[Tool] = tools if tools is not None else self._build_tools()
         self._handlers = dispatch(self.tools)
         self.on_event = on_event
+        # Phase I.B-1.3: dedicated sink for watcher-triggered (daemon-
+        # path) events. ONLY routed from ``_run_until_idle`` — never
+        # from ``_run_impl``'s ``_emit`` calls. This separation is what
+        # prevents double-writes to events.jsonl: ``_run_impl`` yields
+        # AND emits the same event for SDK callers (see the dual path
+        # documented at the tool_result yield around line 1046-1056),
+        # so installing the persister on ``on_event`` would duplicate
+        # every tool event during a /send-driven turn. Set by
+        # ``LeadWatcher._tick`` before calling ``loop.nudge``.
+        self.watcher_event_sink: "Callable[[dict], None] | None" = None
         self.system_prompt_override = system_prompt_override
         self.hooks = hooks
         self.messages: list[dict] = project.storage.load_messages(
@@ -466,18 +476,39 @@ class AgentLoop:
             # watcher-triggered turn would be invisible (including
             # any {"type": "error", ...} event _run_impl yields when
             # it catches an exception internally).
+            #
+            # Phase I.B-1.3: ALSO route to watcher_event_sink so the
+            # daemon-path events reach events.jsonl. This sink is
+            # SEPARATE from on_event on purpose — _run_impl's emit/
+            # yield dual path means on_event fires for events that
+            # are also being yielded (and persisted by the /send
+            # generator's caller). Routing the sink only from here
+            # keeps /send-driven turns from double-writing.
+            sink = self.watcher_event_sink
             for ev in self._run_impl(None):
                 self._emit(ev)
+                if sink is not None:
+                    try:
+                        sink(ev)
+                    except Exception:
+                        pass
         except Exception as e:
             # Defense-in-depth: _run_impl catches most exceptions
             # internally and yields an error event, but if something
             # escapes (e.g. a bug in _inject_*), surface it as an
             # error event so the daemon doesn't die silently.
             try:
-                self._emit({
+                err_ev = {
                     "type": "error",
                     "message": f"[nudge worker] {type(e).__name__}: {e}",
-                })
+                }
+                self._emit(err_ev)
+                sink = self.watcher_event_sink
+                if sink is not None:
+                    try:
+                        sink(err_ev)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         finally:

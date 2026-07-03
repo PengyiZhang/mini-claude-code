@@ -123,12 +123,14 @@ class LeadWatcher:
         lead_loop_getter: "Callable[[], AgentLoop | None]",
         poll_interval: float = 1.0,
         debounce: float = 5.0,
+        event_persister: "Callable[[dict], None] | None" = None,
     ):
         self.bus = bus
         self.project_id = project_id
         self._lead_loop_getter = lead_loop_getter
         self.poll_interval = poll_interval
         self.debounce = debounce
+        self._event_persister = event_persister
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -196,6 +198,20 @@ class LeadWatcher:
         loop = self._lead_loop_getter()
         if loop is None:
             return
+        # Route daemon-path events (from _run_until_idle) to the
+        # persister. We install on ``watcher_event_sink`` — a dedicated
+        # field, NOT ``on_event`` — so /send-driven turns can't
+        # double-write events.jsonl. ``_run_impl`` calls ``_emit``
+        # (which fires ``on_event``) for tool_use / tool_result /
+        # todos_updated / cron_fired / retry / etc. AND yields those
+        # same events; the /send generator already persists via the
+        # yield path. If the persister lived on ``on_event``, every
+        # tool event during a /send would land on disk twice. The
+        # dedicated ``watcher_event_sink`` is only routed from
+        # ``_run_until_idle`` (the daemon path), so the /send yield
+        # path is untouched. See ``AgentLoop._run_until_idle``.
+        if self._event_persister is not None:
+            loop.watcher_event_sink = self._event_persister
         # TOCTOU re-check: the lead's own /send may have drained the
         # mailbox while we were debouncing. If so, the user is back and
         # their /send will surface the content — we must NOT nudge.

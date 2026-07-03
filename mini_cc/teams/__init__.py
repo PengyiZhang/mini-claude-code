@@ -540,6 +540,7 @@ class TeammateSpawner:
         *,
         poll_interval: float = 1.0,
         debounce: float = 5.0,
+        event_persister: "Callable[[dict], None] | None" = None,
     ) -> None:
         """Construct and start the LeadWatcher daemon bound to this
         spawner's bus + project_id.
@@ -548,6 +549,12 @@ class TeammateSpawner:
         teammate result/milestone/blocker messages land while the user
         is away. See ``mini_cc.teams.watcher.LeadWatcher`` for the full
         threading model.
+
+        ``event_persister`` is a callback the watcher installs on the
+        lead loop's ``watcher_event_sink`` so daemon-path events reach
+        events.jsonl — closes the user-away observability gap (Task
+        I.B-1.3). The /send route passes a closure over
+        ``storage.append_session_event``.
 
         Idempotent: if a watcher is already running, this is a no-op.
         Pass a fresh ``lead_loop_getter`` only if you also call
@@ -567,6 +574,7 @@ class TeammateSpawner:
                 lead_loop_getter=lead_loop_getter,
                 poll_interval=poll_interval,
                 debounce=debounce,
+                event_persister=event_persister,
             )
             self._lead_watcher = watcher
         # Start outside the lock — LeadWatcher.start() spawns the

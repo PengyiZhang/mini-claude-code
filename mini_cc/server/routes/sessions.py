@@ -232,6 +232,27 @@ def send_message(body: SendMessageRequest,
                     teams.set_lead_session(sid)
                 except Exception:
                     pass
+            # Phase I.B-1.3: start the LeadWatcher daemon so teammate
+            # result/milestone/blocker messages wake the lead even when
+            # the user isn't on /send. Idempotent — start_lead_watcher
+            # is a no-op if a watcher is already running. We pass an
+            # event_persister that writes daemon-path events into
+            # events.jsonl so a page refresh surfaces watcher-triggered
+            # turns. The watcher stays alive across future /send calls.
+            if teams is not None and hasattr(teams, "start_lead_watcher"):
+                def _persist(ev, _pid=pid, _sid=sid, _sess=sess):
+                    try:
+                        _sess.loop.project.storage.append_session_event(
+                            _pid, _sid, ev)
+                    except Exception:
+                        pass
+                try:
+                    teams.start_lead_watcher(
+                        lead_loop_getter=lambda: sess.loop,
+                        event_persister=_persist,
+                    )
+                except Exception:
+                    pass
             for ev in sm.send(pid, sid, body.user_input):
                 # Persist every emitted event so a reconnecting client
                 # can replay from disk. Best-effort: a write failure
