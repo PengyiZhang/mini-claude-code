@@ -1152,17 +1152,26 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
                     "badges": [{"text": state, "tone": tone}],
                     "menu": menu,
                 })
-            yield {
-                "type": "card",
-                "card": {
-                    "kind": "list",
-                    "title": f"Inbox · @{name} ({len(inbox)})",
-                    "items": items,
-                    "expandable_command": (
-                        f"/agents inbox {name} ack <ts> | ignore <ts>"
-                    ),
-                },
-            }
+            inbox_card = CardEvent(
+                id=f"agents-inbox-{name}",
+                variant="list",
+                title=f"Inbox · @{name} ({len(inbox)})",
+                icon="agents",
+                status="ok",
+                payload=CardListPayload(
+                    items=items,
+                    empty_hint=f"@{name} has no messages",
+                    summary=(f"{len(inbox)} message"
+                             if len(inbox) == 1
+                             else f"{len(inbox)} messages"),
+                ).__dict__,
+                actions=[
+                    CardAction(label="↻ refresh",
+                               command=f"/agents inbox {name}",
+                               tone="default"),
+                ],
+            )
+            yield to_dict(inbox_card)
             yield {"type": "done"}
             return
         if sub == "delete" and len(parts) >= 2:

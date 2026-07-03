@@ -168,10 +168,14 @@ def test_agents_command_inbox_peek():
         teams = _Spawner()
         tenant_id = "t1"
     events = _run_cmd("agents", project=_P(), args="inbox alice")
-    card = next(e["card"] for e in events if e["type"] == "card")
-    assert card["kind"] == "list"
+    card = next(e for e in events if e.get("type") == "card")
+    # Flat CardEvent shape — CardShell reads status / id / variant
+    # straight off the event, so these must all be present and right.
+    assert card["id"] == "agents-inbox-alice"
+    assert card["variant"] == "list"
+    assert card["status"] == "ok"
     assert "@alice" in card["title"]
-    items = card["items"]
+    items = card["payload"]["items"]
     assert len(items) == 2
     # Sender and type render correctly (regression for the
     # `from_agent`/`kind` mock-drift bug).
@@ -218,12 +222,58 @@ def test_agents_command_inbox_reads_history_after_drain(tmp_path):
         tenant_id = "t1"
 
     events = _run_cmd("agents", project=_P(), args="inbox alice")
-    card = next(e["card"] for e in events if e["type"] == "card")
-    items = card["items"]
+    card = next(e for e in events if e.get("type") == "card")
+    items = card["payload"]["items"]
     assert len(items) == 2
     titles = [it["title"] for it in items]
     assert any("lead" in t for t in titles)
     assert any("bob" in t for t in titles)
+
+
+def test_agents_command_inbox_emits_valid_cardevent_shape(tmp_path):
+    """The inbox card must emit the flat CardEvent shape so CardShell
+    can read status / id without crashing.
+
+    Regression for the user-reported 'Cannot read properties of
+    undefined (reading label)' crash at CardShell.tsx:63 plus the
+    React 'unique key prop' warning emitted via MessageBubble. Both
+    happened because the old inbox emit was `{type:"card", card:{...}}`
+    (nested, no id/status/variant), where every other slash command
+    had migrated to the flat CardEvent dataclass shape.
+    """
+    from mini_cc.teams import MessageBus
+
+    bus = MessageBus(tmp_path)
+    bus.send("lead", "alice", "hello")
+
+    @dataclass
+    class _Info:
+        name: str = "alice"
+        role: str = "r"
+        alive: bool = True
+    class _Spawner:
+        def __init__(self):
+            self._teammates = {"alice": _Info()}
+            self.bus = bus
+        def list_alive(self):
+            return list(self._teammates.values())
+    class _P:
+        teams = _Spawner()
+        tenant_id = "t1"
+
+    events = _run_cmd("agents", project=_P(), args="inbox alice")
+    card = next(e for e in events if e.get("type") == "card")
+
+    # CardShell.tsx:47 does STATUS_BADGE[status]; undefined → crash.
+    assert card["status"] in ("ok", "warning", "error"), card
+    # MessageBubble.tsx:52 does key={c.id}; undefined → React warning.
+    assert isinstance(card["id"], str) and card["id"], card
+    # CardView dispatches on variant; undefined → no renderer fires.
+    assert card["variant"] in ("list", "table", "key_value", "steps"), card
+    # The legacy nested wrapper must NOT be present.
+    assert "card" not in card, "inbox emit still using nested 'card' key"
+    # CardList reads payload.items.
+    assert isinstance(card["payload"].get("items"), list)
 
 
 def test_agents_command_error_paths_emit_done():
