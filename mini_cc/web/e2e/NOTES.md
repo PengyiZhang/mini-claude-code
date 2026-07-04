@@ -31,7 +31,7 @@
 | `phaseI_team.spec.ts`                      | `/agents spawn alice` → roster row + alive badge                   | I.A         | ✓      |
 | `phaseI_team.spec.ts`                      | `lead_nudged` toast on watcher-triggered lead wake                 | I.C.5       | ⚠\*    |
 
-⚠\* soft-skips when the live LLM doesn't produce a milestone within 45s; deterministic tests above pass without LLM. Bug surfaced + fixed during this round: `/team/activity` 500'd when a `teammate_message` payload carried a numeric `ts` that overwrote the top-level ISO string ts — payload fields now stripped before spread (see commit).
+⚠\* soft-skips on two LLM-timing race conditions: (a) alice doesn't emit a milestone/blocker/result within 90s, or (b) alice's trigger lands while lead is still mid-turn (lead's own `_inject_teammate_replies` drains the mailbox before the LeadWatcher's 5s debounce elapses). The watcher's debounced-drain path is covered deterministically by `tests/test_lead_watcher_sse.py`; this e2e opportunistically exercises the full chain (alice → cc → mailbox → watcher → nudge → daemon turn → `lead_nudged`) when LLM timing cooperates. Deterministic tests 1-4 above pass without LLM. Bug surfaced + fixed during this round: `/team/activity` 500'd when a `teammate_message` payload carried a numeric `ts` that overwrote the top-level ISO string ts — payload fields now stripped before spread (see commit).
 
 ✓* requires `E2E_ALT_TENANT_KEY` / `E2E_ALT_TENANT_ID` / `E2E_ALT_TENANT_PID` env vars; skipped otherwise.
 
