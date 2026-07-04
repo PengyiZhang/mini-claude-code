@@ -5,6 +5,52 @@ import type { TeamEvent } from "./types";
 // (merged cross-teammate/lead timeline). Extracted in I.C.4 so the new
 // Team tab doesn't duplicate the summarization logic.
 
+// A render item is either a pass-through event (tool_use, tool_result,
+// etc.) or a merged_text bubble — multiple consecutive `text` events
+// from the same session collapsed into a single readable message.
+//
+// Why merge: the AgentLoop emits one `text` SSE event per streamed
+// chunk (often one chunk per token), and the /send generator persists
+// every one of them to events.jsonl. Without merging, the Team tab
+// shows one row per chunk — each token on its own line, completely
+// unreadable. Merging at the render layer (rather than the persistence
+// layer) also fixes legacy logs already on disk.
+export type RenderItem =
+  | { kind: "merged_text"; sessionId: string; ts: string; text: string }
+  | TeamEvent;
+
+export function mergeConsecutiveTexts(events: TeamEvent[]): RenderItem[] {
+  const out: RenderItem[] = [];
+  let buf: { sessionId: string; ts: string; parts: string[] } | null = null;
+
+  const flush = () => {
+    if (buf) {
+      out.push({
+        kind: "merged_text",
+        sessionId: buf.sessionId,
+        ts: buf.ts,
+        text: buf.parts.join(""),
+      });
+      buf = null;
+    }
+  };
+
+  for (const e of events) {
+    if (e.type === "text" && typeof (e as any).text === "string") {
+      if (!buf || buf.sessionId !== e.session_id) {
+        flush();
+        buf = { sessionId: e.session_id, ts: e.ts, parts: [] };
+      }
+      buf.parts.push((e as any).text as string);
+    } else {
+      flush();
+      out.push(e);
+    }
+  }
+  flush();
+  return out;
+}
+
 // Truncate to `n` chars, appending … if anything was dropped.
 export function truncate(s: string, n: number): string {
   if (s.length <= n) return s;

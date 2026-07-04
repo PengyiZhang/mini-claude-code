@@ -2,9 +2,11 @@ import { useMemo, useState } from "react";
 import { useTeamActivity } from "../lib/teamActivity";
 import {
   isNavigableSession,
+  mergeConsecutiveTexts,
   sessionLabel,
   shortTs,
   summarizeEvent,
+  type RenderItem,
 } from "../lib/teamEvent";
 import type { TeamEvent } from "../lib/types";
 
@@ -65,9 +67,17 @@ export default function TeamTimeline({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activity, visible]);
 
-  function onClickEvent(e: TeamEvent) {
-    if (isNavigableSession(e.session_id)) {
-      setSid(e.session_id);
+  // Merge consecutive same-session text events into one bubble so the
+  // timeline shows readable messages instead of one row per streamed
+  // token. See mergeConsecutiveTexts in teamEvent.ts for the rationale.
+  const items = useMemo(
+    () => mergeConsecutiveTexts(filtered),
+    [filtered],
+  );
+
+  function onClickEvent(sessionId: string) {
+    if (isNavigableSession(sessionId)) {
+      setSid(sessionId);
     }
   }
 
@@ -95,16 +105,19 @@ export default function TeamTimeline({
       />
 
       <div className="mt-4 space-y-1">
-        {filtered.map((e, i) => {
-          const navigable = isNavigableSession(e.session_id);
+        {items.map((item, i) => {
+          const sessionId =
+            item.kind === "merged_text" ? item.sessionId : item.session_id;
+          const navigable = isNavigableSession(sessionId);
+          const ts = item.kind === "merged_text" ? item.ts : item.ts;
           return (
             <button
-              key={`${e.ts}-${i}`}
-              onClick={() => onClickEvent(e)}
+              key={`${ts}-${i}`}
+              onClick={() => onClickEvent(sessionId)}
               disabled={!navigable}
               title={
                 navigable
-                  ? `jump to session ${e.session_id}`
+                  ? `jump to session ${sessionId}`
                   : "teammate sessions aren't navigable from here"
               }
               className={
@@ -115,7 +128,7 @@ export default function TeamTimeline({
               }
             >
               <span className="text-ink-faint shrink-0 font-mono text-[10px] pt-0.5">
-                {shortTs(e.ts)}
+                {shortTs(ts)}
               </span>
               <span
                 className={
@@ -123,11 +136,17 @@ export default function TeamTimeline({
                   "bg-bg-hover text-ink-dim"
                 }
               >
-                {sessionLabel(e.session_id)}
+                {sessionLabel(sessionId)}
               </span>
-              <span className="text-ink whitespace-pre-wrap break-words flex-1 min-w-0">
-                {summarizeEvent(e)}
-              </span>
+              {item.kind === "merged_text" ? (
+                <span className="text-ink whitespace-pre-wrap break-words flex-1 min-w-0">
+                  {item.text}
+                </span>
+              ) : (
+                <span className="text-ink whitespace-pre-wrap break-words flex-1 min-w-0">
+                  {summarizeEvent(item as TeamEvent)}
+                </span>
+              )}
             </button>
           );
         })}
