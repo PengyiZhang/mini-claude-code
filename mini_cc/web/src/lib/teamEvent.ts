@@ -19,18 +19,69 @@ export type RenderItem =
   | { kind: "merged_text"; sessionId: string; ts: string; text: string }
   | TeamEvent;
 
+// Internal XML envelopes the LLM occasionally hallucinates as plain
+// text output (it's the format we feed into its context for inbox /
+// teammate_messages). When the model erroneously types these back at
+// the keyboard, the merger would otherwise join the per-token chunks
+// into one giant bubble showing raw `<teammate_messages>[{...}]</...>`.
+//
+// Detection runs on the FULL merged bubble text, not on individual
+// chunks — important because the SSE stream tokenizes aggressively
+// (chunks like "<te" + "amm" + "ate" + "_messages" ...), so a single
+// chunk almost never contains a complete tag.
+//
+// We drop the entire bubble if it contains any envelope tag (open OR
+// close). Yes, this loses any real text that happened to precede the
+// hallucination in the same bubble — but in practice the LLM either
+// emits clean text OR hallucinates the envelope, rarely both in the
+// same bubble. Reliable hiding of garbage beats surgical preservation.
+//
+// Cross-bubble case: if a real event (e.g. teammate_message) interrupts
+// the hallucination mid-stream, the post-interrupt continuation bubble
+// contains a stray `</teammate_messages>` close tag without any open.
+// The "any tag → drop" rule catches that tail too.
+const HALLUCINATED_ENVELOPE_TAGS = [
+  // Internal inbox/teammate wire format that the LLM sees as input
+  // context and occasionally echoes back as text. See git history
+  // (commit "fix(team): ...") for the original report.
+  "teammate_messages",
+  "inbox",
+  "system_messages",
+  "channel_update",
+  "notifier",
+  // Anthropic tool-call XML syntax. The structured tool_use event is
+  // the only legitimate channel for tool calls — if these tags show up
+  // as text chunks, the LLM is hallucinating "I'm calling a tool"
+  // instead of actually emitting one. Same family of bug as above.
+  "function_calls",
+  "invoke",
+  "parameter",
+];
+
+function bubbleHasEnvelopeTag(s: string): boolean {
+  for (const tag of HALLUCINATED_ENVELOPE_TAGS) {
+    if (s.includes(`<${tag}>`) || s.includes(`</${tag}>`)) return true;
+  }
+  return false;
+}
+
 export function mergeConsecutiveTexts(events: TeamEvent[]): RenderItem[] {
   const out: RenderItem[] = [];
   let buf: { sessionId: string; ts: string; parts: string[] } | null = null;
 
   const flush = () => {
     if (buf) {
-      out.push({
-        kind: "merged_text",
-        sessionId: buf.sessionId,
-        ts: buf.ts,
-        text: buf.parts.join(""),
-      });
+      const text = buf.parts.join("");
+      // Drop the entire bubble if it shows signs of being a
+      // hallucinated envelope dump (open or close tag anywhere).
+      if (text && !bubbleHasEnvelopeTag(text)) {
+        out.push({
+          kind: "merged_text",
+          sessionId: buf.sessionId,
+          ts: buf.ts,
+          text,
+        });
+      }
       buf = null;
     }
   };
@@ -90,6 +141,22 @@ export function summarizeEvent(e: TeamEvent): string {
         (typeof e.text === "string" && e.text) ||
         "";
       return `→ ${to}: ${truncate(message, 80)}`;
+    }
+    case "teammate_message": {
+      // Teammate-broadcast event (milestone / performance / blocker /
+      // plan_approval_request / etc.) routed through the lead session.
+      // The actual speaker label is rendered separately (speakerLabel
+      // picks the `from` field), so we just summarize the content here.
+      // Without this case the event fell through to the default branch
+      // and rendered as the useless placeholder "[teammate_message]".
+      const content =
+        (typeof e.content === "string" && e.content) ||
+        (typeof e.message === "string" && e.message) ||
+        "";
+      const msgType =
+        (typeof e.msg_type === "string" && e.msg_type) || "message";
+      if (!content) return `[${msgType}]`;
+      return truncate(content, 80);
     }
     case "text": {
       const text = typeof e.text === "string" ? e.text : "";

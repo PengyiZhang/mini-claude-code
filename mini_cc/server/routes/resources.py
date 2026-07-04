@@ -26,7 +26,7 @@ router = APIRouter(
 
 _TEXT_EXTS = {
     ".txt", ".md", ".markdown", ".py", ".js", ".ts", ".tsx", ".jsx",
-    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".env",
+    ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".env",
     ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd",
     ".html", ".css", ".scss", ".less",
     ".java", ".c", ".cc", ".cpp", ".h", ".hpp", ".go", ".rs",
