@@ -41,6 +41,45 @@ except ImportError:  # pragma: no cover — exercised only when dep missing
     _PORTALOCKER_AVAILABLE = False
 
 
+def _format_inbox_as_dialogue(inbox: list[dict], recipient: str) -> str:
+    """Render an inbox batch as readable dialogue for the recipient's
+    next turn's ``user_input``.
+
+    The default ``user_input`` injected by ``_idle_poll`` used to be a
+    raw JSON dump wrapped in ``<inbox>…</inbox>`` tags. That JSON
+    surfaced verbatim in the chat panel when viewing the teammate's
+    session, and the LLM had to parse the JSON to know who said what.
+    This helper formats each message as a labelled line so:
+
+    * The chat bubble reads as natural conversation (``lead said: …``).
+    * The LLM sees the same content with explicit sender / type cues.
+    * The original JSON is appended at the end as a structured
+      fallback for any tooling that still expects it.
+
+    The ``<inbox>…</inbox>`` envelope is preserved so prompt-level
+    parsing rules (e.g. "check your <inbox> tag") keep working.
+    """
+    lines = [f"<inbox>"]
+    lines.append(f"{len(inbox)} message(s) for @{recipient}:")
+    for i, msg in enumerate(inbox, 1):
+        sender = msg.get("from", "?")
+        msg_type = msg.get("type", "message")
+        content = msg.get("content", "")
+        meta = msg.get("metadata") or {}
+        cc_note = ""
+        if meta.get("cc"):
+            orig = meta.get("original_to", "?")
+            cc_note = f" (CC of a message originally to {orig})"
+        lines.append(
+            f"[{i}] {sender} said (type: {msg_type}){cc_note}: {content}"
+        )
+    lines.append("</inbox>")
+    # Structured fallback. Indented under the readable header so the
+    # LLM sees the human-readable form first when scanning top-down.
+    lines.append("<!-- raw: " + json.dumps(inbox) + " -->")
+    return "\n".join(lines)
+
+
 # ── Message bus ───────────────────────────────────────────────────────────
 
 class MessageBus:
@@ -1010,7 +1049,13 @@ class TeammateSpawner:
                         self._send_shutdown_response(info.name, msg)
                         return ("shutdown", None)
                 # Non-protocol (or other) messages: inject as next turn.
-                return ("work", "<inbox>" + json.dumps(inbox) + "</inbox>")
+                # Format as natural conversation rather than raw JSON:
+                # the LLM can still parse `<inbox>…</inbox>` (the tag is
+                # preserved) but the chat bubble renders readable text
+                # instead of an opaque JSON dump. JSON is appended at the
+                # end as a fallback for any code path that still wants
+                # the structured form.
+                return ("work", _format_inbox_as_dialogue(inbox, info.name))
             task = self._scan_unclaimed_tasks()
             if task is not None:
                 claim_out = self._claim_task(task.id, info.name)

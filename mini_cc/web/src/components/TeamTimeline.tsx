@@ -5,6 +5,7 @@ import {
   mergeConsecutiveTexts,
   sessionLabel,
   shortTs,
+  speakerLabel,
   summarizeEvent,
   type RenderItem,
 } from "../lib/teamEvent";
@@ -59,21 +60,18 @@ export default function TeamTimeline({
   const isVisible = (sessionId: string) =>
     visible[sessionId] === undefined ? true : visible[sessionId];
 
-  const filtered = useMemo(() => {
-    return activity
-      .filter((e) => isVisible(e.session_id))
-      .slice()
-      .reverse(); // newest-first
+  // Merge BEFORE reversing. The activity stream is sorted ascending by
+  // ts, so walking it in that order yields text chunks in their natural
+  // stream order — merging here produces bubbles whose concatenated
+  // text reads left-to-right. Reversing first (the old approach) walked
+  // chunks newest-first, so each bubble's text came out reversed and
+  // read right-to-left. After merging on the ascending stream, we
+  // reverse the resulting render items for newest-first display.
+  const items = useMemo(() => {
+    const ascending = activity.filter((e) => isVisible(e.session_id));
+    return mergeConsecutiveTexts(ascending).reverse();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activity, visible]);
-
-  // Merge consecutive same-session text events into one bubble so the
-  // timeline shows readable messages instead of one row per streamed
-  // token. See mergeConsecutiveTexts in teamEvent.ts for the rationale.
-  const items = useMemo(
-    () => mergeConsecutiveTexts(filtered),
-    [filtered],
-  );
 
   function onClickEvent(sessionId: string) {
     if (isNavigableSession(sessionId)) {
@@ -110,6 +108,14 @@ export default function TeamTimeline({
             item.kind === "merged_text" ? item.sessionId : item.session_id;
           const navigable = isNavigableSession(sessionId);
           const ts = item.kind === "merged_text" ? item.ts : item.ts;
+          // Speaker = who actually said/did this. For merged_text bubbles
+          // and most events the host session is the speaker, but
+          // teammate_message events are emitted into the LEAD session by
+          // a teammate — speakerLabel picks the right name.
+          const speaker =
+            item.kind === "merged_text"
+              ? sessionLabel(sessionId)
+              : speakerLabel(item as TeamEvent);
           return (
             <button
               key={`${ts}-${i}`}
@@ -136,7 +142,7 @@ export default function TeamTimeline({
                   "bg-bg-hover text-ink-dim"
                 }
               >
-                {sessionLabel(sessionId)}
+                {speaker}
               </span>
               {item.kind === "merged_text" ? (
                 <span className="text-ink whitespace-pre-wrap break-words flex-1 min-w-0">

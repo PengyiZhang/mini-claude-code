@@ -123,3 +123,21 @@ export function sessionLabel(sessionId: string): string {
 export function isNavigableSession(sessionId: string): boolean {
   return !sessionId.startsWith("teammate-");
 }
+
+// Pick the speaker label for an event. Most events are emitted INTO a
+// session by that session's owner (a `text` event from teammate-alice
+// was produced BY alice), so sessionLabel(session_id) is correct.
+// But `teammate_message` events are emitted into the LEAD session by
+// a teammate (e.g. `_emit_to_lead` writes alice's milestone to the
+// lead's events.jsonl with from="alice"). For those, the host label
+// ("lead") is misleading — the actual speaker is the `from` field.
+// Falls back to sessionLabel when `from` is missing or equals the
+// session's own name.
+export function speakerLabel(e: TeamEvent): string {
+  const fromField = (e as any).from as string | undefined;
+  if (typeof fromField === "string" && fromField) {
+    const host = sessionLabel(e.session_id);
+    if (fromField !== host) return fromField;
+  }
+  return sessionLabel(e.session_id);
+}

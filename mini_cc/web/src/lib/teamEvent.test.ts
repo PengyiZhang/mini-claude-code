@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mergeConsecutiveTexts } from "./teamEvent";
+import { mergeConsecutiveTexts, speakerLabel } from "./teamEvent";
 import type { TeamEvent } from "./types";
 
 function textEvent(
@@ -109,5 +109,71 @@ describe("mergeConsecutiveTexts", () => {
     ];
     const out = mergeConsecutiveTexts(events);
     expect(out[0]).toMatchObject({ ts: "2026-07-04T10:00:05Z" });
+  });
+
+  it("preserves stream order within a bubble (left-to-right reading)", () => {
+    // Regression: when the timeline reversed the activity stream
+    // BEFORE merging, each bubble's chunks were joined newest-first
+    // and the text read right-to-left. Verify the helper joins chunks
+    // in the order they appear in the input array (which the caller
+    // guarantees is ascending-by-ts).
+    const events: TeamEvent[] = [
+      textEvent("teammate-alice", "2026-07-04T10:00:00Z", "Hello "),
+      textEvent("teammate-alice", "2026-07-04T10:00:01Z", "world, "),
+      textEvent("teammate-alice", "2026-07-04T10:00:02Z", "from "),
+      textEvent("teammate-alice", "2026-07-04T10:00:03Z", "alice."),
+    ];
+    const out = mergeConsecutiveTexts(events);
+    expect(out[0]).toMatchObject({ text: "Hello world, from alice." });
+  });
+});
+
+describe("speakerLabel", () => {
+  it("returns the session label for plain text events", () => {
+    const e = textEvent("teammate-alice", "2026-07-04T10:00:00Z", "hi");
+    expect(speakerLabel(e)).toBe("alice");
+  });
+
+  it("returns the lead label for lead-session text events", () => {
+    const e = textEvent("sess-lead-1", "2026-07-04T10:00:00Z", "hi");
+    expect(speakerLabel(e)).toBe("lead");
+  });
+
+  it("uses the `from` field for teammate_message events hosted on the lead session", () => {
+    // teammate_message events are emitted into the LEAD session by the
+    // teammate — sessionLabel would say "lead", but the actual speaker
+    // is the teammate identified by `from`.
+    const e = {
+      session_id: "sess-lead-1",
+      ts: "2026-07-04T10:00:00Z",
+      type: "teammate_message",
+      from: "alice",
+      to: "lead",
+      content: "milestone reached",
+    } as unknown as TeamEvent;
+    expect(speakerLabel(e)).toBe("alice");
+  });
+
+  it("falls back to sessionLabel when `from` equals the host", () => {
+    // Defensive: a message where `from` is the same as the host session
+    // label shouldn't render the name twice. Skip the redundant `from`.
+    const e = {
+      session_id: "teammate-alice",
+      ts: "2026-07-04T10:00:00Z",
+      type: "teammate_message",
+      from: "alice",
+      content: "x",
+    } as unknown as TeamEvent;
+    expect(speakerLabel(e)).toBe("alice");
+  });
+
+  it("falls back to sessionLabel when `from` is missing", () => {
+    const e = {
+      session_id: "teammate-alice",
+      ts: "2026-07-04T10:00:00Z",
+      type: "tool_use",
+      name: "check_inbox",
+    } as unknown as TeamEvent;
+    expect(speakerLabel(e)).toBe("alice");
   });
 });
