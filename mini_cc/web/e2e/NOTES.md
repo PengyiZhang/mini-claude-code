@@ -25,10 +25,17 @@
 | `round2_sse.spec.ts`                       | /send accepts Last-Event-Id header and returns text/event-stream   | R2 / B8     | ✓      |
 | `round2_sse_resume.spec.ts`                | resume=true skips dispatch and replays from event log              | R2 / B8     | ✓      |
 | `round2_sse_resume.spec.ts`                | client reconnects with Last-Event-Id after a mid-stream drop       | R2 / B8     | ✓      |
+| `phaseI_team.spec.ts`                      | `/team/activity` endpoint contract (200, since-filter, limit)       | I.C.1       | ✓      |
+| `phaseI_team.spec.ts`                      | Team tab swaps Workspace main content away from chat               | I.C.4       | ✓      |
+| `phaseI_team.spec.ts`                      | TeammatesPanel mounts roster / empty-state placeholder             | I.C.3       | ✓      |
+| `phaseI_team.spec.ts`                      | `/agents spawn alice` → roster row + alive badge                   | I.A         | ✓      |
+| `phaseI_team.spec.ts`                      | `lead_nudged` toast on watcher-triggered lead wake                 | I.C.5       | ⚠\*    |
+
+⚠\* soft-skips when the live LLM doesn't produce a milestone within 45s; deterministic tests above pass without LLM. Bug surfaced + fixed during this round: `/team/activity` 500'd when a `teammate_message` payload carried a numeric `ts` that overwrote the top-level ISO string ts — payload fields now stripped before spread (see commit).
 
 ✓* requires `E2E_ALT_TENANT_KEY` / `E2E_ALT_TENANT_ID` / `E2E_ALT_TENANT_PID` env vars; skipped otherwise.
 
-Total: **21 passing**, 0 skipped (when fully provisioned), 0 flaky.
+Total: **25 passing**, 1 conditional skip (when fully provisioned), 0 flaky.
 
 ## Setup
 

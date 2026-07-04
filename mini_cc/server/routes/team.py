@@ -119,11 +119,20 @@ def get_team_activity(
                 payload = rec.get("payload") or {}
                 # Spread payload fields alongside session_id/ts so the
                 # UI can read type/text/etc. without an extra hop.
-                out = {"session_id": rec["session_id"], "ts": rec["ts"]}
+                # Some payloads carry their own ``ts`` (e.g.
+                # ``teammate_message`` stamps a unix-float for the
+                # bus), which would clobber the top-level ISO string
+                # and break the timeline sort below. Strip ``ts`` and
+                # ``session_id`` from the payload before spread so the
+                # top-level values win.
                 if isinstance(payload, dict):
-                    out.update(payload)
+                    stripped = {k: v for k, v in payload.items()
+                                if k not in ("ts", "session_id")}
+                    out = {"session_id": rec["session_id"],
+                           "ts": rec["ts"], **stripped}
                 else:
-                    out["payload"] = payload
+                    out = {"session_id": rec["session_id"],
+                           "ts": rec["ts"], "payload": payload}
                 collected.append(out)
         except Exception:
             # A corrupted/unreadable session log must not break the
