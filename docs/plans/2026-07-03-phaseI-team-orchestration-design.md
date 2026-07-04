@@ -490,3 +490,67 @@ I.C.5  通知 toast（可选）                            [~0.5d]
   - `b7f1866` — scope lead event deque to bound session
   - `51ab21d` — drain lead mailbox into context so late replies reach LLM
 - 相关 skill：`@superpowers:test-driven-development`、`@superpowers:executing-plans`、`@superpowers:systematic-debugging`
+
+---
+
+## 6. Post-implementation UI rendering fixes
+
+> 本节追加于 Phase I 主线合并后的 e2e 验证轮（2026-07-04 ~ 07-05）。设计层不变，但 Team tab 在真实 LLM 输出下暴露了若干渲染层问题，记录于此便于后续维护。
+
+### 6.1 流式文本按 token 一行（commit `247db17`）
+
+**症状**：Team tab 每条消息按 SSE 流的 token chunk 一行一行展开，无法阅读。
+
+**根因**：`AgentLoop` 每个 token 都 emit 一个 `text` SSE 事件，`/send` 把它们逐条写进 `events.jsonl`。渲染层直接平铺显示，结果一行一 token。
+
+**修复**：`mini_cc/web/src/lib/teamEvent.ts` 加 `mergeConsecutiveTexts()` helper —— 把同 session 的相邻 `text` 事件合并成一个 `merged_text` 渲染项。合并发生在渲染层而非持久化层，可同时修复历史日志。
+
+### 6.2 合并方向、speaker 标签、inbox 友好化（commit `94581bf`）
+
+**症状（3 个相互独立）**：
+
+1. 合并后的气泡从右往左读 —— timeline 把活动流先 reverse 再 merge，每个气泡内的 chunk 被按"最新在前"拼接。
+2. `teammate_message` 事件显示在 LEAD session 下，右栏 speaker 标签写成 "lead"，但实际说话人是 teammate。
+3. teammate session 的气泡里直接渲染 `<inbox>[{"from":"lead",...}]</inbox>` 原始 JSON。
+
+**修复**：
+
+- merge 顺序：先在 ascending 流上 merge，再 reverse 渲染项 —— 气泡内文字恢复从左到右。
+- 新增 `speakerLabel(e)` helper：优先取事件的 `from` 字段，与 host session 不同时用 `from`，否则回退 `sessionLabel`。
+- 后端 `mini_cc/teams/__init__.py:_format_inbox_as_dialogue()` 把 inbox JSON dump 转成「N messages for @alice: [1] lead said (type: milestone): ...」格式的人话，原始 JSON 保留为 HTML 注释备份。
+
+### 6.3 teammate_message 占位符 + 信封幻觉（commit `75ab087`）
+
+**症状（2 个）**：
+
+1. alice/bob/carl 的事件全部显示成 `[teammate_message]` 占位符，看不到实际台词。
+2. lead 气泡里出现 `<teammate_messages>...</teammate_messages>`、`<function_calls><invoke>...</invoke></function_calls>` 等原始 XML 信封。
+
+**根因**：
+
+- `summarizeEvent` switch 缺 `teammate_message` case，走 default 的 `[${type}]` 占位符。
+- LLM 偶尔把自己的 input/tool-call 协议（XML 信封）当文本吐出来。SSE 流把标签切成 3-4 字符的小 chunk（`<te` / `amm` / `ate` / `_messages` ...），单 chunk 内永远凑不齐完整标签名。
+
+**修复**：
+
+- `summarizeEvent` 加 `teammate_message` case：直接渲染 `content`（截断 80 字，msg_type 作 fallback）。
+- `mergeConsecutiveTexts` 在 flush 时对**合并后整段文本**做 `includes` 检查；只要出现 `HALLUCINATED_ENVELOPE_TAGS`（`teammate_messages` / `inbox` / `system_messages` / `channel_update` / `notifier` / `function_calls` / `invoke` / `parameter`）任一开/闭标签，整泡丢弃。
+
+**保守取舍**：若一泡里既有真实文本又有信封标签，整泡丢。理由：实际数据里这种混合极少；信封出现就是 LLM 在乱吐协议，整泡多半是垃圾，可靠隐藏比外科手术式救援重要。
+
+**跨泡场景**：当 `teammate_message` 事件打断了信封幻觉（LLM emit 信封开标签 → 真事件落地 → LLM 继续吐闭标签 + JSON 碎片），后段气泡里只有闭标签没有开标签。"任一标签 → 丢弃" 规则闭标签也命中，所以尾巴也会被吞掉。
+
+### 6.4 测试覆盖
+
+新增 `mini_cc/web/src/lib/teamEvent.test.ts`，共 **22 个单测**：
+
+- `mergeConsecutiveTexts` × 7：合并、跨 session 切分、非文本事件打断、空输入、首 chunk 时间戳、流顺序保持、信封剥离（4 个 subcase + 跨泡尾巴 1 个）。
+- `speakerLabel` × 5：普通文本、lead session、`from` 字段优先、与 host 同名时回退、缺失时回退。
+- `summarizeEvent — teammate_message` × 3：内容渲染、长内容截断、缺失内容回退。
+
+### 6.5 e2e 验证（相声团队场景）
+
+为完整覆盖"3 teammate 自主表演"的渲染路径，新增 `mini_cc_data_xiangsheng/` 数据目录（fresh tenant `xs` + project `xs_demo`），让 lead spawn 逗哏/捧哏/泥缝三人表演《扒马褂》片段。修复前 80 行 timeline 里有 `[teammate_message]` 占位符 + 多个信封幻觉泡；修复后 80/80 全是干净对话行。
+
+> **注**：`mini_cc_data_xiangsheng/` 与 `xs-team-tab-*.png` 截图一并入库，便于回放验证。生产部署时不应依赖这些数据。
+

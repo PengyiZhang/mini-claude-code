@@ -216,3 +216,36 @@ L
 每股收益: 0.10元
 总体来看，福田汽车今日股价表现良好，小幅上涨1.36%，公司2025年业绩表现突出，净利润大幅增长。
 ```
+
+---
+
+## 收尾：Team tab 渲染层加固（2026-07-04 ~ 07-05）
+
+> Phase I 主线合并后用 3 人相声团队（lead spawn alice 逗哏 / bob 捧哏 / carl 泥缝，表演《扒马褂》）做端到端验证时暴露的一系列渲染问题，集中记录在此便于后续维护。详细技术分析见 `docs/plans/2026-07-03-phaseI-team-orchestration-design.md` 第 6 节。
+
+### 涉及 commit
+
+| Commit | 主题 |
+|---|---|
+| `247db17` | 流式文本按 token 一行 → `mergeConsecutiveTexts` 渲染层合并 |
+| `94581bf` | 合并方向 / speakerLabel / 后端 inbox 人话化 |
+| `75ab087` | `teammate_message` 占位符 + LLM 信封幻觉过滤 |
+
+### 端到端验证
+
+- 数据目录：`mini_cc_data_xiangsheng/`（fresh tenant `xs` + project `xs_demo`，与生产数据隔离）
+- 浏览器验证：lead spawn 三人 → 三人按捧哏/逗哏/泥缝分工表演 → 截图对比修复前后 Team tab
+- 修复后 80/80 行干净对话（0 信封泄漏 / 0 占位符）
+- 单测：`mini_cc/web/src/lib/teamEvent.test.ts` 22 个用例全过
+
+### 截图
+
+- `xs-team-tab-1.png` — 修复前 token 一行 + 信封泄漏现场
+- `xs-team-tab-after-fix.png` — `teammate_message` case + chunk-level 检测修复后（仍有跨泡尾巴）
+- `xs-team-tab-final.png` — flush-level 信封检测最终态
+
+### 后续遗留
+
+- LLM 偶发 `<function_calls>` 信封幻觉已纳入过滤，但根本原因是 LLM 行为而非渲染层 —— 后续可考虑给 LLM 加一条系统级 hint（"工具调用必须走 tool_use 事件，不要在文本里贴 XML"）。
+- `mini_cc_data_xiangsheng/` 是一次性的 e2e 数据目录，未加 `.gitignore`（按本次「全部入库」意愿保留）。生产部署时不应依赖。
+

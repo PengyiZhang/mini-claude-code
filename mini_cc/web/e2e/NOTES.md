@@ -37,6 +37,16 @@
 
 Total: **25 passing**, 1 conditional skip (when fully provisioned), 0 flaky.
 
+### Companion unit tests (not e2e, but related to the team UI surface)
+
+`src/lib/teamEvent.test.ts` (22 tests, runs under `vitest`) covers the rendering helpers consumed by `TeamTimeline`:
+
+- `mergeConsecutiveTexts` — bubble merging, session boundaries, non-text interruption, first-chunk ts, stream-order preservation, and 5 hallucinated-envelope stripping cases (complete, unclosed, mixed, cross-bubble tail, `<function_calls>` variants).
+- `speakerLabel` — text events, lead session, `from`-field preference, fallback when `from` equals host or is missing.
+- `summarizeEvent` — `teammate_message` case (content rendering, long-content truncation, missing-content fallback).
+
+Run: `cd mini_cc/web && npx vitest run src/lib/teamEvent.test.ts`
+
 ## Setup
 
 ```
@@ -78,6 +88,9 @@ npx playwright test --project=chromium
 | **UX gap**: after creating a def, the middle pane said "select a run from the left" with no way to create the first run (the `↻ new run` button only renders inside `RunView`, which only mounts once a run exists). Added a `▶ start new run` button to the empty-state placeholder in `WorkflowV2.tsx`. | `7aa4fab`     |
 | **UX gap**: `DefinitionEditor` had no delete button — the only way to remove a def was a direct `DELETE` API call. Added a 🗑 delete button to the editor footer (edit-mode only, with `window.confirm`). | `15685e6`     |
 | **Functional gap**: SSE reconnect (B8) — the server supported `Last-Event-Id` replay but every reconnect re-triggered the LLM dispatch (duplicate run). Added a `resume: bool` flag to `SendMessageRequest`; when true, `/send` skips the lock + dispatch and just replays from the per-session log. Client `sse.ts` now parses `id:` lines and auto-reconnects on mid-stream drop with `Last-Event-Id` + `resume=true`, exponential backoff (1s→2s→4s), max 3 attempts. | `aaa5793`     |
+| **Team tab rendering**: streamed text chunks (one per token) showed one row per token, unreadable. Added `mergeConsecutiveTexts` in `teamEvent.ts` to coalesce adjacent same-session `text` events into a single bubble at render time. | `247db17`     |
+| **Team tab merge order**: merged bubbles read right-to-left because the timeline reversed the stream BEFORE merging. Reordered: merge on the ascending stream first, THEN reverse the merged items for newest-first display. Also added `speakerLabel(e)` preferring the `from` field (so `teammate_message` events hosted on the lead session show the actual teammate name), and backend `_format_inbox_as_dialogue()` to render inbox JSON as labelled dialogue lines instead of raw `<inbox>[{...}]</inbox>`. | `94581bf`     |
+| **Team tab placeholder + envelope hallucinations**: `teammate_message` events rendered as `[teammate_message]` placeholder (summarizeEvent had no case for that type). Separately, lead bubbles occasionally showed raw `<teammate_messages>…</…>` / `<function_calls><invoke>…</…>` XML because the LLM typed its own input/tool-call protocol as plain text — and SSE chunks are tiny (3-4 chars each), so chunk-level tag detection never matched a complete tag name. Added `teammate_message` case to summarizeEvent; envelope detection now runs on the FULL merged bubble text at flush time and drops the entire bubble if any envelope tag (open OR close) appears anywhere. Cross-bubble regression handled implicitly: the post-interrupt continuation bubble contains a stray close tag without any open, and the "any tag → drop" rule catches that tail. | `75ab087`     |
 
 ## Leftover issues / not covered
 
