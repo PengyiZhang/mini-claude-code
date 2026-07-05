@@ -76,7 +76,13 @@ def _format_inbox_as_dialogue(inbox: list[dict], recipient: str) -> str:
     lines.append("</inbox>")
     # Structured fallback. Indented under the readable header so the
     # LLM sees the human-readable form first when scanning top-down.
-    lines.append("<!-- raw: " + json.dumps(inbox) + " -->")
+    # ensure_ascii=False: this line is persisted verbatim in the
+    # teammate's transcript (it becomes part of user_input). With the
+    # json.dumps default (ensure_ascii=True) any non-ASCII content —
+    # Chinese text from the lead or peers — was written as literal
+    # `你好` escape sequences and rendered as garbled "JSON
+    # ASCII" text in the chat bubble after a page refresh.
+    lines.append("<!-- raw: " + json.dumps(inbox, ensure_ascii=False) + " -->")
     return "\n".join(lines)
 
 
@@ -123,6 +129,12 @@ class MessageBus:
         # looking elsewhere — the live inbox is drained by the
         # teammate's own _idle_poll within seconds of arrival.
         self._history: dict[str, list[dict]] = {}
+        # Per-agent "sent a result since their last take" flag. Set in
+        # send() when msg_type == "result"; drained per-agent via
+        # take_result_flag(agent) by the teammate runner so it can park
+        # after reporting task completion. Per-agent (not a global drain)
+        # so concurrent teammates don't clear each other's signal.
+        self._result_pending: set[str] = set()
         # File lock availability flag — flipped to False if portalocker
         # import or repeated acquires fail. Once degraded the bus keeps
         # running but loses cross-process safety.
@@ -261,11 +273,11 @@ class MessageBus:
             cm = None
         if cm is None:
             with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(msg) + "\n")
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
             return
         with cm:
             with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(msg) + "\n")
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
     def _truncate_disk(self, path: Path) -> None:
         """Atomically clear the JSONL file under the file lock."""
@@ -314,6 +326,11 @@ class MessageBus:
         with self._lock:
             self._cache.setdefault(to_agent, []).append(msg)
             self._append_disk(self._path(to_agent), msg)
+            # Record a result-send for the SENDER so its runner can park
+            # it after this turn (park-after-result). Checked per-agent
+            # via take_result_flag; cleared on take.
+            if msg_type == "result":
+                self._result_pending.add(from_agent)
             # Append to the per-agent history log (debug.8 Task B). The
             # history survives read_inbox drains and process restarts
             # so /agents inbox <name> can show every received message
@@ -385,6 +402,21 @@ class MessageBus:
         can't mutate the live cache."""
         with self._lock:
             return list(self._cache.get(agent, []))
+
+    def take_result_flag(self, agent: str) -> bool:
+        """Atomically read+clear the per-agent "sent a result" flag.
+
+        Returns True if ``agent`` sent a ``msg_type="result"`` message
+        since the last take, False otherwise. The teammate runner uses
+        this after each turn to decide whether to park the teammate
+        (park-after-result: a finished teammate stops running LLM turns
+        until the lead @mentions new work). Per-agent so concurrent
+        teammates can't race-clear each other's flag.
+        """
+        with self._lock:
+            was = agent in self._result_pending
+            self._result_pending.discard(agent)
+            return was
 
     def broadcast(self, from_agent: str, to_agents: list[str],
                   content: str, msg_type: str = "message",
@@ -507,6 +539,13 @@ class TeammateInfo:
     # 1c: @mention on later turns must still surface teammate events
     # to the main session).
     event_sink: Callable[[dict], None] | None = None
+    # Park-after-result: set True after the teammate sends a
+    # msg_type="result" (signalling its whole mission is complete).
+    # While parked, _idle_poll only wakes on shutdown_request / a lead
+    # @mention (new task) / an unclaimed task — it ignores chatter
+    # (lead acks, peer chitchat) so a finished teammate stops burning
+    # LLM turns. Cleared when genuine new work wakes it.
+    parked: bool = False
 
 
 class TeammateSpawner:
@@ -884,10 +923,8 @@ class TeammateSpawner:
         # Hyphen not colon: see core/subagent.py for the validate_id rationale.
         loop = self._loop_factory(f"teammate-{info.name}")
         identity = (f"<identity>You are '{info.name}', a {info.role}. "
-                    f"Use tools to complete the requested work. "
-                    f"Send your final summary to 'lead' via send_message "
-                    f"before stopping. After calling submit_plan, end "
-                    f"your turn and wait for approval.</identity>")
+                    f"Work with tools, with your peers, and with the "
+                    f"lead to complete the mission below.</identity>")
         # Convention is prepended (before identity+prompt) so the model
         # treats it as ground truth for protocol behavior. Prompt authors
         # only need to specify WHAT to do, not re-state protocol rules.
@@ -915,6 +952,11 @@ class TeammateSpawner:
             next_input = f"{convention}\n\n{identity}\n\n{prompt}"
             should_shutdown = False
 
+            # Clear any stale result flag for this name (e.g. a
+            # finally-block "Done." result from a previous tenant of the
+            # same name) so we don't park before the first real turn.
+            self.bus.take_result_flag(info.name)
+
             while not should_shutdown:
                 # Run one full turn (model + tool calls). Mid-turn
                 # shutdown detection lets a long-running generator exit
@@ -934,6 +976,15 @@ class TeammateSpawner:
 
                 if should_shutdown:
                     break
+
+                # Park-after-result: if the teammate sent a result during
+                # that turn, its mission is complete — mark it parked so
+                # the idle poll below only wakes it for genuine new work
+                # (shutdown / lead @mention / unclaimed task), not for
+                # the lead's acknowledgement chatter that would otherwise
+                # ping-pong another full LLM turn.
+                if self.bus.take_result_flag(info.name):
+                    info.parked = True
 
                 # Plan-approval gate: block until the response arrives.
                 with self._lock:
@@ -1038,10 +1089,41 @@ class TeammateSpawner:
         If `loop` is provided and an auto-claimed task has a worktree
         binding, the loop is redirected into the worktree path via
         set_worktree (s20 wt_ctx behavior) before returning.
+
+        Park-after-result: when ``info.parked`` is set (the teammate just
+        sent ``msg_type="result"``), only wake for genuine new work — a
+        ``shutdown_request``, a lead ``mention`` (new task), or an
+        unclaimed task. Non-actionable chatter (lead acknowledgements,
+        peer chitchat) is left buffered via peek (no drain) so a finished
+        teammate stops burning LLM turns instead of ping-ponging acks.
         """
         deadline = time.time() + self.idle_timeout
         while time.time() < deadline:
             time.sleep(self.idle_poll_interval)
+            if info.parked:
+                # Peek (don't drain) so buffered chatter is preserved as
+                # context for whenever we do wake.
+                pending = self.bus.peek_inbox(info.name)
+                actionable = next(
+                    (m for m in pending
+                     if m.get("type") in ("shutdown_request", "mention")),
+                    None,
+                )
+                if actionable is not None:
+                    inbox = self.bus.read_inbox(info.name)
+                    for msg in inbox:
+                        if msg.get("type") == "shutdown_request":
+                            self._send_shutdown_response(info.name, msg)
+                            return ("shutdown", None)
+                    info.parked = False
+                    return ("work", _format_inbox_as_dialogue(inbox, info.name))
+                task = self._scan_unclaimed_tasks()
+                if task is not None:
+                    claimed = self._claim_as_work(info, task, loop)
+                    if claimed is not None:
+                        return claimed
+                # Nothing actionable — stay parked, keep sleeping.
+                continue
             inbox = self.bus.read_inbox(info.name)
             if inbox:
                 for msg in inbox:
@@ -1058,19 +1140,33 @@ class TeammateSpawner:
                 return ("work", _format_inbox_as_dialogue(inbox, info.name))
             task = self._scan_unclaimed_tasks()
             if task is not None:
-                claim_out = self._claim_task(task.id, info.name)
-                if "Claimed" in claim_out:
-                    wt_info = ""
-                    if task.worktree:
-                        wt_path = (Path(self.bus.workspace) / ".worktrees"
-                                   / task.worktree)
-                        wt_info = f"\nWork directory: {wt_path}"
-                        if loop is not None and hasattr(loop, "set_worktree"):
-                            loop.set_worktree(wt_path)
-                    return ("work",
-                            f"<auto-claimed>Task {task.id}: "
-                            f"{task.subject}{wt_info}</auto-claimed>")
+                claimed = self._claim_as_work(info, task, loop)
+                if claimed is not None:
+                    return claimed
         return ("timeout", None)
+
+    def _claim_as_work(
+        self, info: TeammateInfo, task: "Task", loop: "AgentLoop | None",
+    ) -> tuple[str, str] | None:
+        """Atomically claim ``task`` for ``info.name`` and return a
+        ("work", prompt) tuple for the next turn, or None if the claim
+        lost a race (task no longer pending / already owned). Clears
+        ``info.parked`` (claiming work reactivates a parked teammate)
+        and redirects the loop sandbox into the task's worktree if bound.
+        """
+        claim_out = self._claim_task(task.id, info.name)
+        if "Claimed" not in claim_out:
+            return None
+        info.parked = False
+        wt_info = ""
+        if task.worktree:
+            wt_path = (Path(self.bus.workspace) / ".worktrees" / task.worktree)
+            wt_info = f"\nWork directory: {wt_path}"
+            if loop is not None and hasattr(loop, "set_worktree"):
+                loop.set_worktree(wt_path)
+        return ("work",
+                f"<auto-claimed>Task {task.id}: "
+                f"{task.subject}{wt_info}</auto-claimed>")
 
     def _scan_unclaimed_tasks(self) -> "Task | None":
         if self.storage is None or self.project_id is None:
@@ -1128,37 +1224,50 @@ __all__ = ["MessageBus", "ProtocolState", "ProtocolTracker",
 # ── Built-in teammate convention ─────────────────────────────────────────
 
 _CONVENTION_PROMPT = """<convention>
-You are a teammate in a multi-agent team. The following rules apply on
-EVERY turn, regardless of the task you were spawned for:
+You are a teammate in a multi-agent team. These principles govern HOW
+you collaborate; the prompt after this block says WHAT to do.
 
-1. Plan first, then act. Before doing any non-trivial work (writing
-   files, running tools that mutate state, performing multi-step
-   research), call `submit_plan` with a concise plan and end your
-   turn. Wait for the lead's `review_plan` verdict before proceeding.
-   Trivial work (a single read-only tool call, a direct answer) does
-   not require a plan.
+Work in phases, and use judgment about which phase you are in.
 
-2. Report results to the lead. When your task is complete (or you hit
-   a blocker you cannot resolve), call
-   `send_message(to="lead", content=<summary>, msg_type="result")`
-   with a brief summary of what you did and any artifacts produced.
+DELIBERATE before you build.
+For anything non-trivial — especially joint work with other teammates
+— talk it through first. Use send_message to reach specific peers by
+name; agree on the goal, the approach, and the division of labor, then
+act. Don't silo yourself.
 
-3. Honor shutdown. If your inbox contains a `shutdown_request` message
-   or the lead sends a `shutdown` directive, acknowledge it and stop.
-   Do not start new work after receiving shutdown.
+Plan approval — when the work warrants it, not on every step.
+Call submit_plan and wait for the lead's review_plan verdict before
+work that is high-stakes, hard to reverse, or genuinely ambiguous. For
+a multi-agent effort, deliberate first, then have ONE of you act as
+coordinator and submit a single consolidated plan covering the whole
+team — don't each file your own. Once a plan is approved, carry it out
+without re-asking on every step; re-approve only if scope or risk
+materially changes. Routine, reversible, or already-approved execution
+needs no plan at all. (review_plan is the lead's tool, not yours.)
 
-4. Read your inbox each turn. The lead may inject messages (mention
-   routing, plan verdicts, follow-up tasks) via your mailbox between
-   turns. Treat anything in your inbox as authoritative input from the
-   lead; if a message is labeled `mention`, it carries a new task you
-   should pick up.
+Report by stage.
+- send_message(to="lead", ..., msg_type="milestone") for intermediate
+  progress the lead should see.
+- When your ENTIRE assigned mission is complete — or you are blocked
+  and cannot unblock yourself — send exactly one
+  send_message(to="lead", content=<summary>, msg_type="result"). This
+  is the "I'm done" signal: after sending it you will be PARKED and
+  will NOT run again until the lead @mentions you with new work, so
+  send result only when you are truly finished, not after each sub-step.
 
-5. Stay in your lane. Do not spawn further teammates, do not call
-   review_plan (that's the lead's tool), do not modify other
-   teammates' worktrees. Your scope is the task you were assigned.
+Read your inbox every turn.
+<inbox> blocks are authoritative input. A message whose type is
+`mention` is a new task from the lead — pick it up. Plan verdicts and
+peer replies also arrive here.
 
-These rules are non-negotiable; the user-supplied prompt that follows
-describes WHAT to do, not how to interact with the team.
+Honor shutdown.
+If your inbox contains a shutdown_request (or the lead says to stop),
+acknowledge it and stop. Start no new work after that.
+
+Stay in your lane.
+Don't spawn teammates, don't call review_plan, don't touch other
+teammates' worktrees. Coordinate with peers by messaging them, not by
+editing their work.
 </convention>"""
 
 

@@ -730,3 +730,82 @@ def test_stopped_teammates_get_pruned_from_registry(tmp_path):
         f"registry leak: {len(spawner._teammates)} entries retained "
         f"after 5 spawn/stop cycles; expected ≤ 3")
 
+
+# ── Inbox dialogue encoding ───────────────────────────────────────────────
+
+def test_inbox_dialogue_preserves_unicode(tmp_path):
+    """Regression: _format_inbox_as_dialogue must NOT JSON-escape non-ASCII
+    content. The `<!-- raw: ... -->` fallback line used json.dumps with the
+    default ensure_ascii=True, which wrote Chinese as literal backslash-u
+    escape sequences into the teammate's transcript — visible as garbled
+    "JSON ASCII" text in the chat bubble after a page refresh."""
+    from mini_cc.teams import _format_inbox_as_dialogue
+    bus = MessageBus(tmp_path)
+    bus.send("lead", "alice", "你好，开始吧", "mention")
+    inbox = bus.read_inbox("alice")
+    out = _format_inbox_as_dialogue(inbox, "alice")
+    # The readable line carries the Chinese content verbatim...
+    assert "你好，开始吧" in out
+    # ...and the raw JSON fallback must NOT have ASCII-escaped it.
+    assert "\\u4f60" not in out, out
+    assert "\\u597d" not in out, out
+
+
+# ── Park-after-result ─────────────────────────────────────────────────────
+
+def test_teammate_parks_after_result_and_ignores_chatter(tmp_path):
+    """A teammate that sends msg_type="result" (mission complete) must
+    park: it stays alive but does NOT run another LLM turn on subsequent
+    plain chatter (e.g. the lead's acknowledgement), only on a genuine
+    new-task signal (lead @mention) or shutdown. This is what stops the
+    "keeps making meaningless LLM calls after task completion" loop."""
+    runs = []
+    state = {"sent_result": False}
+
+    class _Loop:
+        def run(self, user_input):
+            runs.append(user_input)
+            if not state["sent_result"]:
+                # Simulate the teammate emitting its completion summary.
+                spawner.bus.send("alice", "lead", "all done", "result")
+                state["sent_result"] = True
+            yield {"type": "done"}
+
+    spawner = TeammateSpawner(
+        tmp_path / "ws", loop_factory=lambda sid: _Loop(),
+        idle_poll_interval=0.02, idle_timeout=0.3)
+    spawner.spawn("alice", "worker", "go", persistent=True)
+
+    # Wait for the first turn to land and the runner to flip parked.
+    deadline = time.time() + 2
+    info = None
+    while time.time() < deadline:
+        with spawner._lock:
+            info = spawner._teammates.get("alice")
+        if info is not None and info.parked:
+            break
+        time.sleep(0.02)
+    assert info is not None and info.parked, "teammate should park after result"
+    assert len(runs) == 1
+
+    # Plain chatter (lead ack) must NOT wake the parked teammate.
+    spawner.bus.send("lead", "alice", "thanks, nice work", "message")
+    time.sleep(0.6)  # well past idle_timeout
+    assert len(runs) == 1, f"parked teammate woke on chatter: {runs}"
+    assert spawner.list_alive(), "parked teammate must stay alive"
+
+    # A lead @mention (new task) MUST wake it.
+    spawner.bus.send("lead", "alice", "new task: do X", "mention")
+    deadline = time.time() + 3
+    while len(runs) < 2 and time.time() < deadline:
+        time.sleep(0.02)
+    assert len(runs) >= 2, "parked teammate did not wake on mention"
+    assert "new task: do X" in runs[1]
+
+    # Clean shutdown so the test doesn't leak a thread.
+    spawner.request_shutdown("alice")
+    deadline = time.time() + 3
+    while spawner.list_alive() and time.time() < deadline:
+        time.sleep(0.02)
+    assert spawner.list_alive() == []
+

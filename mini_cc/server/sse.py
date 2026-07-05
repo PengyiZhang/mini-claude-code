@@ -30,7 +30,13 @@ HEARTBEAT_COMMENT = ": keepalive\n\n"
 
 
 def _format_event(payload: dict[str, Any], seq: int) -> str:
-    return f"id: {seq}\ndata: {json.dumps(payload, default=str)}\n\n"
+    # ensure_ascii=False keeps user text (Chinese, emoji, etc.) as raw
+    # UTF-8 on the SSE wire. The browser's JSON.parse decodes \u escapes
+    # either way, but raw UTF-8 matches every other serialization site in
+    # the pipeline (events.jsonl, messages.json) and makes the raw stream
+    # greppable. utf-8 is the SSE default encoding.
+    return (f"id: {seq}\n"
+            f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n")
 
 
 async def sse_stream(sync_iter: Iterator[dict[str, Any]],
