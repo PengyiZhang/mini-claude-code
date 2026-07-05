@@ -1,13 +1,13 @@
 import { useMemo, useState } from "react";
 import { useTeamActivity } from "../lib/teamActivity";
 import {
+  isMergedText,
   isNavigableSession,
   mergeConsecutiveTexts,
   sessionLabel,
   shortTs,
   speakerLabel,
   summarizeEvent,
-  type RenderItem,
 } from "../lib/teamEvent";
 import type { TeamEvent } from "../lib/types";
 
@@ -104,18 +104,19 @@ export default function TeamTimeline({
 
       <div className="mt-4 space-y-1">
         {items.map((item, i) => {
-          const sessionId =
-            item.kind === "merged_text" ? item.sessionId : item.session_id;
+          // Use the type guard (not a raw `item.kind === ...` check) so the
+          // RenderItem union actually narrows — see teamEvent.ts:isMergedText.
+          const merged = isMergedText(item);
+          const sessionId = merged ? item.sessionId : item.session_id;
           const navigable = isNavigableSession(sessionId);
-          const ts = item.kind === "merged_text" ? item.ts : item.ts;
+          const ts = item.ts; // both variants expose ts: string
           // Speaker = who actually said/did this. For merged_text bubbles
           // and most events the host session is the speaker, but
           // teammate_message events are emitted into the LEAD session by
           // a teammate — speakerLabel picks the right name.
-          const speaker =
-            item.kind === "merged_text"
-              ? sessionLabel(sessionId)
-              : speakerLabel(item as TeamEvent);
+          const speaker = merged
+            ? sessionLabel(sessionId)
+            : speakerLabel(item);
           return (
             <button
               key={`${ts}-${i}`}
@@ -144,13 +145,13 @@ export default function TeamTimeline({
               >
                 {speaker}
               </span>
-              {item.kind === "merged_text" ? (
+              {merged ? (
                 <span className="text-ink whitespace-pre-wrap break-words flex-1 min-w-0">
                   {item.text}
                 </span>
               ) : (
                 <span className="text-ink whitespace-pre-wrap break-words flex-1 min-w-0">
-                  {summarizeEvent(item as TeamEvent)}
+                  {summarizeEvent(item)}
                 </span>
               )}
             </button>

@@ -15,9 +15,26 @@ import type { TeamEvent } from "./types";
 // shows one row per chunk — each token on its own line, completely
 // unreadable. Merging at the render layer (rather than the persistence
 // layer) also fixes legacy logs already on disk.
-export type RenderItem =
-  | { kind: "merged_text"; sessionId: string; ts: string; text: string }
-  | TeamEvent;
+// A merged_text bubble. Named (not inlined in RenderItem) so the
+// isMergedText guard below can reference it without restating the shape.
+export interface MergedTextItem {
+  kind: "merged_text";
+  sessionId: string;
+  ts: string;
+  text: string;
+}
+
+export type RenderItem = MergedTextItem | TeamEvent;
+
+// Narrows a RenderItem to its merged_text variant. A raw
+// `item.kind === "merged_text"` check does NOT narrow at the call site:
+// TeamEvent carries an index signature (`[key: string]: unknown`), so its
+// `.kind` is `unknown` rather than absent — TypeScript won't treat `kind`
+// as a real discriminant and keeps the full union in both branches. A
+// user-defined type guard narrows explicitly regardless.
+export function isMergedText(item: RenderItem): item is MergedTextItem {
+  return item.kind === "merged_text";
+}
 
 // Internal XML envelopes the LLM occasionally hallucinates as plain
 // text output (it's the format we feed into its context for inbox /
