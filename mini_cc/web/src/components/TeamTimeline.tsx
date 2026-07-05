@@ -42,23 +42,26 @@ export default function TeamTimeline({
     (s) => s.perProjectActivity[pid] ?? EMPTY,
   );
 
-  // Build the set of distinct session_ids seen in the feed. Memoized so
-  // toggling a checkbox doesn't re-derive the list.
-  const sessions = useMemo(() => {
-    const seen = new Map<string, string>(); // id -> label
+  // Build the set of distinct SPEAKERS seen in the feed — not raw
+  // session_ids. Teammate activity often reaches the lead session as a
+  // `teammate_message` event (session_id = the lead's, `from` = the
+  // teammate name), so a session_id filter collapses every teammate
+  // into "lead". speakerLabel follows the `from` field for those events
+  // (and falls back to sessionLabel otherwise), so each teammate stays
+  // its own checkbox. Memoized so toggling doesn't re-derive the list.
+  const speakers = useMemo(() => {
+    const seen = new Set<string>();
     for (const e of activity) {
-      if (!seen.has(e.session_id)) {
-        seen.set(e.session_id, sessionLabel(e.session_id));
-      }
+      seen.add(speakerLabel(e));
     }
-    return Array.from(seen.entries()); // [sessionId, label]
+    return Array.from(seen); // speaker labels, insertion order
   }, [activity]);
 
-  // Default: every session visible. Use sessionId as the key so the
-  // state survives a feed refresh that re-orders sessions.
+  // Default: every speaker visible. Keyed by speaker label so the
+  // state survives a feed refresh that re-orders speakers.
   const [visible, setVisible] = useState<Record<string, boolean>>({});
-  const isVisible = (sessionId: string) =>
-    visible[sessionId] === undefined ? true : visible[sessionId];
+  const isVisible = (speaker: string) =>
+    visible[speaker] === undefined ? true : visible[speaker];
 
   // Merge BEFORE reversing. The activity stream is sorted ascending by
   // ts, so walking it in that order yields text chunks in their natural
@@ -68,7 +71,7 @@ export default function TeamTimeline({
   // read right-to-left. After merging on the ascending stream, we
   // reverse the resulting render items for newest-first display.
   const items = useMemo(() => {
-    const ascending = activity.filter((e) => isVisible(e.session_id));
+    const ascending = activity.filter((e) => isVisible(speakerLabel(e)));
     return mergeConsecutiveTexts(ascending).reverse();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activity, visible]);
@@ -95,10 +98,10 @@ export default function TeamTimeline({
           for the team tab; keep this here so the component is
           self-sufficient when used standalone.) */}
       <FilterChecklist
-        sessions={sessions}
+        speakers={speakers}
         isVisible={isVisible}
-        onToggle={(sid2) =>
-          setVisible((s) => ({ ...s, [sid2]: !isVisible(sid2) }))
+        onToggle={(sp) =>
+          setVisible((s) => ({ ...s, [sp]: !isVisible(sp) }))
         }
       />
 
@@ -165,28 +168,28 @@ export default function TeamTimeline({
 // Small checklist of sessions (teammates + lead) used to filter the
 // timeline. Rendered as controlled checkboxes keyed by session_id.
 function FilterChecklist({
-  sessions,
+  speakers,
   isVisible,
   onToggle,
 }: {
-  sessions: Array<[string, string]>;
-  isVisible: (sid: string) => boolean;
-  onToggle: (sid: string) => void;
+  speakers: string[];
+  isVisible: (sp: string) => boolean;
+  onToggle: (sp: string) => void;
 }) {
-  if (sessions.length === 0) return null;
+  if (speakers.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-2 text-xs">
-      {sessions.map(([sid, label]) => (
+      {speakers.map((sp) => (
         <label
-          key={sid}
+          key={sp}
           className="flex items-center gap-1 px-2 py-1 rounded border border-border hover:bg-bg-hover cursor-pointer"
         >
           <input
             type="checkbox"
-            checked={isVisible(sid)}
-            onChange={() => onToggle(sid)}
+            checked={isVisible(sp)}
+            onChange={() => onToggle(sp)}
           />
-          <span>{label}</span>
+          <span>{sp}</span>
         </label>
       ))}
     </div>

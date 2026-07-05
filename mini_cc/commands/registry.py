@@ -1116,6 +1116,16 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
             # TeammatesPanel can render disposition badges + actions
             # without re-parsing markdown.
             states = disp.dispositions_for(name) if disp else {}
+            # Derive the disposition rather than trusting only the sidecar:
+            # a message still in the LIVE inbox (peek, not yet drained) is
+            # "unread"; once the teammate has drained it (only in history)
+            # it is "read". The sidecar's explicit "ignored" wins, and a
+            # manual "ack" (sidecar "read") marks a still-queued message
+            # read too. Pre-fix every drained message showed "unread" until
+            # the lead manually acked — the opposite of what "read" should
+            # mean, since the teammate already saw it.
+            live = _peek_inbox(spawner, name) or []
+            live_ts = {m.get("ts") for m in live if isinstance(m, dict)}
             items: list[dict] = []
             for i, m in enumerate(inbox, 1):
                 sender = m.get("from") or m.get("from_agent") or "?"
@@ -1124,7 +1134,13 @@ def _cmd_agents(ctx: CommandContext) -> Iterator[dict]:
                 body = (m.get("content") or "").strip()
                 if len(body) > 80:
                     body = body[:80] + "…"
-                state = states.get(str(ts), "unread") if ts else "unread"
+                sidecar = states.get(str(ts)) if ts else None
+                if sidecar == "ignored":
+                    state = "ignored"
+                elif sidecar == "read" or ts not in live_ts:
+                    state = "read"
+                else:
+                    state = "unread"
                 tone = {"read": "ok",
                         "ignored": "muted"}.get(state, "warn")
                 # Embed ack/ignore actions so the CardShell menu can

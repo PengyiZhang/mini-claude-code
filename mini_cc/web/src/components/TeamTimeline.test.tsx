@@ -109,6 +109,60 @@ describe("TeamTimeline", () => {
     expect(screen.getByText(/lead event/)).toBeInTheDocument();
   });
 
+  it("filter checkboxes follow the speaker (from), not just session_id", () => {
+    // Regression: teammate_message events reach the lead session with
+    // session_id = lead's but `from` = the teammate. A session_id filter
+    // collapsed every teammate into a single "lead" checkbox; filtering
+    // by speakerLabel keeps each teammate as its own checkbox.
+    useTeamActivity.setState({
+      perProjectActivity: {
+        p1: [
+          ev({
+            session_id: "sess-lead-1",
+            ts: "2026-07-04T10:00:00Z",
+            type: "teammate_message",
+            from: "alice",
+            content: "alice milestone",
+          }),
+          ev({
+            session_id: "sess-lead-1",
+            ts: "2026-07-04T10:00:01Z",
+            type: "teammate_message",
+            from: "bob",
+            content: "bob milestone",
+          }),
+          ev({
+            session_id: "sess-lead-1",
+            ts: "2026-07-04T10:00:02Z",
+            text: "lead turn",
+          }),
+        ],
+      },
+    });
+
+    render(<TeamTimeline pid="p1" sid="sess-lead-1" setSid={() => {}} />);
+
+    // All three speakers get their own checkbox despite sharing one
+    // session_id (sess-lead-1). Pre-fix only "lead" appeared here.
+    const aliceBox = screen
+      .getByLabelText(/alice/i)
+      .closest("label")!
+      .querySelector('input[type="checkbox"]')!;
+    expect(screen.getByLabelText(/bob/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/lead/i)).toBeInTheDocument();
+
+    // All visible initially.
+    expect(screen.getByText(/alice milestone/)).toBeInTheDocument();
+    expect(screen.getByText(/bob milestone/)).toBeInTheDocument();
+    expect(screen.getByText(/lead turn/)).toBeInTheDocument();
+
+    // Uncheck alice → alice's milestone hidden, bob + lead stay.
+    fireEvent.click(aliceBox);
+    expect(screen.queryByText(/alice milestone/)).not.toBeInTheDocument();
+    expect(screen.getByText(/bob milestone/)).toBeInTheDocument();
+    expect(screen.getByText(/lead turn/)).toBeInTheDocument();
+  });
+
   it("clicking lead event calls setSid", () => {
     const setSid = vi.fn();
     useTeamActivity.setState({
