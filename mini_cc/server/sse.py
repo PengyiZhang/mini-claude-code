@@ -39,13 +39,13 @@ def _format_event(payload: dict[str, Any], seq: int) -> str:
             f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n")
 
 
-async def sse_stream(sync_iter: Iterator[dict[str, Any]],
+async def sse_stream(sync_iter: Iterator[Any],
                      on_cancel: "Any | None" = None,
                      *,
                      maxsize: int = DEFAULT_MAXSIZE,
                      heartbeat_seconds: float = HEARTBEAT_SECONDS,
                      last_event_id: Optional[int] = None,
-                     replay: Optional[list[dict[str, Any]]] = None,
+                     replay: Optional[list[Any]] = None,
                      ) -> AsyncIterator[str]:
     """Bridge a sync iterator of event dicts to an async SSE stream.
 
@@ -56,6 +56,15 @@ async def sse_stream(sync_iter: Iterator[dict[str, Any]],
     - Emits ``: keepalive\\n\\n`` every ``heartbeat_seconds`` of idle.
     - If the queue fills (slow consumer), the connection is torn down
       and ``on_cancel`` is invoked.
+
+    Items yielded by ``sync_iter`` (and entries in ``replay``) may be
+    either a plain ``dict`` (auto-assigned seq from ``last_event_id + 1``)
+    or a ``(seq, payload)`` tuple. The tuple form is how callers that
+    persist events to a per-session log (``/send`` and the
+    ``GET /sessions/{sid}/events`` tail) propagate the REAL event-log
+    seq so the client can dedup across the live ``/send`` stream and
+    the long-lived tail stream — without it, the same record would land
+    twice when both channels deliver it (the debug.10 daemon-turn bug).
 
     Parameters
     ----------
@@ -71,10 +80,27 @@ async def sse_stream(sync_iter: Iterator[dict[str, Any]],
     executor = ThreadPoolExecutor(max_workers=1)
     next_seq = int(last_event_id) + 1 if last_event_id is not None else 1
 
+    def _assign_seq(item: Any) -> int:
+        """Pick the wire seq for an item, honoring a pre-assigned seq
+        if the caller passed a ``(seq, payload)`` tuple. Advances the
+        auto-seq counter past any pre-assigned value so a subsequent
+        plain-dict item doesn't collide."""
+        nonlocal next_seq
+        if (isinstance(item, tuple) and len(item) == 2
+                and isinstance(item[0], int)):
+            seq = item[0]
+            if next_seq <= seq:
+                next_seq = seq + 1
+            return seq
+        s = next_seq
+        next_seq += 1
+        return s
+
     if replay:
-        for ev in replay:
-            yield _format_event(ev, next_seq)
-            next_seq += 1
+        for item in replay:
+            payload = item[1] if (isinstance(item, tuple)
+                                  and len(item) == 2) else item
+            yield _format_event(payload, _assign_seq(item))
 
     def _worker():
         try:
@@ -115,8 +141,12 @@ async def sse_stream(sync_iter: Iterator[dict[str, Any]],
             if kind == "done":
                 yield _DONE_SENTINEL
                 return
-            yield _format_event(payload, next_seq)
-            next_seq += 1
+            # Unpack (seq, payload) tuple from worker before formatting.
+            inner = (payload[1] if (isinstance(payload, tuple)
+                                    and len(payload) == 2
+                                    and isinstance(payload[0], int))
+                     else payload)
+            yield _format_event(inner, _assign_seq(payload))
     except asyncio.CancelledError:
         if on_cancel is not None:
             try:

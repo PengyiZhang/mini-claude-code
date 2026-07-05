@@ -19,7 +19,13 @@ import { ApiError } from "./api";
  * stream on unmount.
  */
 export interface SSEHandlers {
-  onEvent: (ev: SendEvent) => void;
+  /**
+   * ``seq`` is the event-log sequence id parsed from the SSE ``id:``
+   * line (0 when the server didn't emit one). Used by callers that
+   * dedup against a parallel tail stream (debug.10). Callers that
+   * don't care can ignore the second argument.
+   */
+  onEvent: (ev: SendEvent, seq: number) => void;
   onError?: (err: Error) => void;
   onDone?: () => void;
   /** Emitted when a reconnect attempt is scheduled (useful for UI). */
@@ -38,6 +44,32 @@ export interface SSERequest {
 }
 
 const RECONNECT_BASE_MS = 1000;
+
+/**
+ * SSE handlers variant for the long-lived event-tail stream
+ * (``GET /sessions/{sid}/events``). The tail stream carries the REAL
+ * event-log seq on every record's ``id:`` line, so the handler gets
+ * the seq passed alongside the event for dedup (debug.10).
+ */
+export interface TailHandlers {
+  onEvent: (ev: SendEvent, seq: number) => void;
+  onError?: (err: Error) => void;
+  /** Stream ended (server closed, idle-timeout reached, or abort). */
+  onDone?: () => void;
+  onReconnect?: (info: { attempt: number; lastSeq: number; delayMs: number }) => void;
+}
+
+export interface TailRequest {
+  url: string;
+  apiKey: string;
+  signal?: AbortSignal;
+  /**
+   * Auto-reconnect on drops. The tail stream is long-lived so this
+   * defaults to true; set false for tests.
+   */
+  reconnect?: boolean;
+  maxRetries?: number;
+}
 
 export async function streamSend(req: SSERequest, h: SSEHandlers): Promise<void> {
   const maxRetries = req.maxRetries ?? 3;
@@ -152,7 +184,10 @@ export async function streamSend(req: SSERequest, h: SSEHandlers): Promise<void>
           try {
             const ev = JSON.parse(payload) as SendEvent;
             receivedAny = true;
-            h.onEvent(ev);
+            // Pass the current event's seq (lastSeq was set by the
+            // preceding id: line) so callers can dedup against the
+            // parallel /events tail stream.
+            h.onEvent(ev, lastSeq);
           } catch {
             // swallow individual parse errors; keep streaming
           }
@@ -168,6 +203,178 @@ export async function streamSend(req: SSERequest, h: SSEHandlers): Promise<void>
       // Stream broke mid-read. Try resume if enabled + we've received
       // at least one event from this session.
       if (req.reconnect && receivedAny && attempt < maxRetries) {
+        await doReconnect();
+        continue;
+      }
+      h.onError?.(e as Error);
+      return;
+    }
+  }
+
+  async function doReconnect() {
+    attempt += 1;
+    const delayMs = RECONNECT_BASE_MS * Math.pow(2, attempt - 1);
+    h.onReconnect?.({ attempt, lastSeq, delayMs });
+    await sleep(delayMs);
+  }
+}
+
+/**
+ * Long-lived GET SSE client for ``GET /sessions/{sid}/events``.
+ *
+ * Differs from ``streamSend`` in three ways:
+ *  - GET (no body) instead of POST.
+ *  - Each event is delivered with its REAL event-log seq (parsed from
+ *    the ``id:`` line) so callers can dedup against the parallel
+ *    ``/send`` live stream — the same record delivered by both channels
+ *    should apply exactly once.
+ *  - The stream is expected to stay open indefinitely; on network drop
+ *    we auto-reconnect with ``Last-Event-Id`` so missed events are
+ *    replayed from the per-session log.
+ *
+ * Heartbeat lines (``: keepalive``) and the ``[DONE]`` sentinel are
+ * both handled silently.
+ */
+export async function streamSessionEvents(
+  req: TailRequest,
+  h: TailHandlers,
+): Promise<void> {
+  const maxRetries = req.maxRetries ?? 5;
+  const reconnect = req.reconnect ?? true;
+  let lastSeq = 0;
+  let receivedAny = false;
+  let attempt = 0;
+
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, ms);
+      req.signal?.addEventListener("abort", () => {
+        clearTimeout(t);
+        resolve();
+      }, { once: true });
+    });
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    if (req.signal?.aborted) {
+      h.onDone?.();
+      return;
+    }
+    const isResume = attempt > 0;
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${req.apiKey}`,
+      Accept: "text/event-stream",
+    };
+    if (isResume) {
+      headers["Last-Event-Id"] = String(lastSeq);
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(req.url, {
+        method: "GET",
+        headers,
+        signal: req.signal,
+      });
+    } catch (e) {
+      if ((e as Error).name === "AbortError") {
+        h.onDone?.();
+        return;
+      }
+      if (reconnect && receivedAny && attempt < maxRetries) {
+        await doReconnect();
+        continue;
+      }
+      h.onError?.(e as Error);
+      return;
+    }
+
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const bodyJson = await res.json();
+        msg = bodyJson?.error?.message ?? msg;
+      } catch {
+        /* ignore */
+      }
+      const transient = res.status >= 500 || res.status === 429;
+      if (reconnect && transient && receivedAny && attempt < maxRetries) {
+        await doReconnect();
+        continue;
+      }
+      h.onError?.(new ApiError(res.status, "sse_error", msg));
+      return;
+    }
+    if (!res.body) {
+      h.onError?.(new Error("no response body"));
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+    // Track the seq most recently delivered to the handler so we can
+    // pass it through. The id: line arrives BEFORE its data: line in
+    // our framing, so we stage it here.
+    let pendingSeq = 0;
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const raw = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!raw) {
+            // Blank line resets the pending seq for the next event.
+            pendingSeq = 0;
+            continue;
+          }
+          if (raw.startsWith(":")) {
+            // Heartbeat comment.
+            continue;
+          }
+          if (raw.startsWith("id:")) {
+            const idStr = raw.slice(3).trim();
+            const n = parseInt(idStr, 10);
+            if (!Number.isNaN(n)) {
+              pendingSeq = n;
+              lastSeq = n;
+            }
+            continue;
+          }
+          if (!raw.startsWith("data:")) continue;
+          const payload = raw.slice(5).trim();
+          if (payload === "[DONE]") {
+            h.onDone?.();
+            return;
+          }
+          try {
+            const ev = JSON.parse(payload) as SendEvent;
+            receivedAny = true;
+            h.onEvent(ev, pendingSeq);
+          } catch {
+            // swallow individual parse errors; keep streaming
+          }
+        }
+      }
+      // Server closed the stream (e.g. idle-timeout). Auto-reconnect
+      // so a transient server-side close doesn't silently drop the
+      // tail; the resume path replays anything missed.
+      if (reconnect && receivedAny && attempt < maxRetries) {
+        await doReconnect();
+        continue;
+      }
+      h.onDone?.();
+      return;
+    } catch (e) {
+      if ((e as Error).name === "AbortError") {
+        h.onDone?.();
+        return;
+      }
+      if (reconnect && receivedAny && attempt < maxRetries) {
         await doReconnect();
         continue;
       }

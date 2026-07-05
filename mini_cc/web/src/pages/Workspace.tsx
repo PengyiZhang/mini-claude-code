@@ -16,7 +16,7 @@ import TeamSidebar from "../components/TeamSidebar";
 import MentionPicker, { type MentionCandidate } from "../components/MentionPicker";
 import { runCommandForCard } from "../lib/commands";
 import { useTeamActivity } from "../lib/teamActivity";
-import type { CardEvent, CardListItem } from "../lib/types";
+import type { CardEvent, CardListItem, SendEvent } from "../lib/types";
 import {
   ApiError,
   deleteSession,
@@ -29,7 +29,7 @@ import {
 } from "../lib/api";
 import { useAuth, useChat, useTodos, useSessionNav, rawToChatMessages } from "../lib/store";
 import type { ChatMessage } from "../lib/store";
-import { streamSend } from "../lib/sse";
+import { streamSend, streamSessionEvents } from "../lib/sse";
 import { fetchCommands, streamRunCommand } from "../lib/commands";
 import type { CommandDef } from "../lib/commands";
 
@@ -71,7 +71,16 @@ export default function Workspace() {
   const setCommandRunner = useChat((s) => s.setCommandRunner);
 
   const abortRef = useRef<AbortController | null>(null);
+  const eventsAbortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // debug.10: per-chatKey max APPLIED event-log seq. Both the request-
+  // scoped ``/send`` stream and the long-lived ``/sessions/{sid}/events``
+  // tail deliver events, and each carries the real event-log seq on the
+  // SSE ``id:`` line. Skipping any event whose seq ≤ the recorded max
+  // means the same record delivered by both channels applies exactly
+  // once — so daemon-driven lead turns (scheduled wakeups, teammate
+  // reply nudges) stream live without double-rendering user-turn events.
+  const appliedSeqRef = useRef<Record<string, number>>({});
   // Stable ref to the latest runServerCommand closure so the
   // store-registered command runner (used by CardShell action buttons)
   // can dispatch without prop-drilling. Updated every render.
@@ -374,6 +383,178 @@ export default function Workspace() {
     }
   }
 
+  // debug.10: ensure a streaming assistant bubble exists before appending
+  // content. Used by ``applyEvent`` when the /events tail stream delivers
+  // a daemon-driven turn (LeadWatcher nudge or scheduled wakeup fired
+  // while the user is away). The user-turn path goes through send()
+  // which pre-creates the bubble; daemon turns arrive unannounced, so
+  // the first text/tool_use/notice event has to open one.
+  function ensureStreamingBubble(key: string) {
+    const state = useChat.getState();
+    if (state.streaming[key]) return;
+    const list = state.messages[key] ?? [];
+    const last = list[list.length - 1];
+    if (last && last.role === "assistant" && last.streaming) return;
+    state.startAssistant(key);
+    state.setStreaming(key, true);
+  }
+
+  // debug.10: unified event dispatcher shared by the request-scoped
+  // ``/send`` stream and the long-lived ``/sessions/{sid}/events`` tail.
+  // Each event is keyed by its REAL event-log seq (the SSE ``id:`` line)
+  // and applied at most once — the same record delivered by both
+  // channels lands exactly once. Daemon-driven turns (no send() active)
+  // get their bubble via ``ensureStreamingBubble`` on the first content
+  // event, then flow through the same switch.
+  function applyEvent(ev: SendEvent, seq: number, key: string, currentSid: string) {
+    // Dedup: each event-log record applies exactly once, regardless of
+    // which channel delivered it. seq=0 means "no id" (legacy / no-seq
+    // path) and is always applied.
+    if (seq > 0) {
+      const max = appliedSeqRef.current[key] ?? 0;
+      if (seq <= max) return;
+      appliedSeqRef.current[key] = seq;
+    }
+    switch (ev.type) {
+      case "text":
+        ensureStreamingBubble(key);
+        appendText(key, ev.text);
+        break;
+      case "tool_use":
+        ensureStreamingBubble(key);
+        addActivity(key, {
+          kind: "tool_use",
+          id: ev.id,
+          name: ev.name,
+          input: ev.input,
+          expanded: false,
+        });
+        break;
+      case "tool_result":
+        setActivityResult(key, ev.tool_use_id, ev.content);
+        break;
+      case "permission_request":
+        setPending((p) =>
+          p.some((x) => x.request_id === ev.request_id)
+            ? p
+            : [
+                ...p,
+                {
+                  request_id: ev.request_id,
+                  tool_name: ev.tool_name,
+                  tool_input: ev.tool_input,
+                  ttl_seconds: ev.ttl_seconds,
+                },
+              ],
+        );
+        break;
+      case "permission_resolved":
+        setPending((p) => p.filter((x) => x.request_id !== ev.request_id));
+        break;
+      case "session_warm":
+        setWarmSet((m) => ({ ...m, [ev.session_id]: true }));
+        break;
+      case "session_resumed":
+        // Backend warmed a different session via /resume <id>. Rotate
+        // the active session so the chat pane follows. The existing
+        // hydrate useEffect (keyed on sid) pulls the new session's
+        // history from disk.
+        if (ev.session_id && ev.session_id !== currentSid) {
+          setSid(ev.session_id);
+        }
+        break;
+      case "todos_updated":
+        useTodos.getState().setTodos(key, ev.todos);
+        break;
+      case "done":
+        finishAssistant(key);
+        break;
+      case "error":
+        failAssistant(key, ev.message);
+        break;
+      case "max_tokens_escalation":
+        ensureStreamingBubble(key);
+        addNotice(key, `max_tokens escalated to ${ev.max_tokens}`);
+        break;
+      case "cron_fired":
+        ensureStreamingBubble(key);
+        addNotice(key, `cron fired: ${ev.prompt}`);
+        break;
+      case "wakeup_fired":
+        ensureStreamingBubble(key);
+        addNotice(key, `⏰ wakeup: ${ev.prompt}`);
+        break;
+      case "background_notification":
+        ensureStreamingBubble(key);
+        addNotice(key, "background task reported back");
+        break;
+      case "teammate_message":
+        // debug.8 Task A: live teammate→lead delivery via the
+        // spawner's lead side-channel. Render as its own bubble
+        // with a distinct avatar so the user can tell at a
+        // glance who's talking.
+        if (ev.from && ev.content) {
+          addTeammateMessage(key, ev.from, ev.content);
+        }
+        break;
+      case "lead_nudged":
+        // Phase I.C.5: watcher triggered a lead turn (teammate
+        // milestone/blocker/result landed while the user was
+        // away). Show a gray notice on the streaming bubble so
+        // the user can see why the lead is responding on its
+        // own. Ensure the bubble exists for daemon-driven turns.
+        ensureStreamingBubble(key);
+        if (ev.items && ev.items.length > 0) {
+          addNotice(key, formatLeadNudgedNotice(ev.items));
+        }
+        break;
+    }
+  }
+
+  // debug.10: long-lived /events tail. Opens on session activation,
+  // stays open across /send calls, surfaces daemon-driven lead turns
+  // (LeadWatcher nudges, scheduled wakeups, teammate replies) live
+  // in the main chat pane. Server-side it tails events.jsonl so it
+  // sees EVERY persisted event — both /send-driven and daemon-driven.
+  // Dedup against /send is by event-log seq (see ``applyEvent``).
+  useEffect(() => {
+    if (!sid || !chatKey) return;
+    const controller = new AbortController();
+    eventsAbortRef.current = controller;
+    let stopped = false;
+    // Tail-stream errors are best-effort: a transient 5xx shouldn't
+    // surface to the user (the next reconnect attempt will likely
+    // succeed). The /send path remains the source of truth for
+    // surfacing user-facing errors during their own turn.
+    streamSessionEvents(
+      {
+        url: `${profile.baseUrl}/tenants/${profile.tenantId}/projects/${pid}/sessions/${sid}/events`,
+        apiKey: profile.apiKey,
+        signal: controller.signal,
+        reconnect: true,
+      },
+      {
+        onEvent: (ev, seq) => {
+          if (stopped) return;
+          applyEvent(ev, seq, chatKey, sid);
+        },
+        onDone: () => {
+          // Server closed (idle-timeout) — leave; the next /send
+          // or page interaction will resubscribe.
+        },
+        onError: () => {
+          // Swallow — streamSessionEvents already retries.
+        },
+      },
+    );
+    return () => {
+      stopped = true;
+      controller.abort();
+      eventsAbortRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatKey, sid, pid, profile.apiKey]);
+
   async function send() {
     if (!sid || !input.trim() || streaming) return;
     const text = input;
@@ -398,95 +579,8 @@ export default function Workspace() {
         reconnect: true,
       },
       {
-        onEvent: (ev) => {
-          switch (ev.type) {
-            case "text":
-              appendText(chatKey!, ev.text);
-              break;
-            case "tool_use":
-              addActivity(chatKey!, {
-                kind: "tool_use",
-                id: ev.id,
-                name: ev.name,
-                input: ev.input,
-                expanded: false,
-              });
-              break;
-            case "tool_result":
-              setActivityResult(chatKey!, ev.tool_use_id, ev.content);
-              break;
-            case "permission_request":
-              setPending((p) =>
-                p.some((x) => x.request_id === ev.request_id)
-                  ? p
-                  : [
-                      ...p,
-                      {
-                        request_id: ev.request_id,
-                        tool_name: ev.tool_name,
-                        tool_input: ev.tool_input,
-                        ttl_seconds: ev.ttl_seconds,
-                      },
-                    ],
-              );
-              break;
-            case "permission_resolved":
-              setPending((p) => p.filter((x) => x.request_id !== ev.request_id));
-              break;
-            case "session_warm":
-              setWarmSet((m) => ({ ...m, [ev.session_id]: true }));
-              break;
-            case "session_resumed":
-              // Backend warmed a different session via /resume <id>. Rotate
-              // the active session so the chat pane follows. The existing
-              // hydrate useEffect (keyed on sid) pulls the new session's
-              // history from disk.
-              if (ev.session_id && ev.session_id !== sid) {
-                setSid(ev.session_id);
-              }
-              break;
-            case "todos_updated":
-              if (chatKey) useTodos.getState().setTodos(chatKey, ev.todos);
-              break;
-            case "done":
-              finishAssistant(chatKey!);
-              break;
-            case "error":
-              failAssistant(chatKey!, ev.message);
-              break;
-            case "max_tokens_escalation":
-              addNotice(chatKey!, `max_tokens escalated to ${ev.max_tokens}`);
-              break;
-            case "cron_fired":
-              addNotice(chatKey!, `cron fired: ${ev.prompt}`);
-              break;
-            case "wakeup_fired":
-              addNotice(chatKey!, `⏰ wakeup: ${ev.prompt}`);
-              break;
-            case "background_notification":
-              addNotice(chatKey!, "background task reported back");
-              break;
-            case "teammate_message":
-              // debug.8 Task A: live teammate→lead delivery via the
-              // spawner's lead side-channel. Render as its own bubble
-              // with a distinct avatar so the user can tell at a
-              // glance who's talking.
-              if (ev.from && ev.content) {
-                addTeammateMessage(chatKey!, ev.from, ev.content);
-              }
-              break;
-            case "lead_nudged":
-              // Phase I.C.5: watcher triggered a lead turn (teammate
-              // milestone/blocker/result landed while the user was
-              // away). Show a gray notice on the streaming bubble so
-              // the user can see why the lead is responding on its
-              // own. addNotice no-ops gracefully if no streaming
-              // assistant bubble exists yet (e.g. mid-resume).
-              if (ev.items && ev.items.length > 0) {
-                addNotice(chatKey!, formatLeadNudgedNotice(ev.items));
-              }
-              break;
-          }
+        onEvent: (ev, seq) => {
+          applyEvent(ev, seq, chatKey!, sid);
         },
         onError: (e) => {
           failAssistant(chatKey!, e.message);

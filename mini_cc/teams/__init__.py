@@ -902,7 +902,13 @@ class TeammateSpawner:
         sid = self._lead_session_id
         if sid and self.project_id and self.storage is not None:
             try:
-                self.storage.append_session_event(self.project_id, sid, ev)
+                seq = self.storage.append_session_event(self.project_id, sid, ev)
+                # debug.10: tag the in-memory event with its real event-log
+                # seq so the /send SSE path can yield ``(seq, ev)`` tuples —
+                # this lets the frontend dedup against the parallel
+                # ``GET /sessions/{sid}/events`` tail stream when both
+                # deliver the same record.
+                ev["_seq"] = seq
             except Exception:
                 # Best-effort: a storage failure must not block the
                 # live side-channel. The message is still in

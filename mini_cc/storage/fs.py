@@ -477,6 +477,36 @@ class FSStorage:
                 return []
         return out
 
+    def read_session_events_since_with_seq(self, project_id, session_id,
+                                           last_seq: int) -> list[tuple[int, dict]]:
+        """Return ``(seq, payload)`` tuples for all events with seq > last_seq.
+
+        debug.10 fix: the live event-tail stream (``GET /sessions/{sid}/events``)
+        and ``/send``'s SSE wire both need the REAL event-log seq so a single
+        client-side dedup pass (skip any event with seq ≤ max applied) can
+        collapse duplicates when both channels deliver the same record. The
+        older ``read_session_events_since`` strips seqs and is kept for
+        backward compatibility.
+        """
+        fp = self._session_events_path(project_id, session_id)
+        if not fp.exists():
+            return []
+        out: list[tuple[int, dict]] = []
+        with self._lock(f"{project_id}:evt:{session_id}"):
+            try:
+                with fp.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        seq = rec.get("seq", 0)
+                        if seq > last_seq:
+                            out.append((seq, rec.get("payload", {})))
+            except OSError:
+                return []
+        return out
+
     def session_event_count(self, project_id, session_id) -> int:
         fp = self._session_events_path(project_id, session_id)
         with self._lock(f"{project_id}:evt:{session_id}"):

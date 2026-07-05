@@ -186,7 +186,14 @@ def send_message(body: SendMessageRequest,
     # bug). The client sends Last-Event-Id only on resume attempts
     # (sse.ts: isResume = attempt > 0), so its presence is the reliable
     # "this is a reconnect" signal.
-    replay: list[dict] = []
+    #
+    # debug.10: replay now carries the REAL event-log seq (via
+    # ``read_session_events_since_with_seq``) and the live iterator
+    # yields ``(seq, ev)`` tuples — sse_stream forwards these as the
+    # SSE ``id:`` line so the frontend's per-session dedup (maxAppliedSeq)
+    # can collapse the same record arriving from both ``/send`` and the
+    # long-lived ``GET /sessions/{sid}/events`` tail stream.
+    replay: list[tuple[int, dict]] = []
     last_seq = 0
     if last_event_id:
         try:
@@ -194,7 +201,7 @@ def send_message(body: SendMessageRequest,
         except (TypeError, ValueError):
             last_seq = 0
         try:
-            replay = sess.loop.project.storage.read_session_events_since(
+            replay = sess.loop.project.storage.read_session_events_since_with_seq(
                 pid, sid, last_seq)
         except Exception:
             replay = []
@@ -266,25 +273,34 @@ def send_message(body: SendMessageRequest,
             for ev in sm.send(pid, sid, body.user_input):
                 # Persist every emitted event so a reconnecting client
                 # can replay from disk. Best-effort: a write failure
-                # doesn't break the live stream.
+                # doesn't break the live stream. debug.10: yield
+                # ``(seq, ev)`` so sse_stream stamps the REAL event-log
+                # seq into the SSE ``id:`` line — the frontend dedups
+                # against the parallel /events tail stream by seq.
+                seq = None
                 try:
-                    sess.loop.project.storage.append_session_event(
+                    seq = sess.loop.project.storage.append_session_event(
                         pid, sid, ev)
                 except Exception:
                     pass
-                yield ev
+                yield (seq, ev) if seq is not None else ev
                 # Drain any teammate→lead events that landed during the
                 # loop's yield. Bug 3: _emit_to_lead already persisted
                 # these via append_session_event at emit time, so we
                 # only yield to the live SSE here — no double-write.
+                # debug.10: each drained event carries its assigned seq
+                # on ``_seq`` (set in _emit_to_lead) so we propagate
+                # the tuple form here too.
                 if teams is not None:
                     for tev in teams.drain_lead_events():
-                        yield tev
+                        seq_t = tev.get("_seq") if isinstance(tev, dict) else None
+                        yield (seq_t, tev) if seq_t is not None else tev
             # Final drain: catch any events that landed after the loop
             # finished yielding but before this generator exits.
             if teams is not None:
                 for tev in teams.drain_lead_events():
-                    yield tev
+                    seq_t = tev.get("_seq") if isinstance(tev, dict) else None
+                    yield (seq_t, tev) if seq_t is not None else tev
         except Exception as e:
             err = {"type": "error",
                    "message": f"{type(e).__name__}: {e}"}
@@ -310,6 +326,125 @@ def send_message(body: SendMessageRequest,
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",  # disable proxy buffering
+        },
+    )
+
+
+# ── debug.10: long-lived event-tail stream ────────────────────────────
+#
+# ``GET /sessions/{sid}/events`` is the dual of ``/send`` for live UI.
+# ``/send``'s SSE stream is request-scoped: it opens when the user
+# submits and closes when that turn's loop iteration completes.
+# Daemon-driven lead turns (LeadWatcher nudges from scheduled
+# ``schedule_wakeup`` firings or teammate result/milestone/blocker
+# messages) run in a background thread and persist their events to
+# ``events.jsonl`` via ``watcher_event_sink`` — but no ``/send`` is
+# open to stream them, so the main chat UI never sees them until a
+# page refresh (which re-hydrates from ``/messages``) or the Timeline
+# sidebar (which polls ``/team/activity`` independently).
+#
+# This endpoint closes that gap. It is a long-lived SSE stream that:
+#   1. On connect with ``Last-Event-Id``, replays missed events from
+#      the per-session log (same ``read_session_events_since_with_seq``
+#      path ``/send``'s resume uses).
+#   2. On a fresh connect (no ``Last-Event-Id``), starts tailing from
+#      the log's current max seq — callers hydrate from ``/messages``
+#      first, so we don't replay history.
+#   3. Polls the log at ~250ms for new events (both ``/send``-driven
+#      AND daemon-driven) and streams them with their REAL event-log
+#      seq as the SSE ``id:``. The frontend dedups by seq against the
+#      live ``/send`` stream, so the same record delivered by both
+#      channels applies exactly once.
+#
+# The stream stays open until the client disconnects. Heartbeat
+# (``: keepalive``) keeps proxies from killing the connection.
+#
+# ``_TAIL_POLL_INTERVAL`` / ``_TAIL_IDLE_TIMEOUT`` are module-level so
+# tests can shrink them and force the stream to close — Starlette's
+# ``TestClient`` buffers streaming response bodies, so we can't drain a
+# 10-minute-long tail through it.
+_TAIL_POLL_INTERVAL = 0.25
+_TAIL_IDLE_TIMEOUT = 600.0
+
+
+@router.get("/{sid}/events")
+def stream_session_events(sid: str = Path(...),
+                          pid: str = Path(...),
+                          tid: str = Depends(require_scope("sessions:read")),
+                          last_event_id: str | None = Header(default=None,
+                                                              alias="Last-Event-Id"),
+                          pm=Depends(get_pm),
+                          sm=Depends(get_sm)) -> StreamingResponse:
+    """Long-lived SSE tail of one session's event log. See module-level
+    comment for the design rationale (debug.10 daemon-turn live UI)."""
+    validate_id(pid)
+    validate_id(sid)
+    _check_project_tenant(pid, tid, pm)
+    try:
+        sess = sm._ensure_warm(pid, sid)
+    except KeyError as e:
+        raise NotFound(str(e) or f"session {sid} not found")
+
+    storage = sess.loop.project.storage
+    last_seq = 0
+    if last_event_id:
+        try:
+            last_seq = int(last_event_id)
+        except (TypeError, ValueError):
+            last_seq = 0
+    else:
+        # Fresh connect: skip history. Caller hydrated from /messages;
+        # replaying the whole log would flood the chat with already-
+        # rendered events. Start tailing from the current max seq.
+        try:
+            last_seq = storage.session_event_count(pid, sid)
+        except Exception:
+            last_seq = 0
+
+    replay: list[tuple[int, dict]] = []
+    if last_event_id:
+        try:
+            replay = storage.read_session_events_since_with_seq(pid, sid, last_seq)
+        except Exception:
+            replay = []
+
+    import time as _time
+
+    POLL_INTERVAL = _TAIL_POLL_INTERVAL
+    IDLE_TIMEOUT = _TAIL_IDLE_TIMEOUT
+
+    def tail_iter():
+        """Sync generator: emit replay, then poll the log for new events
+        until cancelled (generator GC'd when the SSE worker tears down)."""
+        cursor = last_seq
+        # Yield replay first (caller-supplied to sse_stream via replay=...).
+        # Then tail.
+        idle = 0.0
+        while True:
+            try:
+                new_items = storage.read_session_events_since_with_seq(
+                    pid, sid, cursor)
+            except OSError:
+                new_items = []
+            if new_items:
+                idle = 0.0
+                for item in new_items:
+                    cursor = max(cursor, item[0])
+                    yield item
+            else:
+                idle += POLL_INTERVAL
+                if idle >= IDLE_TIMEOUT:
+                    return
+                _time.sleep(POLL_INTERVAL)
+
+    return StreamingResponse(
+        sse_stream(tail_iter(),
+                   last_event_id=last_seq or None,
+                   replay=replay),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
         },
     )
 
