@@ -176,6 +176,16 @@ def send_message(body: SendMessageRequest,
     # B8 reconnect: if the client supplied Last-Event-Id, replay events
     # they missed before streaming fresh ones. The event log is
     # per-session, append-only, persisted to disk on every emit.
+    #
+    # ONLY replay on a reconnect (Last-Event-Id present). On a fresh
+    # /send the client has already hydrated the transcript from
+    # /messages, so replaying events.jsonl from seq 0 would re-emit
+    # every historical event as if it were live — flooding the chat
+    # with old teammate messages/activities and burying this turn's
+    # output (the "send flashes a wall of history, refresh fixes it"
+    # bug). The client sends Last-Event-Id only on resume attempts
+    # (sse.ts: isResume = attempt > 0), so its presence is the reliable
+    # "this is a reconnect" signal.
     replay: list[dict] = []
     last_seq = 0
     if last_event_id:
@@ -183,11 +193,11 @@ def send_message(body: SendMessageRequest,
             last_seq = int(last_event_id)
         except (TypeError, ValueError):
             last_seq = 0
-    try:
-        replay = sess.loop.project.storage.read_session_events_since(
-            pid, sid, last_seq)
-    except Exception:
-        replay = []
+        try:
+            replay = sess.loop.project.storage.read_session_events_since(
+                pid, sid, last_seq)
+        except Exception:
+            replay = []
 
     # B8 resume-only mode: client dropped mid-stream and wants to
     # recover missed events without triggering a duplicate LLM run.

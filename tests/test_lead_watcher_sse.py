@@ -418,6 +418,56 @@ def test_watcher_emits_lead_nudged_notice_event(tmp_path):
         watcher.stop(join_timeout=2.0)
 
 
+# ── Replay gating on fresh /send (no Last-Event-Id) ───────────────────
+
+
+def test_fresh_send_does_not_replay_persisted_history(app):
+    """Regression for the 'send flashes a wall of old teammate messages,
+    refresh fixes it' bug (debug.9.md class). A fresh /send (no
+    Last-Event-Id) must NOT replay old persisted events — the client
+    already hydrated the transcript from /messages, so replaying
+    events.jsonl from seq 0 would re-emit every historical event as if
+    it were live and bury this turn's output. Only a resume
+    (Last-Event-Id present, sent on reconnect) replays missed events."""
+    _setup(app)
+    storage = app.app.state.pm.get("p1").storage
+    MARKER = "OLD_SEEDED_MARKER_9f3c"
+    # Seed two events as if from a prior turn.
+    storage.append_session_event(
+        "p1", "s1", {"type": "text", "text": MARKER})
+    storage.append_session_event("p1", "s1", {"type": "done"})
+
+    # Fresh /send (no Last-Event-Id): the marker must NOT appear in the
+    # live stream, whatever the new turn emits.
+    events = _send(app, "fresh turn")
+    assert not any(MARKER in json.dumps(e) for e in events), (
+        "fresh /send replayed old persisted events into the live stream "
+        f"(would flood the chat with history): {events}"
+    )
+
+    # Resume /send WITH Last-Event-Id=0: the marker IS replayed (the
+    # reconnect path recovers missed events from the log).
+    r = app.post(
+        "/tenants/tenant1/projects/p1/sessions/s1/send",
+        headers={**AUTH, "Last-Event-Id": "0"},
+        json={"user_input": "resume turn", "resume": True})
+    assert r.status_code == 200, r.text
+    resumed = []
+    for line in r.text.splitlines():
+        if line.startswith("data: "):
+            payload = line[6:]
+            if payload == "[DONE]":
+                continue
+            try:
+                resumed.append(json.loads(payload))
+            except json.JSONDecodeError:
+                pass
+    assert any(MARKER in json.dumps(e) for e in resumed), (
+        "resume with Last-Event-Id=0 should replay old persisted events; "
+        f"got: {resumed}"
+    )
+
+
 def test_watcher_lead_nudged_skipped_when_no_persister(tmp_path):
     """No event_persister wired (legacy / unmonitored session). The
     watcher must still nudge the loop and must NOT crash trying to emit
