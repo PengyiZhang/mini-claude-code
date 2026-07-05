@@ -139,13 +139,19 @@ def test_watcher_debounces_burst_of_messages(tmp_path):
         watcher.stop(join_timeout=2.0)
 
 
-def test_watcher_ignores_non_cc_messages(tmp_path):
-    """A direct chat message (msg_type=message) does not match the
-    watcher's trigger filter (CC'd or result/milestone/blocker). The
-    watcher must NOT nudge and must NOT drain the mailbox — the lead's
-    own /send path is responsible for plain messages."""
+def test_watcher_nudges_on_direct_reply(tmp_path):
+    """A direct reply to the lead (msg_type=message) wakes the watcher
+    and drives a lead turn — the lead must collect teammates' answers
+    and continue autonomously, not wait for the user to type again.
+
+    Pre-autonomous-coordinator, only result/milestone/blocker + CC
+    triggered; plain direct replies stranded in the mailbox until the
+    next /send. That broke the 'lead asks a question, teammates answer,
+    lead summarizes' flow the user reported (only alice's reply showed
+    live; bob/carl appeared after the next user input)."""
     script = [
-        _MockResponse([_Block(type="text", text="should not happen")]),
+        _MockResponse([_Block(type="text", text="collected the reply")]),
+        _MockResponse([_Block(type="text", text="ok")]),
     ]
     loop, bus = _build_loop(tmp_path, script)
 
@@ -158,23 +164,57 @@ def test_watcher_ignores_non_cc_messages(tmp_path):
     )
     watcher.start()
     try:
-        # Direct chat from alice to lead — NOT CC'd, NOT a trigger type.
-        bus.send("alice", "lead", "hey, quick question",
-                 msg_type="message")
-        # Observation window: longer than debounce+poll so a buggy
-        # watcher would have had time to fire.
-        time.sleep(0.5)
-        assert loop.messages == [], (
-            "watcher nudged on a non-trigger message; messages: "
+        # Direct reply from alice to lead — NOT CC'd, msg_type=message.
+        bus.send("alice", "lead", "hey, my answer", msg_type="message")
+        ok = _wait_for(
+            lambda: any("collected the reply" in str(m)
+                        for m in loop.messages),
+            timeout=6.0,
+        )
+        assert ok, (
+            "watcher did not nudge on a direct reply; messages: "
             f"{loop.messages}"
         )
-        # The message must still be in the mailbox (we don't drain
-        # non-triggering batches).
-        inbox = bus.peek_inbox("lead")
-        assert len(inbox) == 1, (
-            f"watcher drained a non-triggering batch; inbox: {inbox}"
+        # Mailbox drained.
+        assert bus.peek_inbox("lead") == [], (
+            "watcher should drain lead's mailbox on the direct reply"
         )
-        assert inbox[0]["content"] == "hey, quick question"
+    finally:
+        watcher.stop(join_timeout=2.0)
+
+
+def test_watcher_fires_scheduled_wakeup_autonomously(tmp_path):
+    """A wakeup the lead scheduled (schedule_wakeup tool) must fire on
+    its own — the watcher ticks the lead loop's WakeupScheduler and
+    nudges with the wakeup prompt, so the lead continues without the
+    user typing again. Pre-fix the wakeup only fired on the next /send."""
+    script = [
+        _MockResponse([_Block(type="text", text="woke up and checked")]),
+        _MockResponse([_Block(type="text", text="ok")]),
+    ]
+    loop, bus = _build_loop(tmp_path, script)
+    # AgentLoop attached a WakeupScheduler at construction; schedule a
+    # wakeup ~1s out on it (mirrors what the schedule_wakeup tool does).
+    loop.project.wakeups.schedule("re-check the build", 1)
+
+    watcher = LeadWatcher(
+        bus=bus,
+        project_id="proj-x",
+        lead_loop_getter=lambda: loop,
+        poll_interval=0.05,
+        debounce=0.1,
+    )
+    watcher.start()
+    try:
+        ok = _wait_for(
+            lambda: any("re-check the build" in str(m)
+                        for m in loop.messages),
+            timeout=6.0,
+        )
+        assert ok, (
+            "watcher did not fire the scheduled wakeup into a lead turn; "
+            f"messages: {loop.messages}"
+        )
     finally:
         watcher.stop(join_timeout=2.0)
 

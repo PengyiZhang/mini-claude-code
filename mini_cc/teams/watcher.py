@@ -47,6 +47,7 @@ mailbox so the next ``/send`` finds the messages intact.
 from __future__ import annotations
 
 import threading
+import time
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -57,12 +58,25 @@ if TYPE_CHECKING:
 # Message types the watcher treats as triggers. Anything CC'd by the
 # Phase I.A mechanism is also a trigger regardless of type (matches the
 # spec: "any msg with metadata.cc == True OR msg_type in {result,
-# milestone, blocker}").
+# milestone, blocker}"). Plain direct replies (msg_type=message) are
+# ALSO triggers now — see _is_trigger.
 _TRIGGER_TYPES: frozenset[str] = frozenset({"result", "milestone", "blocker"})
 
 
 def _is_trigger(msg: dict) -> bool:
     """True if ``msg`` should wake the watcher's debounce + nudge path.
+
+    The lead's mailbox only ever holds messages addressed TO the lead —
+    direct replies (any msg_type) and Phase I.A CC copies of teammate
+    progress signals. ALL of them are things the lead should see to keep
+    coordinating autonomously, so any non-reinjected message triggers.
+
+    Pre-autonomous-coordinator this returned True only for
+    result/milestone/blocker + cc, leaving plain direct replies for the
+    next user /send. That stranded the lead when it had asked teammates
+    a direct question: their answers sat in the mailbox until the user
+    typed again, so the lead never collected + summarized them on its
+    own. The broader trigger fixes that.
 
     Returns False for messages the watcher already re-injected after a
     failed nudge — without this guard, a persistently-failing nudge
@@ -72,13 +86,12 @@ def _is_trigger(msg: dict) -> bool:
     meta = msg.get("metadata") or {}
     if meta.get("watcher_reinjected"):
         return False
-    if meta.get("cc"):
-        return True
-    return msg.get("type") in _TRIGGER_TYPES
+    return True
 
 
-def _format_nudge(msgs: list[dict]) -> str:
-    """Render a drain batch as the watcher's nudge payload.
+def _format_nudge(msgs: list[dict], wakeups: list = ()) -> str:
+    """Render a drain batch (+ any fired wakeups) as the watcher's nudge
+    payload.
 
     The format is a stable, human-readable summary the lead's LLM can
     parse at a glance::
@@ -88,8 +101,9 @@ def _format_nudge(msgs: list[dict]) -> str:
           content: ...
         - from: bob, type: result, cc: True (originally to: charlie)
           content: ...
+        - [scheduled wakeup] re-check the build
     """
-    lines = ["[Teammate messages]"]
+    lines = ["[Teammate messages]"] if msgs else []
     for m in msgs:
         meta = m.get("metadata") or {}
         cc = bool(meta.get("cc"))
@@ -103,6 +117,9 @@ def _format_nudge(msgs: list[dict]) -> str:
         )
         content = m.get("content", "")
         lines.append(f"  content: {content}")
+    for w in wakeups:
+        prompt = getattr(w, "prompt", str(w))
+        lines.append(f"- [scheduled wakeup] {prompt}")
     return "\n".join(lines)
 
 
@@ -211,11 +228,20 @@ class LeadWatcher:
                 pass
 
     def _tick(self) -> None:
-        """One poll cycle: peek → maybe debounce → maybe drain + nudge."""
-        # Peek (non-destructive) so non-triggering batches stay in the
-        # mailbox for the lead's own /send path.
+        """One poll cycle: peek mailbox + check wakeups → maybe debounce
+        → maybe drain + nudge.
+
+        Triggers on EITHER a triggering mailbox message (any direct
+        reply or CC'd progress signal) OR a matured scheduled wakeup on
+        the bound lead loop. The mailbox path drains lead's inbox; the
+        wakeup path consumes fired wakeups off the lead loop's
+        WakeupScheduler. Both feed a single nudge so the lead turns over
+        once and stays autonomous without the user typing again.
+        """
         pending = self.bus.peek_inbox("lead")
-        if not any(_is_trigger(m) for m in pending):
+        mailbox_trigger = any(_is_trigger(m) for m in pending)
+        wakeup_due = self._wakeup_due()
+        if not (mailbox_trigger or wakeup_due):
             return
         # Debounce: wait for the burst to settle. Interruptible so
         # stop() during debounce still exits promptly.
@@ -250,11 +276,12 @@ class LeadWatcher:
         # path is untouched. See ``AgentLoop._run_until_idle``.
         if persister is not None:
             loop.watcher_event_sink = persister
-        # TOCTOU re-check: the lead's own /send may have drained the
-        # mailbox while we were debouncing. If so, the user is back and
-        # their /send will surface the content — we must NOT nudge.
+        # Commit: drain mailbox + consume any fired wakeups.
         drained = self.bus.read_inbox("lead")
-        if not drained:
+        fired_wakeups = self._consume_wakeups(loop)
+        if not drained and not fired_wakeups:
+            # TOCTOU: mailbox emptied mid-debounce AND no wakeup matured.
+            # The user is back; their /send surfaces the content.
             return
         # Phase I.C.5: emit a single ``lead_nudged`` notice event BEFORE
         # nudging so the frontend can render a gray "Alice reported a
@@ -266,7 +293,9 @@ class LeadWatcher:
         # notice carrying every drained teammate name + kind. Best-effort
         # — if the persister is absent (legacy / unmonitored session) we
         # still nudge, the notice is observability sugar not correctness.
-        if persister is not None:
+        # Notice only when mailbox messages drove the nudge (a wakeup-
+        # only turn has no teammate names to advertise).
+        if drained and persister is not None:
             try:
                 persister({
                     "type": "lead_nudged",
@@ -292,7 +321,7 @@ class LeadWatcher:
         # re-inject → re-drain). The re-injected content still reaches
         # the user's next /send via the normal mailbox drain path.
         try:
-            loop.nudge(_format_nudge(drained))
+            loop.nudge(_format_nudge(drained, fired_wakeups))
         except Exception:
             for m in drained:
                 meta = dict(m.get("metadata") or {})
@@ -303,6 +332,37 @@ class LeadWatcher:
                     msg_type=m.get("type", "message"),
                     metadata=meta,
                 )
+
+    # ── Wakeup integration ──────────────────────────────────────────
+
+    def _lead_wakeups(self):
+        """Return the bound lead loop's WakeupScheduler, or None."""
+        loop = self._lead_loop_getter()
+        if loop is None:
+            return None
+        project = getattr(loop, "project", None)
+        return getattr(project, "wakeups", None) if project is not None else None
+
+    def _wakeup_due(self) -> bool:
+        """Non-consuming check: is a wakeup past its deadline? We do NOT
+        ``tick`` (which consumes) here — only once we're committed to
+        nudging. Otherwise an unbound loop or a debounce abort would
+        lose the wakeup forever (it's in-memory only)."""
+        ws = self._lead_wakeups()
+        if ws is None or not hasattr(ws, "next_deadline"):
+            return False
+        nd = ws.next_deadline()
+        return nd is not None and nd <= time.monotonic()
+
+    def _consume_wakeups(self, loop) -> list:
+        """Tick (consume + return) any fired wakeups on the lead loop.
+        Called only once we're committed to nudging, so an aborted
+        debounce can't drop a wakeup."""
+        project = getattr(loop, "project", None)
+        ws = getattr(project, "wakeups", None) if project is not None else None
+        if ws is None or not hasattr(ws, "tick"):
+            return []
+        return ws.tick()
 
 
 __all__ = ["LeadWatcher"]
