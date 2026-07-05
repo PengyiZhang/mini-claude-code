@@ -8,10 +8,11 @@ import type { CardEvent, CardListItem, TeamEvent } from "../lib/types";
 /**
  * TeammatesPanel (debug.8 Task A)
  *
- * Right-side panel that lists every teammate in the project with live
- * status, role, age, and the last few messages they've exchanged with
- * the lead. Renders as a collapsible column so the chat pane stays
- * usable when there are no teammates.
+ * Roster body: lists every teammate in the project with live status,
+ * role, age, and the last few messages they've exchanged with the lead.
+ * Embedded as the bottom pane of <TeamSidebar> (the collapsible chrome
+ * lives on the sidebar); render the sidebar from the chat page rather
+ * than this component directly.
  *
  * Data source: polls `/agents` every 4s via `runCommandForCard`. The
  * roster card carries items with title=name, subtitle=role/age,
@@ -62,7 +63,6 @@ export default function TeammatesPanel({
   const profile = useAuth((s) => s.current());
   const runCommand = useChat((s) => s.runCommand);
   const [rows, setRows] = useState<TeamRow[]>([]);
-  const [collapsed, setCollapsed] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [inboxPeek, setInboxPeek] = useState<Record<string, string[]>>({});
   const abortRef = useRef<AbortController | null>(null);
@@ -149,41 +149,12 @@ export default function TeammatesPanel({
       });
   };
 
-  // Always render the panel — empty state shows a placeholder so the
-  // user can see the panel exists and discover how to spawn a
-  // teammate. Pre-fix, returning null on empty roster made the panel
-  // invisible, which looked like a bug ("where did Teammates go?").
-  const aliveCount = rows.filter((r) => r.alive).length;
-
+  // Embeddable roster body (no <aside>/collapse chrome — that lives on
+  // the containing TeamSidebar pane). Always rendered so an empty
+  // roster still shows the "spawn a teammate" hint rather than a hole.
   return (
-    <aside
-      className={
-        "border-l border-border bg-bg-panel flex flex-col min-h-0 shrink-0 transition-all " +
-        (collapsed ? "w-10" : "w-72")
-      }
-    >
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-        {!collapsed && (
-          <div className="text-xs uppercase tracking-wide text-ink-dim">
-            Teammates
-            {rows.length > 0 && (
-              <span className="ml-2 text-ink-faint normal-case">
-                {aliveCount} alive · {rows.length - aliveCount} stopped
-              </span>
-            )}
-          </div>
-        )}
-        <button
-          onClick={() => setCollapsed((v) => !v)}
-          className="text-xs text-ink-dim hover:text-ink px-1.5 py-0.5 rounded hover:bg-bg-hover"
-          aria-label={collapsed ? "Expand teammates panel" : "Collapse teammates panel"}
-          title={collapsed ? "Expand" : "Collapse"}
-        >
-          {collapsed ? "◀" : "▶"}
-        </button>
-      </div>
-      {!collapsed && (
-        <div className="flex-1 overflow-auto p-2 space-y-2">
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex-1 overflow-auto p-2 space-y-2">
           {rows.length === 0 && (
             <div className="border border-dashed border-border rounded-md p-4 text-center">
               <div className="text-xs text-ink-faint">
@@ -403,7 +374,6 @@ export default function TeammatesPanel({
             teammates
           </div>
         </div>
-      )}
-    </aside>
+      </div>
   );
 }
