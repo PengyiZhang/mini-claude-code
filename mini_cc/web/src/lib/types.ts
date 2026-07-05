@@ -197,6 +197,10 @@ export type SendEvent =
   | { type: "error"; message: string }
   | { type: "max_tokens_escalation"; max_tokens: number }
   | { type: "cron_fired"; job_id: string; prompt: string }
+  // schedule_wakeup tool fired a one-shot self-paced reminder (e.g.
+  // "re-check alice's reply"). Mirrors cron_fired but second-precision
+  // and in-memory only.
+  | { type: "wakeup_fired"; wakeup_id: string; prompt: string }
   | { type: "background_notification" }
   // debug.8 Task A: teammate→lead message delivered live through the
   // spawner's lead side-channel. Shape mirrors the bus message dict.

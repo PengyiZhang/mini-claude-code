@@ -1100,6 +1100,21 @@ class TeammateSpawner:
         deadline = time.time() + self.idle_timeout
         while time.time() < deadline:
             time.sleep(self.idle_poll_interval)
+            # Wakeup scheduler: a scheduled self-paced reminder (e.g.
+            # "re-check alice's reply in 30s") fires here between turns
+            # — including while parked. Treat it as genuine work: clear
+            # parked and run a turn with the wakeup prompt. Defensive
+            # getattr chain: test FakeLoops (and any loop without a
+            # project ref) must not crash _idle_poll here.
+            if loop is not None:
+                project = getattr(loop, "project", None)
+                ws = getattr(project, "wakeups", None) if project is not None else None
+                if ws is not None and hasattr(ws, "tick"):
+                    fired = ws.tick()
+                    if fired:
+                        info.parked = False
+                        prompts = "; ".join(w.prompt for w in fired)
+                        return ("work", f"<wakeup>{prompts}</wakeup>")
             if info.parked:
                 # Peek (don't drain) so buffered chatter is preserved as
                 # context for whenever we do wake.

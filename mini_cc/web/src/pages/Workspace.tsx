@@ -460,6 +460,9 @@ export default function Workspace() {
             case "cron_fired":
               addNotice(chatKey!, `cron fired: ${ev.prompt}`);
               break;
+            case "wakeup_fired":
+              addNotice(chatKey!, `⏰ wakeup: ${ev.prompt}`);
+              break;
             case "background_notification":
               addNotice(chatKey!, "background task reported back");
               break;

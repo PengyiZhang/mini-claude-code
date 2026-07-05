@@ -809,3 +809,70 @@ def test_teammate_parks_after_result_and_ignores_chatter(tmp_path):
         time.sleep(0.02)
     assert spawner.list_alive() == []
 
+
+# ── schedule_wakeup wiring ───────────────────────────────────────────────
+
+def test_agentloop_attaches_wakeup_scheduler(tmp_path):
+    """AgentLoop construction attaches a per-loop WakeupScheduler so the
+    schedule_wakeup tool works out of the box. Pre-fix the scheduler
+    was never wired and the tool always erred 'no WakeupScheduler
+    attached to this project'."""
+    from mini_cc.core.loop import AgentLoop, ProjectRef
+    from mini_cc.scheduler import WakeupScheduler
+    sandbox = SubprocessSandbox("p", tmp_path / "ws")
+    (tmp_path / "ws").mkdir(parents=True, exist_ok=True)
+    storage = FSStorage(tmp_path / "state")
+    ref = ProjectRef(project_id="p", project_root=str(tmp_path / "ws"),
+                     sandbox=sandbox, storage=storage)
+    assert ref.wakeups is None  # caller doesn't need to set it
+    loop = AgentLoop(ref, "s1")
+    assert isinstance(loop.project.wakeups, WakeupScheduler), (
+        "AgentLoop must attach a WakeupScheduler so schedule_wakeup works"
+    )
+
+
+def test_teammate_idle_poll_wakes_on_scheduled_wakeup(tmp_path):
+    """A teammate that schedules a wakeup via the tool is woken when it
+    fires (out of idle, even from parked), with the wakeup prompt
+    driving the next turn. This is the self-paced-loop path the
+    schedule_wakeup tool promises."""
+    from mini_cc.scheduler import WakeupScheduler
+    runs = []
+    state = {"scheduled": False}
+
+    class _P:
+        wakeups = WakeupScheduler()
+
+    class _Loop:
+        project = _P()
+
+        def run(self, user_input):
+            runs.append(user_input)
+            if not state["scheduled"]:
+                # Min delay is clamped to 1s inside WakeupScheduler.schedule.
+                self.project.wakeups.schedule("re-check inbox", 1)
+                state["scheduled"] = True
+            yield {"type": "done"}
+
+    loop = _Loop()
+    spawner = TeammateSpawner(
+        tmp_path / "ws", loop_factory=lambda sid: loop,
+        idle_poll_interval=0.05, idle_timeout=4)
+    spawner.spawn("alice", "worker", "go", persistent=True)
+
+    # First turn schedules the wakeup; ~1s later idle_poll should fire it
+    # and drive a second turn carrying the wakeup prompt.
+    deadline = time.time() + 8
+    while len(runs) < 2 and time.time() < deadline:
+        time.sleep(0.05)
+    assert len(runs) >= 2, (
+        f"teammate did not wake on scheduled wakeup: {runs}"
+    )
+    assert "re-check inbox" in runs[1]
+
+    spawner.request_shutdown("alice")
+    deadline = time.time() + 3
+    while spawner.list_alive() and time.time() < deadline:
+        time.sleep(0.05)
+    assert spawner.list_alive() == []
+

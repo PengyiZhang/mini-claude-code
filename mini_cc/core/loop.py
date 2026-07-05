@@ -242,6 +242,15 @@ class AgentLoop:
                  hooks: "Hooks | None" = None):
         self.project = project
         self.session_id = session_id
+        # Each AgentLoop owns its own WakeupScheduler (the scheduler is
+        # not thread-safe across loops). as_ref() returns a fresh
+        # ProjectRef per loop, so attaching here doesn't leak between
+        # the lead loop and any teammate sub-loops. The schedule_wakeup
+        # tool reads ctx.project_ref.wakeups — this is what makes it
+        # functional instead of always erroring "no WakeupScheduler
+        # attached". Don't overwrite a caller-provided scheduler.
+        if self.project.wakeups is None:
+            self.project.wakeups = WakeupScheduler()
         # If caller passes a frozen tool list, we use it as-is; otherwise we
         # rebuild each iteration so newly-connected MCP tools appear live.
         self._frozen_tools = tools
@@ -608,6 +617,7 @@ class AgentLoop:
 
         while not self._stop.is_set():
             self._inject_cron_fired()
+            self._inject_wakeups()
             self._inject_background_notifications()
             self._inject_teammate_replies()
             self._inject_pending_nudges()
@@ -906,6 +916,25 @@ class AgentLoop:
                                   "content": f"[Scheduled] {job.prompt}"})
             self._emit({"type": "cron_fired", "job_id": job.job_id,
                         "prompt": job.prompt})
+
+    def _inject_wakeups(self) -> None:
+        """Tick this loop's WakeupScheduler and inject any fired prompts
+        as user messages so the model acts on them this turn. Wakeups
+        are second-precision self-paced reminders (poll a build, re-check
+        a teammate's reply). The teammate runner ALSO ticks this
+        scheduler in _idle_poll, so wakeups fire between turns even
+        while a teammate is parked/idle — this method catches any that
+        expired mid-turn."""
+        sched = self.project.wakeups
+        if sched is None:
+            return
+        fired = sched.tick()
+        for w in fired:
+            self.messages.append({"role": "user",
+                                  "content": f"[Wakeup] {w.prompt}"})
+            self._emit({"type": "wakeup_fired",
+                        "wakeup_id": w.wakeup_id,
+                        "prompt": w.prompt})
 
     def _inject_background_notifications(self) -> None:
         bg = self.project.background
