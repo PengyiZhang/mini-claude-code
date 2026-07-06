@@ -661,6 +661,50 @@ graph LR
   `server/routes/projects.py:create_project` 在 `pm.create` 后调用并 `invalidate`
   缓存。操作员可通过 `MINI_CC_TEMPLATES_DIR` 放外部 pack。
 
+### 5.10 双向 Channel `channels/`（飞书 / Slack / Discord …）
+
+`sharing/webhooks.py` 是**单向外发**（project 事件 → 外部 URL）。`channels/`
+抽象**双向**外部 transport：
+
+```
+外部 IM ──(事件订阅 webhook)──▶ /channels/{chan_id}/webhook
+                                       │
+                              Channel.handle_inbound
+                              （飞书 X-Lark-Signature 验签 + AES 信封解密
+                                + url_verification 握手 + im.message 解析）
+                                       │
+                                       ▼
+                            fire-and-forget 后台线程
+                            注入 user_input 到 bound session
+                                       │
+                                       ▼
+                              AgentLoop 跑一轮
+                                       │
+                              SessionManager 的 on_event 洋葱
+                              （WebhookDispatcher → ChannelDispatcher → inner）
+                                       │
+                                       ▼
+                            Channel.deliver → 推回飞书 chat
+                            （token 缓存 + 锁保护刷新）
+```
+
+- **`channels/base.py`**：`Channel` protocol（`handle_inbound` + `deliver`）+
+  `ChannelBinding`（kind + opaque config + bound session + event_types 过滤）
+  + `ChannelRegistry`（per-project `channels.json`）+ `ChannelDispatcher`（出站
+  fan-out）+ `register_channel_kind`（transport 自注册）。
+- **`channels/feishu.py`**：飞书实现。`X-Lark-Signature` 验签（plain / 加密两种
+  模式）、AES-256-CBC 信封解密（PyCryptodome）、`url_verification` 握手、
+  `im.message.receive_v1` 文本解析、`@_user_N` bot mention 剥离、
+  `tenant_access_token` 缓存与锁保护刷新。
+- **HTTP 路由**：`/tenants/{tid}/projects/{pid}/channels` 项目级 CRUD（tenant
+  auth，GET 掩码 `app_secret` 等敏感字段）；`/channels/{channel_id}/webhook`
+  公开入站（无 tenant auth，靠 `channel_id` 全局唯一 + 每 transport 自带签名
+  验证）。入站注入在后台线程 fire-and-forget，立刻返回 200，避免飞书 ~3s 超时。
+- **接入新 IM**：在 `channels/` 加一个文件 + 一行 `register_channel_kind(...)`，
+  不动 server / session / 项目管理层。
+
+详细设计 + 完整接入流程见 `docs/plans/2026-07-07-channels-feishu-design.zh.md`。
+
 ---
 
 ## 6. 数据流与依赖方向小结
@@ -726,6 +770,7 @@ graph TD
 | MCP 工具注入 | `mcp/client.py:MCPPool.all_tools`、`core/loop.py:_build_tools` |
 | 公开分享 token | `sharing/tokens.py:issue_share_token`、`verify_share_token` |
 | Webhook 注册 + 派发 | `sharing/webhooks.py:WebhookRegistry`、`WebhookDispatcher` |
+| 双向 Channel（飞书等） | `channels/base.py:ChannelRegistry`、`ChannelDispatcher`；`channels/feishu.py:FeishuChannel` |
 | 项目模板 | `projects/templates.py:list_templates`、`apply_template` |
 | 斜杠命令 | `commands/registry.py:default_registry`、`_cmd_search`/`_cmd_export`/`_cmd_fork` |
 | 跨会话检索 | `storage/fs.py:search_messages`、`storage/base.py:SearchHit` |

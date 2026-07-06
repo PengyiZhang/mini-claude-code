@@ -1,5 +1,18 @@
 # Feishu（飞书）Webhook 兼容性分析
 
+> **2026-07-07 更新：原生支持已上线。**
+> 新增的 `mini_cc/channels/` 子系统抽象出**双向 channel** 协议，第一步就接入了
+> 飞书。下文「不支持」结论针对的是 **workflow_v2 的 `webhook_wait` 步骤**（它
+> 本身仍然是平台无关的通用入站接收器，不适合直接接飞书事件订阅），但飞书的
+> 双向 IM 通信现在走 `channels/feishu.py` + `/channels/{channel_id}/webhook`
+> 这条独立路径。详见
+> [`docs/plans/2026-07-07-channels-feishu-design.zh.md`](../plans/2026-07-07-channels-feishu-design.zh.md)
+> 与 `mini_cc/ARCH.zh.md` §5.10。
+>
+> 下文保留原 2026-06-29 分析作为历史背景，不再反映当前系统状态。
+
+---
+
 > 结论先行：mini_cc 当前的 `webhook_wait` 步骤 **不原生支持飞书 webhook**。
 > 本文记录 2026-06-29 的代码核对结论与接入路径，不动代码。
 
@@ -60,10 +73,13 @@
 
 ## 一句话结论
 
-**不支持**。`webhook_wait` 是平台无关的通用入站 webhook，无法直接接飞书 ——
-URL 粒度、URL 验证 challenge、HMAC 签名三处全部不匹配。要接飞书，
-推荐在 mini_cc 前面挂一个适配器网关；要做原生集成，则需扩展 `webhook_wait`
-的事件分发模型（中等规模重构）。
+**workflow_v2 的 `webhook_wait` 不支持接飞书事件订阅**（URL 粒度、URL 验证
+challenge、HMAC 签名三处全部不匹配）。但**飞书双向 IM 通信**已经在
+2026-07-07 通过独立的 `channels/` 子系统支持 —— 不走 workflow_v2，而是
+`/channels/{channel_id}/webhook` 公开端点 + `channels/feishu.py` 实现。
+原分析中提到的「适配器网关」方案已经不需要；如果要在 workflow 里把飞书
+消息当 webhook_wait 触发条件，仍然需要一个适配器把飞书事件转成
+`webhook_wait` 的 `{event, data}` 形状。
 
 ## 参考
 

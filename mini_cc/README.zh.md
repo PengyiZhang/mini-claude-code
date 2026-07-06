@@ -226,6 +226,10 @@ data: [DONE]\n\n
 | `GET`    | `/tenants/{tid}/projects/{pid}/webhooks`          | 列出项目 webhook 订阅(F7.2)               |
 | `POST`   | `/tenants/{tid}/projects/{pid}/webhooks`          | 注册 webhook;body `{url, event_types[]}`  |
 | `DELETE` | `/tenants/{tid}/projects/{pid}/webhooks/{hook_id}` | 删除 webhook                               |
+| `GET`    | `/tenants/{tid}/projects/{pid}/channels`          | 列出双向 channel 绑定(飞书 / Slack / …)   |
+| `POST`   | `/tenants/{tid}/projects/{pid}/channels`          | 创建绑定;body `{kind, config, session_id?, event_types[]}`;GET 返回时敏感字段(app_secret / encrypt_key / verification_token)掩码为 `***` |
+| `DELETE` | `/tenants/{tid}/projects/{pid}/channels/{channel_id}` | 删除绑定                              |
+| `POST`   | `/channels/{channel_id}/webhook`                  | **公开**入站 webhook(无 tenant auth);channel_id 全局唯一,签名验证由对应 transport 自己做 |
 
 错误信封(所有错误统一一种形状):
 
@@ -668,6 +672,52 @@ key,再加上 `e2e_proj` 项目。用例覆盖鉴权、项目创建、文件上�
 预览 + zip 下载、通过 LiteLLM 的流式对话,以及 admin 流程
 (非 admin key 登录被拒、key 列表、新建 key、metrics dashboard
 渲染)。
+
+### 接入飞书(双向 Channel)
+
+mini_cc 的 `channels/` 子系统把 IM 群(飞书 / 未来 Slack / Discord …)
+接入成**双向 channel**:用户在飞书群里 @ 机器人 → 触发一轮 agent turn →
+关键事件再推回飞书 chat。详细设计见
+`docs/plans/2026-07-07-channels-feishu-design.zh.md`。
+
+**3 步接入:**
+
+1. 在 [飞书开放平台](https://open.feishu.cn/) 建一个自建应用,启用机器人
+   能力,订阅 `im.message.receive_v1` 事件,记录 `app_id` / `app_secret`
+   (可选启用加密模式,记录 `encrypt_key`、`verification_token`)。
+
+2. 启动 mini_cc server,调 API 创建绑定:
+
+   ```bash
+   curl -X POST http://127.0.0.1:8002/tenants/$TENANT/projects/$PID/channels \
+     -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+     -d '{
+       "kind": "feishu",
+       "config": {
+         "app_id": "cli_xxx",
+         "app_secret": "secret_xxx",
+         "encrypt_key": "enc_xxx",
+         "verification_token": "tok_xxx",
+         "chat_id": "oc_xxx"
+       },
+       "session_id": null,
+       "event_types": ["text", "teammate_message", "lead_nudged"]
+     }'
+   # → { "id": "chan_abcdef123456", ... }
+   ```
+
+3. 把返回的 `channel_id` 拼成 webhook URL
+   `https://your-host/channels/<channel_id>/webhook`,填到飞书「事件订阅」
+   配置里 —— 飞书会发 `url_verification` 握手,server 自动 echo。
+
+完成后在群里 @ 机器人说话就会触发 agent turn,lead / teammate 的关键
+回复自动推回飞书 chat。
+
+**安全模型:** 入站端点 `/channels/{channel_id}/webhook` 是公开的(无
+tenant auth,因为外部 IM 不可能带我们的 Bearer key),靠两点:
+- `channel_id` 全局唯一(`chan_<12 hex>`);
+- 每个 binding 自带 transport 级签名验证(飞书 `X-Lark-Signature` /
+  Slack `X-Slack-Signature` / …),由对应 `Channel.handle_inbound` 校验。
 
 ---
 
