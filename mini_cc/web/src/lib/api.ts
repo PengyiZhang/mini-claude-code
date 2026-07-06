@@ -1,5 +1,6 @@
 import type {
   ApiErrorEnvelope,
+  ChannelOut,
   FileContent,
   KeyOut,
   MetricSnapshot,
@@ -661,4 +662,59 @@ export async function fetchTeamActivity(
   );
   if (!res.ok) await parseErr(res);
   return (await res.json()) as { events: TeamEvent[]; has_more: boolean };
+}
+
+// ── Channels (bidirectional IM transport) ────────────────────────────
+// Project-scoped CRUD against /tenants/{tid}/projects/{pid}/channels.
+// The inbound webhook URL is public (no tenant auth) and constructed
+// client-side from window.location.origin so the user copies the URL
+// their browser sees — which is what Feishu will reach.
+
+export function channelWebhookUrl(channelId: string): string {
+  return `${window.location.origin}/channels/${channelId}/webhook`;
+}
+
+export async function listChannels(
+  profile: TenantProfile,
+  pid: string,
+): Promise<ChannelOut[]> {
+  const res = await fetch(tenantPath(profile, `/projects/${pid}/channels`), {
+    headers: authHeaders(profile),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function createChannel(
+  profile: TenantProfile,
+  pid: string,
+  body: {
+    kind: string;
+    config: Record<string, unknown>;
+    session_id?: string | null;
+    event_types?: string[];
+  },
+): Promise<ChannelOut> {
+  const res = await fetch(tenantPath(profile, `/projects/${pid}/channels`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(profile) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export async function deleteChannel(
+  profile: TenantProfile,
+  pid: string,
+  channelId: string,
+): Promise<void> {
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/channels/${channelId}`),
+    {
+      method: "DELETE",
+      headers: authHeaders(profile),
+    },
+  );
+  if (!res.ok && res.status !== 204) await parseErr(res);
 }

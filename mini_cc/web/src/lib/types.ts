@@ -286,6 +286,20 @@ export interface CardEvent {
   refresh_interval_ms?: number | null;
 }
 
+// ── Channels (bidirectional IM transport) ────────────────────────────
+// Backend: mini_cc/server/routes/channels.py. GET masks secrets in config
+// (app_secret/encrypt_key/verification_token → "***"); frontend renders
+// the masked values directly. Webhook URL is constructed client-side
+// from window.location.origin + channel_id.
+export interface ChannelOut {
+  id: string;
+  kind: string;
+  config: Record<string, unknown>;
+  session_id: string | null;
+  event_types: string[];
+  created_at: string;
+}
+
 // ── Team Activity (Phase I.C.2) ──────────────────────────────────────
 // Backend /team/activity spreads each event's payload fields alongside
 // session_id and ts, so any extra fields are accessible via indexing.

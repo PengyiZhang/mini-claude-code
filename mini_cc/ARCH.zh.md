@@ -702,6 +702,16 @@ graph LR
   验证）。入站注入在后台线程 fire-and-forget，立刻返回 200，避免飞书 ~3s 超时。
 - **接入新 IM**：在 `channels/` 加一个文件 + 一行 `register_channel_kind(...)`，
   不动 server / session / 项目管理层。
+- **Web UI**：`web/src/components/ChannelsPanel.tsx` —— 项目左侧 sidebar
+  的 `channels` tab。每行卡片显示 kind 徽章 + channel_id + webhook URL
+  （📋 一键复制，是要回填到飞书「事件订阅」的关键信息）+ chat_id + 已订阅
+  事件 + 创建时间 + 删除按钮。`＋ new` 打开 Modal，kind 下拉驱动字段集
+  （`KIND_CONFIG` 表，加 Slack 时只需新增一个 entry），app_secret / encrypt_key
+  走 password 输入，event_types 默认勾选 `text` / `teammate_message` /
+  `lead_nudged`。不轮询 —— 写频极低，手动 refresh + create/delete 后自动
+  刷新足够。`web/src/lib/api.ts` 提供 `listChannels` / `createChannel` /
+  `deleteChannel` + `channelWebhookUrl` helper（URL 客户端拼：
+  `${origin}/channels/${id}/webhook`）。
 
 详细设计 + 完整接入流程见 `docs/plans/2026-07-07-channels-feishu-design.zh.md`。
 
@@ -770,7 +780,7 @@ graph TD
 | MCP 工具注入 | `mcp/client.py:MCPPool.all_tools`、`core/loop.py:_build_tools` |
 | 公开分享 token | `sharing/tokens.py:issue_share_token`、`verify_share_token` |
 | Webhook 注册 + 派发 | `sharing/webhooks.py:WebhookRegistry`、`WebhookDispatcher` |
-| 双向 Channel（飞书等） | `channels/base.py:ChannelRegistry`、`ChannelDispatcher`；`channels/feishu.py:FeishuChannel` |
+| 双向 Channel（飞书等） | `channels/base.py:ChannelRegistry`、`ChannelDispatcher`；`channels/feishu.py:FeishuChannel`；`web/src/components/ChannelsPanel.tsx` |
 | 项目模板 | `projects/templates.py:list_templates`、`apply_template` |
 | 斜杠命令 | `commands/registry.py:default_registry`、`_cmd_search`/`_cmd_export`/`_cmd_fork` |
 | 跨会话检索 | `storage/fs.py:search_messages`、`storage/base.py:SearchHit` |

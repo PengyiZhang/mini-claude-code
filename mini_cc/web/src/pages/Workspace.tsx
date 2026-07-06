@@ -12,6 +12,7 @@ import SessionRow from "../components/SessionRow";
 import SlashMenu from "../components/SlashMenu";
 import TodoPanel from "../components/TodoPanel";
 import RunTablePanel from "../components/RunTablePanel";
+import ChannelsPanel from "../components/ChannelsPanel";
 import TeamSidebar from "../components/TeamSidebar";
 import MentionPicker, { type MentionCandidate } from "../components/MentionPicker";
 import { runCommandForCard } from "../lib/commands";
@@ -33,7 +34,7 @@ import { streamSend, streamSessionEvents } from "../lib/sse";
 import { fetchCommands, streamRunCommand } from "../lib/commands";
 import type { CommandDef } from "../lib/commands";
 
-type Tab = "chat" | "files" | "run";
+type Tab = "chat" | "files" | "run" | "channels";
 
 const EMPTY: ChatMessage[] = [];
 const EMPTY_PERMS: PermissionPromptData[] = [];
@@ -701,7 +702,7 @@ export default function Workspace() {
         {/* Sidebar */}
         <aside className="w-64 border-r border-border bg-bg-panel p-3 flex flex-col gap-3 overflow-y-auto shrink-0">
           <div className="flex gap-1 text-sm">
-            {(["chat", "files", "run"] as Tab[]).map((t) => (
+            {(["chat", "files", "run", "channels"] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -751,6 +752,10 @@ export default function Workspace() {
 
           {tab === "run" && (
             <RunTablePanel profile={profile} pid={pid} sid={sid} />
+          )}
+
+          {tab === "channels" && (
+            <ChannelsPanel profile={profile} pid={pid} />
           )}
 
           <div className="mt-auto text-xs text-ink-faint">

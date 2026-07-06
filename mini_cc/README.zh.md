@@ -686,7 +686,9 @@ mini_cc 的 `channels/` 子系统把 IM 群(飞书 / 未来 Slack / Discord …)
    能力,订阅 `im.message.receive_v1` 事件,记录 `app_id` / `app_secret`
    (可选启用加密模式,记录 `encrypt_key`、`verification_token`)。
 
-2. 启动 mini_cc server,调 API 创建绑定:
+2. **(推荐)Web UI:** 打开任一项目 → 左侧 sidebar `channels` tab →
+   `＋ new` → 选 `feishu` 填入凭证 → 创建,直接看到 webhook URL,
+   点 📋 复制。也可以用 API:
 
    ```bash
    curl -X POST http://127.0.0.1:8002/tenants/$TENANT/projects/$PID/channels \
@@ -706,9 +708,9 @@ mini_cc 的 `channels/` 子系统把 IM 群(飞书 / 未来 Slack / Discord …)
    # → { "id": "chan_abcdef123456", ... }
    ```
 
-3. 把返回的 `channel_id` 拼成 webhook URL
-   `https://your-host/channels/<channel_id>/webhook`,填到飞书「事件订阅」
-   配置里 —— 飞书会发 `url_verification` 握手,server 自动 echo。
+3. 把 webhook URL(`https://your-host/channels/<channel_id>/webhook`,UI
+   会直接显示并复制;curl 路径需要自己拼)填到飞书「事件订阅」配置里 ——
+   飞书会发 `url_verification` 握手,server 自动 echo。
 
 完成后在群里 @ 机器人说话就会触发 agent turn,lead / teammate 的关键
 回复自动推回飞书 chat。
