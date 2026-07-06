@@ -247,9 +247,17 @@ def test_session_manager_installs_dispatcher_for_project_webhooks(tmp_path: Path
     sm = SessionManager(pm)
     sm.start_session("p1", "sess1", on_event=lambda e: captured.append(e))
     sess = sm.get("p1", "sess1")
-    # The loop's on_event must be a WebhookDispatcher wrapping the inner
-    # callback — not the raw lambda we passed in.
-    assert isinstance(sess.loop.on_event, WebhookDispatcher)
+    # The loop's on_event chain now ends with the original callback and
+    # wraps through (optionally) WebhookDispatcher + ChannelDispatcher.
+    # Walk the .inner chain to confirm the WebhookDispatcher is in there
+    # somewhere — the original test only cared that installation happened.
+    chain: list = [sess.loop.on_event]
+    cur = sess.loop.on_event
+    while hasattr(cur, "_inner"):
+        cur = cur._inner
+        chain.append(cur)
+    assert any(isinstance(c, WebhookDispatcher) for c in chain), \
+        "WebhookDispatcher must be in the on_event chain"
     # Inner callback still fires synchronously.
     sess.loop.on_event({"type": "tool_use", "name": "x"})
     assert captured and captured[0]["type"] == "tool_use"
@@ -265,9 +273,11 @@ def test_session_manager_skips_dispatch_when_no_registry(tmp_path: Path):
 
     pm = ProjectManager(tmp_path / "projects")
     pm.create(tenant_id="t1", project_id="p1")
-    # Simulate a non-FS backend by clearing the cached registry.
+    # Simulate a non-FS backend by clearing both cached registries
+    # (webhooks + bidirectional channels) — both are gated on FS storage.
     project = pm.get("p1")
     project.webhooks = None
+    project.channels = None
 
     inner = lambda e: None
     sm = SessionManager(pm)

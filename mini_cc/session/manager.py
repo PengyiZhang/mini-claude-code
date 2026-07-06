@@ -33,9 +33,18 @@ def _wrap_on_event(project: Project, session_id: str,
     dispatcher and the HTTP routes share the same WebhookRegistry object
     cached on the Project."""
     reg = getattr(project, "webhooks", None)
-    if reg is None:
-        return on_event
-    return WebhookDispatcher(reg, project.project_id, session_id, inner=on_event)
+    if reg is not None:
+        on_event = WebhookDispatcher(reg, project.project_id, session_id,
+                                     inner=on_event)
+    # Bidirectional channels fan-out. Same wrapping pattern as webhooks
+    # so a binding added via HTTP after session warm-up is visible to
+    # the next event without re-warming.
+    chan_reg = getattr(project, "channels", None)
+    if chan_reg is not None:
+        from ..channels import ChannelDispatcher
+        on_event = ChannelDispatcher(chan_reg, project.project_id, session_id,
+                                     inner=on_event)
+    return on_event
 
 
 @dataclass

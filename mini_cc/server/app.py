@@ -27,6 +27,7 @@ from .routes import sessions as sessions_routes
 from .routes import team as team_routes
 from .routes import permissions as permissions_routes
 from .routes import admin as admin_routes
+from .routes import channels as channels_routes
 from .routes import commands as commands_routes
 from .routes import run_table as run_table_routes
 from .routes import webhooks as webhooks_routes
@@ -58,6 +59,14 @@ def _warn_insecure_defaults() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _warn_insecure_defaults()
+    # Importing the Feishu channel module runs its ``register_channel_kind``
+    # side-effect so the registry knows about "feishu" bindings. Lazy
+    # import so unrelated code paths don't pay the (small) startup cost.
+    try:
+        from ..channels import _ensure_feishu_loaded
+        _ensure_feishu_loaded()
+    except Exception:
+        log.warning("Failed to register Feishu channel kind", exc_info=True)
     yield
     # Shutdown: stop every live session. Sessions are in-memory so they
     # die with the process anyway, but we want clean loop.stop() flags
@@ -174,6 +183,8 @@ def build_app(*, data_dir: Path,
     app.include_router(run_table_routes.router)
     app.include_router(sessions_routes.share_router)
     app.include_router(webhooks_routes.router)
+    app.include_router(channels_routes.router)
+    app.include_router(channels_routes.inbound_router)
     # Workflow V2 — definitions + runs (W1).
     for r in workflow_v2_routes.ALL_ROUTERS:
         app.include_router(r)

@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from ..channels import ChannelRegistry
 from ..core.hooks import Hooks
 from ..core.loop import ProjectRef
 from ..core.permissions import PermissionInterceptor
@@ -86,6 +87,10 @@ class Project:
     # dispatcher share one in-memory object: a webhook added via HTTP
     # is visible to the next event without re-warming the session.
     webhooks: "WebhookRegistry | None" = None
+    # Bidirectional channel registry (Feishu / Slack / …). Same pattern
+    # as webhooks: cached on Project so the HTTP routes + the live
+    # dispatcher share one object. None when storage has no FS root.
+    channels: "ChannelRegistry | None" = None
 
     @property
     def metrics(self):
@@ -333,6 +338,7 @@ class ProjectManager:
         storage_root = getattr(storage, "root", None)
         if storage_root is not None:
             project.webhooks = WebhookRegistry(storage_root, project_id)
+            project.channels = ChannelRegistry(storage_root, project_id)
         # Workflow V2 (W1): same pattern — one WorkflowService per
         # project, backed by the same FSStorage, shared between the
         # HTTP routes and any in-process driver (tests, future UI).
