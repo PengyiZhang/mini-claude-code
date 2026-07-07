@@ -20,6 +20,14 @@ from mini_cc.projects import ProjectManager
 from mini_cc.server.app import build_app
 from mini_cc.session import SessionManager
 
+# Side-effect: register the feishu channel kind. The TestClient fixture
+# below doesn't always trigger lifespan (depends on Starlette version +
+# whether `with` syntax is used), so we ensure the kind is registered
+# explicitly. Without this, tests fail with "unknown channel kind:
+# feishu" when run in isolation.
+from mini_cc.channels import _ensure_feishu_loaded
+_ensure_feishu_loaded()
+
 
 AUTH = {"Authorization": "Bearer mck_testkey"}
 
@@ -101,9 +109,10 @@ def test_inbound_url_verification(client):
     # least a verification_token.
     r = client.post("/tenants/tenant1/projects/p1/channels",
                     headers=AUTH,
-                    json={"kind": "feishu",
+                    json={"kind": "feishu", "transport": "webhook",
                           "config": {"app_id": "a",
                                      "verification_token": "vt"}})
+    assert r.status_code == 201, r.text
     cid = r.json()["id"]
 
     # Feishu setup-time handshake.
@@ -114,12 +123,15 @@ def test_inbound_url_verification(client):
 
 
 def test_inbound_text_message_returns_200(client, monkeypatch):
-    # Create a binding (verification_token satisfies M2-6).
+    # Create a binding in webhook mode so inbound HTTP webhook parsing
+    # applies (default is now ws, where the inbound webhook is a no-op
+    # for real messages). verification_token satisfies M2-6.
     r = client.post("/tenants/tenant1/projects/p1/channels",
                     headers=AUTH,
-                    json={"kind": "feishu",
+                    json={"kind": "feishu", "transport": "webhook",
                           "config": {"app_id": "a",
                                      "verification_token": "t"}})
+    assert r.status_code == 201, r.text
     cid = r.json()["id"]
 
     # Stub the inbound-turn enqueue so we don't actually fire an LLM.
@@ -158,3 +170,77 @@ def test_inbound_unknown_channel_404(client):
     body = {"challenge": "x", "type": "url_verification"}
     resp = client.post("/channels/chan_nonexistent/webhook", json=body)
     assert resp.status_code == 404
+
+
+# ── Transport field (WS receiver support) ───────────────────────────────
+
+def test_create_ws_binding_returns_transport_ws(client):
+    """POST without explicit transport defaults to ws (the recommended
+    default). The transport field echoes back on the response so the
+    UI can render the right badge without client-side guessing."""
+    r = client.post("/tenants/tenant1/projects/p1/channels",
+                    headers=AUTH,
+                    json={"kind": "feishu",
+                          "config": {"app_id": "a", "app_secret": "b"}})
+    assert r.status_code == 201, r.text
+    out = r.json()
+    assert out["transport"] == "ws"
+
+
+def test_create_explicit_webhook_transport(client):
+    """Explicit webhook transport round-trips through the API."""
+    r = client.post("/tenants/tenant1/projects/p1/channels",
+                    headers=AUTH,
+                    json={"kind": "feishu", "transport": "webhook",
+                          "config": {"app_id": "a"}})
+    assert r.status_code == 201
+    assert r.json()["transport"] == "webhook"
+
+
+def test_create_rejects_unsupported_transport(client):
+    """transport='ws' on a webhook-only kind fails fast at create time.
+    Feishu supports both, so we register a webhook-only kind on the fly."""
+    from mini_cc.channels import register_channel_kind
+    register_channel_kind("webhook_only_kind",
+                          lambda b: None,
+                          supported_transports=("webhook",))
+    r = client.post("/tenants/tenant1/projects/p1/channels",
+                    headers=AUTH,
+                    json={"kind": "webhook_only_kind",
+                          "transport": "ws", "config": {}})
+    assert r.status_code == 400
+    assert "ws" in r.json()["error"]["message"]
+
+
+def test_delete_calls_supervisor_stop(client, monkeypatch):
+    """DELETE on a ws binding must stop its receiver before removing
+    the record. The route resolves ``get_supervisor`` via ``from
+    ...channels import get_supervisor`` so we patch the source module."""
+    import mini_cc.channels as channels_mod
+
+    stops = []
+    spy = _StopSpy(stops)
+    monkeypatch.setattr(channels_mod, "get_supervisor", lambda: spy)
+    r = client.post("/tenants/tenant1/projects/p1/channels",
+                    headers=AUTH,
+                    json={"kind": "feishu", "transport": "ws",
+                          "config": {"app_id": "a"}})
+    cid = r.json()["id"]
+    d = client.delete(f"/tenants/tenant1/projects/p1/channels/{cid}",
+                      headers=AUTH)
+    assert d.status_code == 204
+    assert stops == [("tenant1", "p1", cid)]
+
+
+class _StopSpy:
+    """Minimal supervisor stub: only ``stop_for`` is observed; other
+    methods raise so we know they're not called in this path."""
+
+    def __init__(self, stops):
+        self.stops = stops
+
+    def stop_for(self, tid, pid, cid):
+        self.stops.append((tid, pid, cid))
+
+    def start_for(self, *a, **kw):
+        return False  # Don't actually spawn — keep the test WS-clean.

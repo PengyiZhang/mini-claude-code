@@ -23,6 +23,7 @@ import {
  */
 
 type Kind = "feishu";
+type Transport = "ws" | "webhook";
 
 interface FieldDef {
   name: string;
@@ -36,18 +37,29 @@ interface FieldDef {
 // Kind → field schema. Adding a new kind is just one entry here + the
 // backend register_channel_kind call. Drives both the create form and
 // the list-row config display.
-const KIND_CONFIG: Record<Kind, { label: string; badgeTone: string; fields: FieldDef[] }> = {
+const KIND_CONFIG: Record<Kind, {
+  label: string;
+  badgeTone: string;
+  fields: FieldDef[];
+  supported_transports: Transport[];
+}> = {
   feishu: {
     label: "飞书 / Feishu",
     badgeTone: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
+    supported_transports: ["ws", "webhook"],
     fields: [
       { name: "app_id", label: "App ID", required: true, placeholder: "cli_xxx" },
       { name: "app_secret", label: "App Secret", required: true, secret: true },
-      { name: "encrypt_key", label: "Encrypt Key", secret: true, hint: "可选 — 来自飞书「事件订阅」页" },
-      { name: "verification_token", label: "Verification Token", hint: "可选 — 来自飞书「事件订阅」页" },
+      { name: "encrypt_key", label: "Encrypt Key", secret: true, hint: "可选 — 来自飞书「事件订阅」页（仅 webhook 模式需要）" },
+      { name: "verification_token", label: "Verification Token", hint: "可选 — 来自飞书「事件订阅」页（仅 webhook 模式需要）" },
       { name: "chat_id", label: "Chat ID", hint: "可选，留空 = inbound-only（不推送）" },
     ],
   },
+};
+
+const TRANSPORT_TONES: Record<Transport, string> = {
+  ws: "bg-sky-500/20 text-sky-300 border-sky-500/40",
+  webhook: "bg-violet-500/20 text-violet-300 border-violet-500/40",
 };
 
 const ALL_EVENT_TYPES = [
@@ -153,6 +165,9 @@ export default function ChannelsPanel({
           onSubmit={async (vals) => {
             await createChannel(profile, pid, vals);
           }}
+          kinds={Object.fromEntries(
+            Object.entries(KIND_CONFIG).map(([k, v]) => [k, v.supported_transports]),
+          ) as Record<Kind, Transport[]>}
         />
       )}
     </div>
@@ -170,6 +185,11 @@ function ChannelRow({
   const kindMeta = KIND_CONFIG[kind];
   const [copied, setCopied] = useState(false);
   const webhookUrl = channelWebhookUrl(binding.id);
+  // ws-mode bindings don't need the public webhook URL — they hold an
+  // outbound long connection. The URL still works (inbound webhook is
+  // a no-op + url_verification echo), but copy-to-clipboard is only
+  // useful for webhook-mode bindings.
+  const transport = binding.transport ?? "webhook";
 
   async function copy() {
     try {
@@ -194,6 +214,14 @@ function ChannelRow({
         >
           {binding.kind}
         </span>
+        <span
+          className={`text-[10px] px-1.5 py-0.5 rounded border ${TRANSPORT_TONES[transport]}`}
+          title={transport === "ws"
+            ? "WebSocket 长连接 — 无需公网 URL"
+            : "Webhook — 飞书 POST 到公网 URL"}
+        >
+          {transport}
+        </span>
         <span className="font-mono text-xs text-ink-dim truncate">{binding.id}</span>
         <button
           onClick={onDelete}
@@ -204,19 +232,25 @@ function ChannelRow({
         </button>
       </div>
 
-      <div className="flex items-center gap-1 text-xs">
-        <span className="text-ink-dim shrink-0">webhook:</span>
-        <code className="text-[11px] text-ink-dim truncate flex-1" title={webhookUrl}>
-          {webhookUrl}
-        </code>
-        <button
-          onClick={copy}
-          className="px-1.5 py-0.5 rounded border border-border hover:border-accent shrink-0"
-          title="copy webhook url"
-        >
-          {copied ? "✓" : "📋"}
-        </button>
-      </div>
+      {transport === "ws" ? (
+        <div className="text-[11px] text-ink-faint italic">
+          ws long connection — no public URL needed
+        </div>
+      ) : (
+        <div className="flex items-center gap-1 text-xs">
+          <span className="text-ink-dim shrink-0">webhook:</span>
+          <code className="text-[11px] text-ink-dim truncate flex-1" title={webhookUrl}>
+            {webhookUrl}
+          </code>
+          <button
+            onClick={copy}
+            className="px-1.5 py-0.5 rounded border border-border hover:border-accent shrink-0"
+            title="copy webhook url"
+          >
+            {copied ? "✓" : "📋"}
+          </button>
+        </div>
+      )}
 
       {chatId ? (
         <div className="text-[11px] text-ink-faint">
@@ -251,6 +285,7 @@ function CreateModal({
   onCreated,
   onError,
   onSubmit,
+  kinds,
 }: {
   sessions: SessionMeta[];
   onClose: () => void;
@@ -258,18 +293,34 @@ function CreateModal({
   onError: (msg: string) => void;
   onSubmit: (vals: {
     kind: string;
+    transport: Transport;
     config: Record<string, unknown>;
     session_id: string | null;
     event_types: string[];
   }) => Promise<void>;
+  /** kind → supported transports. Drives the Transport radio + auto-fallback
+   *  when a kind can't carry the currently-selected transport. */
+  kinds: Record<Kind, Transport[]>;
 }) {
   const [kind, setKind] = useState<Kind>("feishu");
+  const [transport, setTransport] = useState<Transport>("ws");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [sessionId, setSessionId] = useState<string>("");
   const [eventTypes, setEventTypes] = useState<string[]>(DEFAULT_EVENT_TYPES);
   const [busy, setBusy] = useState(false);
 
   const meta = KIND_CONFIG[kind];
+
+  // If the user switches Kind to one that can't carry the current transport,
+  // snap to the kind's first supported transport rather than letting the
+  // submitted value silently mismatch what the backend will accept.
+  function changeKind(next: Kind) {
+    setKind(next);
+    const sup = kinds[next] ?? ["webhook"];
+    if (!sup.includes(transport)) {
+      setTransport(sup[0]);
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -290,6 +341,7 @@ function CreateModal({
       }
       await onSubmit({
         kind,
+        transport,
         config: cfg,
         session_id: sessionId.trim() || null,
         event_types: eventTypes,
@@ -320,7 +372,7 @@ function CreateModal({
           <select
             value={kind}
             onChange={(e) => {
-              setKind(e.target.value as Kind);
+              changeKind(e.target.value as Kind);
               setConfig({});
             }}
             className="w-full bg-bg rounded px-3 py-2 border border-border focus:border-accent outline-none"
@@ -331,6 +383,33 @@ function CreateModal({
               </option>
             ))}
           </select>
+        </Field>
+
+        <Field label="Transport">
+          <div className="space-y-1">
+            {(kinds[kind] ?? ["webhook"]).map((t) => (
+              <label key={t} className="flex items-start gap-2 text-xs">
+                <input
+                  type="radio"
+                  name="channel-transport"
+                  value={t}
+                  checked={transport === t}
+                  onChange={() => setTransport(t)}
+                  className="mt-0.5"
+                />
+                <span className="text-ink-dim">
+                  <span className="text-ink">{t}</span>
+                  {t === "ws" && <span className="text-ink-faint"> — 推荐，长连接，无需公网 URL</span>}
+                  {t === "webhook" && <span className="text-ink-faint"> — 事件订阅 URL（需公网可达）</span>}
+                </span>
+              </label>
+            ))}
+            {transport === "webhook" && (
+              <div className="text-[11px] text-ink-faint pl-5">
+                注册后请把 webhook URL 填到飞书「事件订阅」页
+              </div>
+            )}
+          </div>
         </Field>
 
         <div className="space-y-3">

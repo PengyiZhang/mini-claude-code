@@ -664,10 +664,11 @@ graph LR
 ### 5.10 双向 Channel `channels/`（飞书 / Slack / Discord …）
 
 `sharing/webhooks.py` 是**单向外发**（project 事件 → 外部 URL）。`channels/`
-抽象**双向**外部 transport：
+抽象**双向**外部 transport，支持两种入站模式：
 
 ```
-外部 IM ──(事件订阅 webhook)──▶ /channels/{chan_id}/webhook
+外部 IM ──(WS 长连接,默认)──▶ lark.ws.Client 出站 wss
+         └─(Webhook,可选)──▶  /channels/{chan_id}/webhook 公开端点
                                        │
                               Channel.handle_inbound
                               （飞书 X-Lark-Signature 验签 + AES 信封解密
@@ -688,32 +689,63 @@ graph LR
                             （token 缓存 + 锁保护刷新）
 ```
 
-- **`channels/base.py`**：`Channel` protocol（`handle_inbound` + `deliver`）+
-  `ChannelBinding`（kind + opaque config + bound session + event_types 过滤）
+- **`channels/base.py`**：`Channel` protocol（`handle_inbound` + `deliver`
+  + 可选 receiver 生命周期 `start_receiver`/`stop_receiver`/`receiver_running`）
+  + `ChannelBinding`（顶层加 `transport: "ws" | "webhook"` 字段,与 kind 正交;
+  老 `channels.json` 缺该字段默认 `"webhook"` 向后兼容;新建 binding 默认 `"ws"`)
   + `ChannelRegistry`（per-project `channels.json`）+ `ChannelDispatcher`（出站
-  fan-out）+ `register_channel_kind`（transport 自注册）。
-- **`channels/feishu.py`**：飞书实现。`X-Lark-Signature` 验签（plain / 加密两种
-  模式）、AES-256-CBC 信封解密（PyCryptodome）、`url_verification` 握手、
-  `im.message.receive_v1` 文本解析、`@_user_N` bot mention 剥离、
-  `tenant_access_token` 缓存与锁保护刷新。
-- **HTTP 路由**：`/tenants/{tid}/projects/{pid}/channels` 项目级 CRUD（tenant
-  auth，GET 掩码 `app_secret` 等敏感字段）；`/channels/{channel_id}/webhook`
-  公开入站（无 tenant auth，靠 `channel_id` 全局唯一 + 每 transport 自带签名
-  验证）。入站注入在后台线程 fire-and-forget，立刻返回 200，避免飞书 ~3s 超时。
-- **接入新 IM**：在 `channels/` 加一个文件 + 一行 `register_channel_kind(...)`，
-  不动 server / session / 项目管理层。
+  fan-out）+ `register_channel_kind(..., supported_transports=("ws","webhook"))`。
+- **`channels/feishu_common.py`**：两模式共享逻辑。`parse_message_event`
+  解析 `im.message.receive_v1` → `(user_input, metadata)`;`strip_bot_mention`
+  剥离 `@_user_N`;`render_event` 出站事件 → 飞书文本;`TokenCache` 锁保护的
+  `tenant_access_token` 缓存(1 小时刷新)。
+- **`channels/feishu.py`**：webhook 模式实现。`X-Lark-Signature` 验签(plain /
+  加密两种模式)、AES-256-CBC 信封解密(PyCryptodome)、`url_verification` 握手。
+  `_factory(binding)` 按 `binding.transport` 分发: `"ws"` 返回 `FeishuWsChannel`,
+  否则返回 `FeishuChannel`。`supported_transports=("ws","webhook")`。
+- **`channels/feishu_ws.py`**：WS 长连接实现。用 `lark-oapi` SDK
+  (`lark.ws.Client` + `EventDispatcherImpl`),自带握手/ack/重连。`start_receiver`
+  起 daemon 线程跑 SDK 的阻塞 `start()`;`stop_receiver` 只设 `threading.Event`
+  (SDK 无 stop API,daemon 兜底,极端情况靠进程退出释放)。
+- **`channels/inbound.py`**：`enqueue_inbound_turn(sm, project, sid, text, meta)`
+  + `_resolve_default_session` —— 从 HTTP 路由抽出来共享,WS receiver 和
+  webhook 入站走同一个 fire-and-forget 后台线程注入。
+- **`channels/supervisor.py`**：`ChannelReceiverSupervisor` 单例(模式
+  MCPPool),按 `(tenant_id, project_id, channel_id)` 索引每个 WS receiver 线程。
+  `attach_session_manager(sm)` 在 lifespan 启动绑定一次;`start_for(project, b)`
+  幂等(同 key 二次调先 stop 再 start);`stop_project(tid, pid)` 用于 pm.invalidate;
+  `stop_all` 在 lifespan shutdown 调用。`get_supervisor()` 进程级 singleton。
+- **HTTP 路由**：`/tenants/{tid}/projects/{pid}/channels` 项目级 CRUD(tenant
+  auth,GET 掩码 `app_secret` 等敏感字段);`CreateChannelRequest` 加 `transport`
+  字段默认 `"ws"`,`create_channel` 用 `supports_transport(kind, transport)` 拒绝
+  不支持的组合(返回 400),创建后立刻 `supervisor.start_for` 让 binding 即时生效;
+  `DELETE` 先 `supervisor.stop_for` 再 `reg.remove` 避免竞态;`/channels/{channel_id}/webhook`
+  公开入站(无 tenant auth,靠 `channel_id` 全局唯一 + 每 transport 自带签名
+  验证)。入站注入在后台线程 fire-and-forget,立刻返回 200,避免飞书 ~3s 超时。
+- **ProjectManager 接线**：`_assemble` 在 MCP spawn 之后遍历 ws-mode bindings
+  调 `supervisor.start_for`(失败不阻塞项目装配);`invalidate` 丢 cache 之前
+  调 `supervisor.stop_project(tid, pid)`,下次 `get()` 重启干净。
+- **接入新 IM**：在 `channels/` 加一个文件 + 一行 `register_channel_kind(...,
+  supported_transports=(...))`,不动 server / session / 项目管理层。
 - **Web UI**：`web/src/components/ChannelsPanel.tsx` —— 项目左侧 sidebar
-  的 `channels` tab。每行卡片显示 kind 徽章 + channel_id + webhook URL
-  （📋 一键复制，是要回填到飞书「事件订阅」的关键信息）+ chat_id + 已订阅
-  事件 + 创建时间 + 删除按钮。`＋ new` 打开 Modal，kind 下拉驱动字段集
-  （`KIND_CONFIG` 表，加 Slack 时只需新增一个 entry），app_secret / encrypt_key
-  走 password 输入，event_types 默认勾选 `text` / `teammate_message` /
-  `lead_nudged`。不轮询 —— 写频极低，手动 refresh + create/delete 后自动
-  刷新足够。`web/src/lib/api.ts` 提供 `listChannels` / `createChannel` /
-  `deleteChannel` + `channelWebhookUrl` helper（URL 客户端拼：
-  `${origin}/channels/${id}/webhook`）。
+  的 `channels` tab。每行卡片显示 kind 徽章 + **transport 徽章**(ws=天蓝 /
+  webhook=紫罗兰)+ channel_id + (webhook 模式才显示)webhook URL
+  (📋 一键复制,是要回填到飞书「事件订阅」的关键信息;ws 模式显示
+  「ws long connection — no public URL needed」)+ chat_id + 已订阅
+  事件 + 创建时间 + 删除按钮。`＋ new` Modal:Kind 下拉 + **Transport 单选**
+  (Kind 切换时,若当前 transport 不在新 kind 的 supported_transports 里,自动
+  回退到第一个支持的) + 凭证字段(`KIND_CONFIG` 表,加 Slack 时只需新增
+  一个 entry),app_secret / encrypt_key 走 password 输入,event_types 默认勾选
+  `text` / `teammate_message` / `lead_nudged`。不轮询 —— 写频极低,手动 refresh
+  + create/delete 后自动刷新足够。`web/src/lib/api.ts` 提供 `listChannels` /
+  `createChannel`(body 接 `transport?: "ws" | "webhook"`) / `deleteChannel` +
+  `channelWebhookUrl` helper(URL 客户端拼:`${origin}/channels/${id}/webhook`)。
 
-详细设计 + 完整接入流程见 `docs/plans/2026-07-07-channels-feishu-design.zh.md`。
+**详细接入教程**(凭证细节、加密模式、Slack/Discord 扩展、运维排错):
+`docs/mini_cc/zh/16-feishu-channel.md`。
+
+设计原始计划见 `docs/plans/2026-07-07-channels-feishu-design.zh.md` 和
+`docs/plans/2026-07-07-channels-ws-receiver.zh.md`。
 
 ---
 

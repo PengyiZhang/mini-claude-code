@@ -693,6 +693,7 @@ export async function createChannel(
     config: Record<string, unknown>;
     session_id?: string | null;
     event_types?: string[];
+    transport?: "ws" | "webhook";
   },
 ): Promise<ChannelOut> {
   const res = await fetch(tenantPath(profile, `/projects/${pid}/channels`), {

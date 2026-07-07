@@ -59,6 +59,23 @@ def _warn_insecure_defaults() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _warn_insecure_defaults()
+    # Importing the Feishu channel module runs its ``register_channel_kind``
+    # side-effect so the registry knows about "feishu" bindings. Lazy
+    # import so unrelated code paths don't pay the (small) startup cost.
+    try:
+        from ..channels import _ensure_feishu_loaded
+        _ensure_feishu_loaded()
+    except Exception:
+        log.warning("Failed to register Feishu channel kind", exc_info=True)
+    # Bind the SessionManager to the channel receiver supervisor so
+    # inbound WS events route into the right lead session. Singleton —
+    # constructed on first access, persists for the process lifetime.
+    try:
+        from ..channels import get_supervisor
+        get_supervisor().attach_session_manager(app.state.sm)
+    except Exception:
+        log.warning("Failed to attach SessionManager to channel supervisor",
+                    exc_info=True)
     yield
     # Shutdown: stop every live session. Sessions are in-memory so they
     # die with the process anyway, but we want clean loop.stop() flags
@@ -101,6 +118,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         drain_inbound_workers(timeout=10.0)
     except Exception:
         log.warning("channel worker drain failed", exc_info=True)
+    # Stop every WS-mode channel receiver. The SDK owns the WS socket
+    # and has no graceful stop API — stop_all sets every receiver's
+    # stop_event so the next SDK loop iteration bails. daemon=True
+    # guarantees the process won't hang even if a stuck SDK call
+    # ignores the event.
+    try:
+        from ..channels import get_supervisor
+        get_supervisor().stop_all()
+    except Exception:
+        pass
     # Stop every per-tenant container the runtime context owns.
     ctx = getattr(app.state, "server_runtime", None)
     if ctx is not None:

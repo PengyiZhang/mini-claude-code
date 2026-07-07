@@ -187,6 +187,15 @@ class ProjectManager:
             if meta is None:
                 return
             tenant_id = meta.tenant_id
+        # Stop WS-mode receivers for this project before dropping the
+        # cached Project — _assemble will respawn them on next get().
+        # Best-effort: never block cache invalidation on supervisor
+        # teardown.
+        try:
+            from ..channels import get_supervisor
+            get_supervisor().stop_project(tenant_id, project_id)
+        except Exception:
+            pass
         self._cache.pop((tenant_id, project_id), None)
         self._sigs.pop((tenant_id, project_id), None)
 
@@ -354,6 +363,22 @@ class ProjectManager:
         if storage_root is not None:
             project.webhooks = WebhookRegistry(storage_root, project_id)
             project.channels = ChannelRegistry(storage_root, project_id)
+            # Spawn WS-mode receivers for every ws binding on disk. Same
+            # pattern as MCP auto-connect above: failures don't block
+            # project assembly, just log a warning. Supervisor is a
+            # process-wide singleton (MCPPool-style) so re-assembling
+            # the project (e.g. after pm.invalidate) restarts cleanly.
+            try:
+                from ..channels import get_supervisor
+                sup = get_supervisor()
+                for b in project.channels.list():
+                    if getattr(b, "transport", "webhook") == "ws":
+                        sup.start_for(project, b)
+            except Exception:
+                # Channels subsystem might be unavailable (legacy deploy
+                # without lark-oapi). Don't let WS spawn failures break
+                # project assembly.
+                pass
         # Workflow V2 (W1): same pattern — one WorkflowService per
         # project, backed by the same FSStorage, shared between the
         # HTTP routes and any in-process driver (tests, future UI).
