@@ -696,6 +696,7 @@ class AgentLoop:
                         messages=self.messages,
                         tools=to_anthropic(self.tools),
                         max_tokens=max_tokens,
+                        asset_store=getattr(self.project, "assets", None),
                     )
 
                 # Retry connection setup on transient errors — 429 / 529 /

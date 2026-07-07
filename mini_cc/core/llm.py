@@ -75,6 +75,38 @@ class LLMProvider(Protocol):
 
 # ── Anthropic backend ──────────────────────────────────────────────────────
 
+def _hydrate_messages(messages: list[dict], store: Any) -> list[dict]:
+    """Walk ``messages`` and expand ``{type:"image", asset_id:"..."}`` blocks
+    into Anthropic base64 image blocks via ``store.hydrate_block``.
+
+    - If ``store`` is None or ``hydrate_block`` returns None (unknown id),
+      the image block is replaced with a ``{type:"text", text:"[image: missing]"}``
+      placeholder so message count stays aligned with the transcript.
+    - String content and non-image blocks pass through untouched.
+    - Non-dict blocks (pydantic objects, etc.) pass through untouched.
+    """
+    out: list[dict] = []
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else None
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        new_blocks = []
+        for b in content:
+            if (isinstance(b, dict)
+                    and b.get("type") == "image"
+                    and "asset_id" in b):
+                hydrated = (store.hydrate_block(b["asset_id"])
+                            if store is not None else None)
+                new_blocks.append(hydrated
+                                  or {"type": "text",
+                                      "text": "[image: missing]"})
+            else:
+                new_blocks.append(b)
+        out.append({**m, "content": new_blocks})
+    return out
+
+
 def _dump_block(b: Any) -> dict:
     """Convert an Anthropic SDK content block to a JSON-safe dict.
 
@@ -124,7 +156,14 @@ class AnthropicProvider:
         return self._client
 
     def stream(self, *, model: str, system: str, messages: list[dict],
-               tools: list[dict], max_tokens: int) -> Iterator[StreamEvent]:
+               tools: list[dict], max_tokens: int,
+               asset_store: Any = None) -> Iterator[StreamEvent]:
+        # Hydrate {type:image, asset_id:"..."} transcript references into
+        # Anthropic base64 image blocks before the SDK call. Unknown /
+        # missing asset_id → placeholder text block (message count stays
+        # aligned so user/assistant alternation isn't broken). Pure-text
+        # turns are a no-op pass-through.
+        messages = _hydrate_messages(messages, asset_store)
         # Use the SDK's context-manager form so the underlying HTTP
         # stream is closed deterministically. We yield events while
         # inside the context, then a final message_stop after.
