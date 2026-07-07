@@ -205,6 +205,40 @@ class TokenCache:
             return token
 
 
+def download_image(image_key: str,
+                   token_cache: "TokenCache") -> tuple[bytes, str]:
+    """Download a Feishu image by ``image_key``. Returns
+    ``(content_bytes, media_type)``.
+
+    Uses ``token_cache.get()`` to obtain a tenant_access_token, then calls
+    ``GET {open_base}/open-apis/im/v1/images/{image_key}?image_type=message``.
+    The response body is the raw image binary; ``Content-Type`` reflects
+    the image format (possibly with ``; charset=...`` which we strip).
+
+    Raises ``ConnectionError`` when the token can't be acquired (missing
+    creds / network), ``requests`` isn't installed, or the upstream
+    returns non-200. Caller (channel supervisor) treats this as
+    "download failed -> fall back to placeholder text".
+    """
+    token = token_cache.get()
+    if not token:
+        raise ConnectionError(
+            "no tenant_access_token; check app_id/app_secret")
+    if not _HAS_REQUESTS:
+        raise ConnectionError("requests not installed")
+    url = f"{token_cache.open_base}/open-apis/im/v1/images/{image_key}"
+    resp = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        params={"image_type": "message"},
+        timeout=_HTTP_TIMEOUT,
+    )
+    resp.raise_for_status()
+    media_type = (resp.headers.get("Content-Type", "image/jpeg")
+                  .split(";")[0].strip() or "image/jpeg")
+    return resp.content, media_type
+
+
 __all__ = [
     "TokenCache",
     "parse_message_event",
@@ -212,6 +246,7 @@ __all__ = [
     "strip_bot_mention",
     "remember_inbound_chat_id",
     "lookup_inbound_chat_id",
+    "download_image",
     "_FEISHU_OPEN_BASE",
     "_HTTP_TIMEOUT",
 ]

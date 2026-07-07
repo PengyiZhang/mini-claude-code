@@ -609,3 +609,69 @@ def test_parse_message_event_image_returns_image_metadata():
     assert meta["kind"] == "image"
     assert meta["image_keys"] == ["img_key_abc"]
     assert meta["chat_id"] == "oc_yyy"
+
+
+def test_download_image_returns_bytes_and_media_type(monkeypatch):
+    """Mock requests.get -> return canned bytes + content-type header.
+
+    Verifies:
+    * URL is `{open_base}/open-apis/im/v1/images/{image_key}`
+    * Authorization header carries the tenant_access_token as `Bearer <t>`
+    * `image_type=message` query param present
+    * media_type parsed from Content-Type, stripping `; charset=...` etc.
+    """
+    from mini_cc.channels import feishu_common
+
+    class FakeResp:
+        status_code = 200
+        headers = {"Content-Type": "image/jpeg"}
+        content = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+        def raise_for_status(self): pass
+
+    def fake_get(url, *, headers=None, params=None, timeout=None, **kw):
+        assert "tenant_access_token" not in headers, (
+            "header should be Authorization Bearer, not raw token key")
+        assert headers.get("Authorization") == "Bearer tok_xxx", headers
+        assert url.endswith("/images/img_key_abc"), url
+        assert params == {"image_type": "message"}, params
+        return FakeResp()
+
+    monkeypatch.setattr(feishu_common.requests, "get", fake_get)
+
+    cache = feishu_common.TokenCache("app_id_x", "app_secret_y")
+    monkeypatch.setattr(cache, "get", lambda: "tok_xxx")
+
+    data, mt = feishu_common.download_image("img_key_abc", cache)
+    assert data == b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+    assert mt == "image/jpeg"
+
+
+def test_download_image_strips_content_type_charset(monkeypatch):
+    """Content-Type like `image/png; charset=binary` is parsed down to `image/png`."""
+    from mini_cc.channels import feishu_common
+
+    class FakeResp:
+        status_code = 200
+        headers = {"Content-Type": "image/png; charset=binary"}
+        content = b"\x89PNGfake"
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(feishu_common.requests, "get",
+                        lambda *a, **kw: FakeResp())
+    cache = feishu_common.TokenCache("a", "b")
+    monkeypatch.setattr(cache, "get", lambda: "tok")
+    data, mt = feishu_common.download_image("k", cache)
+    assert mt == "image/png"
+    assert data == b"\x89PNGfake"
+
+
+def test_download_image_raises_when_token_missing(monkeypatch):
+    """Empty token (bad creds) -> ConnectionError, not silent empty bytes."""
+    from mini_cc.channels import feishu_common
+
+    monkeypatch.setattr(feishu_common.requests, "get",
+                        lambda *a, **kw: pytest.fail("must not call http"))
+    cache = feishu_common.TokenCache("", "")
+    # TokenCache.get returns "" when app_id missing — do not override.
+    with pytest.raises(ConnectionError):
+        feishu_common.download_image("k", cache)
