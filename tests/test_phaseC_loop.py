@@ -230,3 +230,62 @@ def test_session_stop_unblocks_permission_wait(tmp_path):
     assert not t.is_alive(), "loop didn't exit after stop()"
     # The permission wait was interrupted; loop ended.
     assert any(e["type"] == "permission_request" for e in events)
+
+
+def test_assistant_message_emitted_via_on_event(tmp_path):
+    """Text-producing turns must fire ``assistant_message`` through the
+    ``on_event`` callback (not just via ``yield``). ChannelDispatcher
+    lives in the on_event chain, so without this emit, outbound channel
+    delivery (e.g. Feishu reply) never fires. Regression for the
+    "session shows reply but IM chat doesn't" bug."""
+    sandbox = SubprocessSandbox("proj-amsg", tmp_path / "ws")
+    storage = FSStorage(tmp_path / "state")
+    script = [
+        _MockResponse([_Block(type="text", text="hello world")],
+                      stop_reason="end_turn"),
+    ]
+    from mini_cc.core.llm import AnthropicProvider
+    client = _MockClient(script)
+    ref = ProjectRef(
+        project_id="proj-amsg", project_root=str(tmp_path / "ws"),
+        sandbox=sandbox, storage=storage,
+        client_factory=lambda: AnthropicProvider(lambda: client),
+        permissions=None, prompt_tools=set(),
+    )
+    emitted: list[dict] = []
+    loop = AgentLoop(ref, "sess-amsg",
+                     on_event=lambda ev: emitted.append(ev))
+    # Drain the generator so the run actually executes.
+    list(loop.run("hi"))
+    amsgs = [e for e in emitted if e.get("type") == "assistant_message"]
+    assert len(amsgs) == 1, f"expected 1 assistant_message, got {amsgs}"
+    assert amsgs[0].get("text") == "hello world"
+
+
+def test_assistant_message_not_emitted_for_empty_turn(tmp_path):
+    """A turn that produces only tool_use (no assistant text) must not
+    emit an empty assistant_message — channel deliver() would send an
+    empty IM reply. Guard against regressing into that spam path."""
+    sandbox = SubprocessSandbox("proj-empty", tmp_path / "ws")
+    storage = FSStorage(tmp_path / "state")
+    script = [
+        _MockResponse([_Block(type="tool_use", name="bash", id="tu1",
+                              input={"command": "echo hi"})]),
+        _MockResponse([_Block(type="text", text="")], stop_reason="end_turn"),
+    ]
+    from mini_cc.core.llm import AnthropicProvider
+    client = _MockClient(script)
+    ref = ProjectRef(
+        project_id="proj-empty", project_root=str(tmp_path / "ws"),
+        sandbox=sandbox, storage=storage,
+        client_factory=lambda: AnthropicProvider(lambda: client),
+        permissions=None, prompt_tools=set(),
+    )
+    emitted: list[dict] = []
+    loop = AgentLoop(ref, "sess-empty",
+                     on_event=lambda ev: emitted.append(ev))
+    list(loop.run("run"))
+    amsgs = [e for e in emitted if e.get("type") == "assistant_message"]
+    # Empty-text turn → no assistant_message emitted.
+    assert all(e.get("text") for e in amsgs), \
+        f"assistant_message with empty text leaked: {amsgs}"

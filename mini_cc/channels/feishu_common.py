@@ -114,8 +114,16 @@ def parse_message_event(event: dict) -> tuple[str | None, dict]:
 def render_event(event: dict) -> str:
     """Flatten a session event into a single Feishu text payload. Returns
     empty string when the event shouldn't be pushed (non-text / tool
-    noise / etc.) so the caller can short-circuit."""
+    noise / etc.) so the caller can short-circuit.
+
+    ``assistant_message`` is the canonical outbound signal — one per
+    assistant turn, fired from AgentLoop via ``on_event``. ``text`` is
+    the streaming-delta event (yielded to SSE); kept here so webhook-
+    mode bindings that subscribe to it still render, but in practice
+    ws-mode dispatchers see ``assistant_message`` for IM delivery."""
     etype = event.get("type", "")
+    if etype == "assistant_message":
+        return str(event.get("text", "")).strip()
     if etype == "text":
         return str(event.get("text", "")).strip()
     if etype == "teammate_message":

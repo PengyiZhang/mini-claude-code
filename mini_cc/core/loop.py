@@ -361,6 +361,27 @@ class AgentLoop:
         if self.on_event:
             self.on_event(ev)
 
+    def _emit_assistant_message(self, parts: list[str]) -> None:
+        """Flush accumulated assistant text into one ``assistant_message``
+        event via ``on_event``, then clear the buffer.
+
+        Why a separate event (not re-using ``{"type":"text"}``): text
+        events are *yielded* per-streaming-delta for UI SSE consumers;
+        ``on_event`` channels (ChannelDispatcher → Feishu reply, etc.)
+        need ONE consolidated message per turn, not a delta stream.
+        Without this emit, IM channels never see the bot's reply even
+        though the session transcript captures it fine — outbound path
+        was dead for text.
+
+        Empty / whitespace-only buffer is a no-op so tool-only turns
+        don't spam channels with blank messages."""
+        if not parts:
+            return
+        text = "".join(parts).strip()
+        if text:
+            self._emit({"type": "assistant_message", "text": text})
+        parts.clear()
+
     def _record_usage(self, response) -> None:
         """Push Anthropic usage (input/output/cache tokens) into the
         project's MetricsRegistry, if one is attached."""
@@ -734,6 +755,11 @@ class AgentLoop:
                 response = None  # becomes the message_stop StreamEvent
                 cancelled = False
                 streamed_text = False
+                # Accumulate assistant text produced this turn so we can
+                # emit one ``assistant_message`` event through on_event
+                # before the terminal ``done`` yield. Yielded text deltas
+                # feed the SSE UI; this emit feeds IM channel dispatch.
+                assistant_text_parts: list[str] = []
                 with log_span("anthropic.request",
                               tenant=self.project.tenant_id or "unknown",
                               model=self.state.current_model,
@@ -751,6 +777,7 @@ class AgentLoop:
                             if ev.kind == "text_delta" and ev.text:
                                 streamed_text = True
                                 partial_text_parts.append(ev.text)
+                                assistant_text_parts.append(ev.text)
                                 yield {"type": "text", "text": ev.text}
                             elif ev.kind == "tool_use":
                                 # Litellm provider emits streaming tool_use
@@ -816,6 +843,7 @@ class AgentLoop:
                     # from "user clicked stop". The metric counter below
                     # already exists; this is the per-stream signal.
                     yield {"type": "cancelled"}
+                    self._emit_assistant_message(assistant_text_parts)
                     yield {"type": "done"}
                     self._persist()
                     return
@@ -871,6 +899,7 @@ class AgentLoop:
                 for b in final_blocks:
                     if isinstance(b, dict) and b.get("type") == "text" \
                             and b.get("text"):
+                        assistant_text_parts.append(b["text"])
                         yield {"type": "text", "text": b["text"]}
 
             if response.stop_reason == "max_tokens":
@@ -885,6 +914,7 @@ class AgentLoop:
                     self.messages.append({"role": "user", "content": CONTINUATION_PROMPT})
                     self.state.recovery_count += 1
                     continue
+                self._emit_assistant_message(assistant_text_parts)
                 yield {"type": "done"}
                 self._persist()
                 return
@@ -900,6 +930,7 @@ class AgentLoop:
             if not _has_tool_use(final_blocks):
                 if self.hooks is not None:
                     self.hooks.trigger(Hooks.Stop)
+                self._emit_assistant_message(assistant_text_parts)
                 yield {"type": "done"}
                 self._persist()
                 return

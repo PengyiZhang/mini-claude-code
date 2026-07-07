@@ -399,6 +399,26 @@ def test_feishu_deliver_lead_nudged_renders_items(monkeypatch):
     assert "milestone" in captured["content"]
 
 
+def test_feishu_deliver_assistant_message_renders_text(monkeypatch):
+    """``assistant_message`` is the per-turn consolidated event AgentLoop
+    emits via on_event (one per assistant reply). The Feishu deliver
+    path must render it just like ``text`` — without this, even though
+    the dispatcher fires, no IM message gets pushed. Regression for the
+    "session sees reply, Feishu chat doesn't" bug."""
+    chan = feishu_mod.FeishuChannel(_binding({"chat_id": "oc"}))
+    monkeypatch.setattr(chan._token_cache, "get", lambda: "t")
+    captured = {}
+
+    def _post(url, **kw):
+        captured["content"] = kw["json"]["content"]
+        class _Resp:
+            def json(self): return {}
+        return _Resp()
+    monkeypatch.setattr(feishu_mod.requests, "post", _post)
+    chan.deliver({"type": "assistant_message", "text": "hello from bot"})
+    assert json.loads(captured["content"]) == {"text": "hello from bot"}
+
+
 def test_feishu_token_caches_across_calls(monkeypatch):
     chan = feishu_mod.FeishuChannel(_binding({
         "app_id": "a", "app_secret": "s", "chat_id": "oc"}))

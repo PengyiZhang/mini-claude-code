@@ -39,10 +39,13 @@ channel layer keeps each transport's logic in one file
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
 import uuid
+
+_log = logging.getLogger("mini_cc.channels.base")
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Protocol, runtime_checkable
@@ -399,21 +402,35 @@ class ChannelDispatcher:
             try:
                 channel = self._channel_factory(binding)
             except Exception:
+                _log.exception(
+                    "ChannelDispatcher: factory raised for kind=%s",
+                    binding.kind)
                 continue
             if channel is None:
+                _log.warning(
+                    "ChannelDispatcher: no channel built for binding %s "
+                    "(kind=%s) — factory returned None",
+                    binding.id, binding.kind)
                 continue
+            _log.info(
+                "ChannelDispatcher: dispatch %s -> binding %s (%s)",
+                etype, binding.id, getattr(binding, "transport", "?"))
             t = threading.Thread(
                 target=self._safe_deliver,
-                args=(channel, event),
+                args=(channel, event, binding),
                 daemon=True,
+                name=f"chan-deliver:{binding.id}",
             )
             t.start()
 
-    def _safe_deliver(self, channel: Channel, event: dict) -> None:
+    def _safe_deliver(self, channel: Channel, event: dict,
+                      binding) -> None:
         try:
             channel.deliver(event)
         except Exception:
-            pass
+            _log.exception(
+                "ChannelDispatcher: deliver raised for binding %s",
+                binding.id)
 
 
 __all__ = [

@@ -146,6 +146,13 @@ class FeishuWsChannel:
         """SDK callback for ``im.message.receive_v1``. Converts the SDK
         event object into our ``(user_input, metadata)`` shape and
         invokes the supervisor-provided callback."""
+        # Entry log: this is the FIRST observable signal that the SDK
+        # delivered an event to our handler. Without it we can't tell
+        # "Feishu didn't deliver" (H1) from "handler swallowed it"
+        # (H2) when debugging inbound. Logs at INFO so it shows in the
+        # default log level.
+        log.info("feishu ws binding %s: SDK delivered event type=%s",
+                 self.binding.id, type(event).__name__)
         try:
             # SDK event wraps the same JSON shape Feishu sends via
             # webhook. ``event.event`` is the inner ``event`` dict
@@ -154,6 +161,9 @@ class FeishuWsChannel:
             # stripping + non-text fallback stay identical.
             inner = getattr(event, "event", None)
             if inner is None:
+                log.warning(
+                    "feishu ws binding %s: event has no .event attr — "
+                    "dropping (SDK shape drift?)", self.binding.id)
                 return
             # Convert SDK domain object to plain dict for the shared
             # parser. lark-oapi events expose ``__dict__`` / are JSON-
