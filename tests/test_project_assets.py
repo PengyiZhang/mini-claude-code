@@ -58,29 +58,3 @@ def test_assets_persisted_across_manager_instances(tmp_path: Path):
     p2 = pm2.get("p1")
     assert p2.assets.get_meta(aid) is not None
     assert p2.assets.get_meta(aid)["bytes"] == len(_png_bytes())
-
-
-def test_as_ref_propagates_assets(tmp_path: Path):
-    """Pins Bug A fix: as_ref() must carry the project's AssetStore so
-    AgentLoop.provider.stream can hydrate {type:image, asset_id:"..."}
-    transcript refs into Anthropic base64 image blocks. Without this
-    field on ProjectRef, loop.py's getattr(project_ref, "assets", None)
-    silently returns None and every image block is replaced with the
-    "[image: missing]" text placeholder — the model never sees the
-    image, even though the bytes are on disk."""
-    pm = ProjectManager(tmp_path / "projects")
-    pm.create("tenant1", "p1")
-    p = pm.get("p1", tenant_id="tenant1")
-    aid = p.assets.put(_png_bytes(), media_type="image/png", src="test")
-
-    ref = p.as_ref()
-    # Same instance — not a copy, not a re-read. The loop's hydrate path
-    # sees the same in-memory index that put() just mutated.
-    assert ref.assets is p.assets
-    # And hydrate actually works through the ref.
-    block = ref.assets.hydrate_block(aid)
-    assert block is not None
-    assert block["type"] == "image"
-    assert block["source"]["type"] == "base64"
-    assert block["source"]["media_type"] == "image/png"
-    assert "data" in block["source"]

@@ -92,6 +92,11 @@ class Project:
     # as webhooks: cached on Project so the HTTP routes + the live
     # dispatcher share one object. None when storage has no FS root.
     channels: "ChannelRegistry | None" = None
+    # Per-project image asset store. Always present after _assemble (so
+    # downstream code can rely on `project.assets` being non-None). Lives
+    # at <root>/tenants/<tid>/projects/<pid>/.assets so asset bytes stay
+    # tenant + project scoped and survive cache invalidation.
+    assets: "object | None" = None  # AssetStore; set in _assemble
 
     @property
     def metrics(self):
@@ -393,6 +398,12 @@ class ProjectManager:
                 # without lark-oapi). Don't let WS spawn failures break
                 # project assembly.
                 pass
+        # Image asset store — always present so HTTP/inbound/teams paths
+        # can rely on `project.assets` being non-None. Lands at
+        # <root>/tenants/<tid>/projects/<pid>/.assets (sibling of the
+        # workspace dir) so bytes stay per-project + per-tenant.
+        from ..assets import AssetStore
+        project.assets = AssetStore(ws.parent / ".assets")
         # Workflow V2 (W1): same pattern — one WorkflowService per
         # project, backed by the same FSStorage, shared between the
         # HTTP routes and any in-process driver (tests, future UI).
