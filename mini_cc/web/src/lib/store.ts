@@ -103,6 +103,18 @@ export interface ChatMessage {
   sender?: "lead" | "teammate";
   // When sender === "teammate", name of the sender (e.g. "alice").
   teammateName?: string;
+  // Image attachments the user uploaded for this turn. Each entry is the
+  // pending-asset shape (asset_id + media_type + canonical url) so the
+  // renderer can build an <img src=url> without re-deriving anything.
+  // Absent on legacy messages and pure-text turns. Task 14 (image-block
+  // rendering in user bubbles) consumes this; Task 13 just captures it.
+  assets?: PendingAssetRef[];
+}
+
+export interface PendingAssetRef {
+  asset_id: string;
+  media_type: string;
+  url: string;
 }
 
 interface ChatState {
@@ -116,7 +128,7 @@ interface ChatState {
   _commandRunner: ((cmd: string) => void) | null;
   setCommandRunner: (fn: ((cmd: string) => void) | null) => void;
   runCommand: (command: string) => void;
-  appendUser: (key: string, text: string) => void;
+  appendUser: (key: string, text: string, assets?: PendingAssetRef[]) => void;
   // debug.8 Task A: push a teammate→lead message into the chat log
   // as its own bubble so it's visually distinguished from the lead's
   // own assistant turns. Rendered with a distinct avatar/name by
@@ -158,9 +170,22 @@ export const useChat = create<ChatState>((set, get) => ({
     const fn = get()._commandRunner;
     if (fn) fn(command);
   },
-  appendUser: (key, text) =>
+  appendUser: (key, text, assets) =>
     set((s) => ({
-      messages: { ...s.messages, [key]: [...(s.messages[key] ?? []), { role: "user", text }] },
+      messages: {
+        ...s.messages,
+        [key]: [
+          ...(s.messages[key] ?? []),
+          // Only attach the `assets` field when the caller actually passed
+          // something — keeps legacy pure-text turns free of an empty
+          // array, which the renderer would otherwise have to guard.
+          {
+            role: "user",
+            text,
+            ...(assets && assets.length > 0 ? { assets } : {}),
+          },
+        ],
+      },
     })),
   addTeammateMessage: (key, from, content) =>
     set((s) => ({
