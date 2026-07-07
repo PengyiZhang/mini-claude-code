@@ -73,24 +73,44 @@ def parse_message_event(event: dict) -> tuple[str | None, dict]:
 
     ``metadata`` always carries ``source="feishu"``, ``sender_open_id``,
     ``chat_id``, ``message_id`` so the agent context can attribute the
-    message."""
+    message. ``metadata["kind"]`` is ``"text"`` for normal text messages
+    and ``"image"`` for image messages; in the image case the caller
+    also gets ``metadata["image_keys"]`` (list of Feishu image_key
+    strings) and an empty ``user_input`` to indicate that the actual
+    content is image bytes referenced by those keys (downloaded
+    downstream via ``download_image``)."""
     sender = event.get("sender") or {}
     sender_id = (sender.get("sender_id") or {}).get("open_id", "?")
     message = event.get("message") or {}
     msg_type = message.get("message_type", "")
     chat_id = message.get("chat_id", "")
 
+    base_meta = {
+        "source": "feishu",
+        "sender_open_id": sender_id,
+        "chat_id": chat_id,
+        "message_id": message.get("message_id", ""),
+    }
+
+    if msg_type == "image":
+        content_raw = message.get("content", "{}")
+        try:
+            content = json.loads(content_raw) if content_raw else {}
+        except json.JSONDecodeError:
+            content = {}
+        image_key = content.get("image_key")
+        if not image_key:
+            return None, {}
+        return "", {**base_meta, "kind": "image",
+                    "image_keys": [image_key]}
+
     if msg_type != "text":
-        # Non-text: inject a placeholder so the lead sees the user tried,
-        # rather than silently dropping. Keeps chat_id+message_id visible.
+        # Non-text (post / audio / etc.): inject a placeholder so the
+        # lead sees the user tried, rather than silently dropping. Keeps
+        # chat_id+message_id visible.
         return (
             f"[Feishu non-text message: type={msg_type}]",
-            {
-                "source": "feishu",
-                "sender_open_id": sender_id,
-                "chat_id": chat_id,
-                "message_id": message.get("message_id", ""),
-            },
+            {**base_meta, "kind": "text"},
         )
     content_raw = message.get("content", "{}")
     try:
@@ -103,12 +123,7 @@ def parse_message_event(event: dict) -> tuple[str | None, dict]:
     text = strip_bot_mention(text)
     if not text:
         return None, {}
-    return text, {
-        "source": "feishu",
-        "sender_open_id": sender_id,
-        "chat_id": chat_id,
-        "message_id": message.get("message_id", ""),
-    }
+    return text, {**base_meta, "kind": "text"}
 
 
 def render_event(event: dict) -> str:

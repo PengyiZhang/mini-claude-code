@@ -314,6 +314,10 @@ def test_feishu_text_message_parses_to_user_input():
 
 
 def test_feishu_non_text_message_falls_back_to_placeholder():
+    """Non-image, non-text messages (post / audio / etc.) still emit a
+    placeholder so the lead sees the user tried. (Image messages now
+    flow through the dedicated image branch — see
+    test_parse_message_event_image_returns_image_metadata.)"""
     chan = feishu_mod.FeishuChannel(_binding())
     payload = {
         "header": {"event_type": "im.message.receive_v1", "token": "t"},
@@ -322,14 +326,14 @@ def test_feishu_non_text_message_falls_back_to_placeholder():
             "message": {
                 "message_id": "m",
                 "chat_id": "c",
-                "message_type": "image",
+                "message_type": "post",
                 "content": "{}",
             },
         },
     }
     result = chan.handle_inbound(json.dumps(payload).encode("utf-8"), {})
     assert result.user_input is not None
-    assert "image" in result.user_input
+    assert "post" in result.user_input
 
 
 def test_feishu_strips_bot_mention_at_user_tokens():
@@ -586,3 +590,22 @@ def test_dispatcher_calls_inner_callback(tmp_path):
                              channel_factory=lambda b: None)
     disp({"type": "text"})
     assert inner_events == [{"type": "text"}]
+
+
+def test_parse_message_event_image_returns_image_metadata():
+    """msg_type=image -> empty user_input + metadata.kind=image + image_keys."""
+    from mini_cc.channels.feishu_common import parse_message_event
+    event = {
+        "sender": {"sender_id": {"open_id": "ou_xxx"}},
+        "message": {
+            "message_type": "image",
+            "chat_id": "oc_yyy",
+            "message_id": "om_zzz",
+            "content": '{"image_key":"img_key_abc"}',
+        },
+    }
+    text, meta = parse_message_event(event)
+    assert text == ""
+    assert meta["kind"] == "image"
+    assert meta["image_keys"] == ["img_key_abc"]
+    assert meta["chat_id"] == "oc_yyy"
