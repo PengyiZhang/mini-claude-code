@@ -18,6 +18,8 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+from .feishu_common import TokenCache, download_image
+
 if TYPE_CHECKING:
     from ..projects import Project
     from ..session import SessionManager
@@ -61,7 +63,22 @@ def enqueue_inbound_turn(sm: "SessionManager",
     The session is resolved lazily: when ``session_id`` is None we fall
     back to the project's most-recent lead session (or create one named
     ``chan`` if none exists) so a brand-new channel binding can be the
-    user's first message."""
+    user's first message.
+
+    When ``metadata["kind"] == "image"`` the worker constructs a
+    ``TokenCache`` from ``metadata["_binding_config"]`` (set by the
+    channel supervisor before enqueue), downloads each Feishu
+    ``image_key`` via ``download_image``, persists the bytes through
+    ``project.assets.put``, and builds a content-blocks list
+    (``[{type:text,...?}, {type:image, asset_id}, ...]``) that is handed
+    to ``sm.send``. Download/asset-put happens INSIDE the worker so the
+    inbound webhook returns fast — Feishu's webhook timeout is tight
+    (~3s) and the LLM stream + image downloads can take much longer.
+
+    On per-image failure the worker substitutes a text placeholder block
+    rather than crashing — the lead still sees a turn surface with
+    "[image: download failed: ...]" so the operator notices.
+    """
     pid = project.project_id
 
     def _worker():
@@ -72,7 +89,9 @@ def enqueue_inbound_turn(sm: "SessionManager",
                     "channel inbound turn dropped: no session to route "
                     "into (project=%s)", pid)
                 return
-            for ev in sm.send(pid, sid, user_input):
+            effective_input = _maybe_build_image_blocks(user_input,
+                                                        metadata, project)
+            for ev in sm.send(pid, sid, effective_input):
                 # Persist every event so the /events tail stream picks
                 # up inbound-channel turns in the live UI. Best-effort —
                 # write failure doesn't break the turn (the dispatcher
@@ -98,6 +117,42 @@ def enqueue_inbound_turn(sm: "SessionManager",
         _WORKERS.add(t)
     t.start()
     return t
+
+
+def _maybe_build_image_blocks(user_input, metadata: dict, project):
+    """If ``metadata`` describes an image turn, return a list[dict] of
+    Anthropic-style content blocks (text + image refs) downloaded +
+    persisted via ``project.assets``. Otherwise return ``user_input``
+    unchanged (legacy string text turn).
+
+    Called from inside ``_worker`` so download/put latency is owned by
+    the background thread, not the inbound webhook caller.
+    """
+    if metadata.get("kind") != "image":
+        return user_input
+
+    binding_config = metadata.get("_binding_config") or {}
+    cache = TokenCache(
+        binding_config.get("app_id", ""),
+        binding_config.get("app_secret", ""),
+    )
+    source = metadata.get("source", "feishu")
+    blocks: list[dict] = []
+    if user_input:
+        blocks.append({"type": "text", "text": user_input})
+    for image_key in metadata.get("image_keys", []):
+        try:
+            data, media_type = download_image(image_key, cache)
+            aid = project.assets.put(
+                data, media_type=media_type,
+                src=f"{source}:{image_key}")
+            blocks.append({"type": "image", "asset_id": aid})
+        except Exception as e:
+            log.warning("image download failed for %s/%s: %s",
+                        source, image_key, e)
+            blocks.append({"type": "text",
+                           "text": f"[image: download failed: {e}]"})
+    return blocks
 
 
 def _resolve_default_session(project: "Project",

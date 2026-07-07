@@ -169,10 +169,17 @@ class ChannelReceiverSupervisor:
                           sm: "SessionManager") -> OnInbound:
         """Build the callback the receiver invokes for each event. Closes
         over the bound session_id + project so the receiver doesn't need
-        any context beyond (user_input, metadata)."""
+        any context beyond (user_input, metadata).
+
+        ``binding.config`` is attached under ``_binding_config`` so that
+        image-kind turns (parsed by ``feishu_common.parse_message_event``)
+        can construct a ``TokenCache`` for ``download_image`` without the
+        receiver having to know about Feishu credentials."""
         def _on_inbound(user_input: str, metadata: dict) -> None:
+            md = dict(metadata)
+            md.setdefault("_binding_config", dict(binding.config))
             enqueue_inbound_turn(sm, project, binding.session_id,
-                                 user_input, metadata)
+                                 user_input, md)
         return _on_inbound
 
     def _stop_unlocked(self, key, channel) -> None:
