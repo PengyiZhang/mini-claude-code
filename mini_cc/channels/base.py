@@ -181,7 +181,8 @@ class ChannelRegistry:
         out: dict[str, ChannelBinding] = {}
         for rec in raw if isinstance(raw, list) else []:
             try:
-                out[rec["id"]] = ChannelBinding(
+                event_types = list(rec.get("event_types") or [])
+                binding = ChannelBinding(
                     id=rec["id"],
                     kind=rec["kind"],
                     # Bindings written before the enable field existed
@@ -191,12 +192,24 @@ class ChannelRegistry:
                     enable=str(rec.get("enable") or "true"),
                     config=dict(rec.get("config") or {}),
                     session_id=rec.get("session_id"),
-                    event_types=list(rec.get("event_types") or []),
+                    event_types=event_types,
                     created_at=rec.get("created_at", ""),
                     transport=str(rec.get("transport") or "webhook"),
                 )
             except (KeyError, TypeError):
                 continue
+            # One-time backfill: pre-`assistant_message` bindings subscribed
+            # to "text" (streaming delta) but not "assistant_message" (the
+            # per-turn consolidated event AgentLoop emits via on_event).
+            # Without this, every existing binding silently misses the new
+            # event — Feishu chat stays quiet even though the session
+            # transcript captures the reply. Append (don't replace) so an
+            # operator's explicit filter intent is preserved. Empty list
+            # means 'subscribe to all' and must NOT be flipped to a list.
+            if binding.event_types and \
+                    "assistant_message" not in binding.event_types:
+                binding.event_types.append("assistant_message")
+            out[binding.id] = binding
         return out
 
     def _persist_locked(self) -> None:

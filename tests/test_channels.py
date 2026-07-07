@@ -62,14 +62,17 @@ def test_registry_add_persists_and_lists(tmp_path):
     assert b.session_id == "sess-1"
     assert b.event_types == ["text"]
 
-    # Reload from disk: must survive a fresh instance.
+    # Reload from disk: must survive a fresh instance. Note: registry
+    # load backfills "assistant_message" into any non-empty event_types
+    # list missing it — see test_registry_load_backfills_assistant_message_*
+    # for the rationale.
     reg2 = ChannelRegistry(tmp_path, "p1")
     loaded = reg2.get(b.id)
     assert loaded is not None
     assert loaded.kind == "feishu"
     assert loaded.config == {"app_id": "a", "app_secret": "b"}
     assert loaded.session_id == "sess-1"
-    assert loaded.event_types == ["text"]
+    assert loaded.event_types == ["text", "assistant_message"]
 
 
 def test_registry_remove(tmp_path):
@@ -184,6 +187,77 @@ def test_registry_persists_transport_field(tmp_path):
     reg2 = ChannelRegistry(tmp_path, "p1")
     transports = {b.config["app_id"]: b.transport for b in reg2.list()}
     assert transports == {"a": "ws", "b": "webhook"}
+
+
+def test_registry_load_backfills_assistant_message_into_old_event_types(tmp_path):
+    """Pre-fix bindings subscribed to a list of event types that did NOT
+    include ``assistant_message`` (the per-turn consolidated event the
+    AgentLoop emits via on_event). Without backfill, dispatcher's
+    matches_event filters it out and Feishu chat stays quiet even though
+    the session transcript captures the reply.
+
+    Fix: registry load appends ``assistant_message`` to any non-empty
+    explicit filter list missing it. Append (not replace) so operators'
+    explicit filter intent is preserved."""
+    fp = tmp_path / "p1" / ChannelRegistry.FILENAME
+    fp.parent.mkdir(parents=True)
+    fp.write_text(json.dumps([{
+        "id": "chan_old",
+        "kind": "feishu",
+        "config": {"app_id": "a"},
+        "session_id": None,
+        "event_types": ["text", "teammate_message", "lead_nudged"],
+        "created_at": "old",
+        "transport": "ws",
+    }]), encoding="utf-8")
+    reg = ChannelRegistry(tmp_path, "p1")
+    loaded = reg.get("chan_old")
+    assert loaded is not None
+    assert "assistant_message" in loaded.event_types
+    # Original entries preserved — append, not replace.
+    assert "text" in loaded.event_types
+    assert "teammate_message" in loaded.event_types
+
+
+def test_registry_load_does_not_backfill_when_event_types_empty(tmp_path):
+    """Empty event_types means 'subscribe to all' — backfilling would
+    flip it to an explicit list and silently narrow future event routing.
+    Must stay empty."""
+    fp = tmp_path / "p1" / ChannelRegistry.FILENAME
+    fp.parent.mkdir(parents=True)
+    fp.write_text(json.dumps([{
+        "id": "chan_all",
+        "kind": "feishu",
+        "config": {"app_id": "a"},
+        "session_id": None,
+        "event_types": [],
+        "created_at": "old",
+        "transport": "ws",
+    }]), encoding="utf-8")
+    reg = ChannelRegistry(tmp_path, "p1")
+    loaded = reg.get("chan_all")
+    assert loaded is not None
+    assert loaded.event_types == []
+
+
+def test_registry_load_skips_backfill_when_already_present(tmp_path):
+    """If the operator (or a prior backfill) already added
+    ``assistant_message``, we must not duplicate it."""
+    fp = tmp_path / "p1" / ChannelRegistry.FILENAME
+    fp.parent.mkdir(parents=True)
+    fp.write_text(json.dumps([{
+        "id": "chan_dup",
+        "kind": "feishu",
+        "config": {"app_id": "a"},
+        "session_id": None,
+        "event_types": ["assistant_message", "text"],
+        "created_at": "old",
+        "transport": "ws",
+    }]), encoding="utf-8")
+    reg = ChannelRegistry(tmp_path, "p1")
+    loaded = reg.get("chan_dup")
+    assert loaded is not None
+    assert loaded.event_types.count("assistant_message") == 1
 
 
 # ── Feishu inbound ──────────────────────────────────────────────────────

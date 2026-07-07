@@ -63,13 +63,23 @@ const TRANSPORT_TONES: Record<Transport, string> = {
 };
 
 const ALL_EVENT_TYPES = [
-  { key: "text", label: "text — agent 文本回复" },
+  // assistant_message = one per assistant turn, fired via on_event. This
+  // is what channel dispatchers route to IM push (Feishu reply etc.) —
+  // must be on by default or the chat stays silent even though the
+  // session transcript captures the reply.
+  { key: "assistant_message", label: "assistant_message — 一轮 agent 回复（推送 IM 用）" },
+  { key: "text", label: "text — agent 流式文本（SSE delta）" },
   { key: "teammate_message", label: "teammate_message — teammate 间消息" },
   { key: "lead_nudged", label: "lead_nudged — watcher 触发 lead turn" },
   { key: "tool_result", label: "tool_result — 工具执行结果" },
 ];
 
-const DEFAULT_EVENT_TYPES = ["text", "teammate_message", "lead_nudged"];
+const DEFAULT_EVENT_TYPES = [
+  "assistant_message",
+  "text",
+  "teammate_message",
+  "lead_nudged",
+];
 
 export default function ChannelsPanel({
   profile,
