@@ -65,7 +65,8 @@ class LLMProvider(Protocol):
     """Unified streaming interface for AgentLoop."""
 
     def stream(self, *, model: str, system: str, messages: list[dict],
-               tools: list[dict], max_tokens: int) -> Iterator[StreamEvent]:
+               tools: list[dict], max_tokens: int,
+               asset_store: Any = None) -> Iterator[StreamEvent]:
         ...
 
     @property
@@ -231,7 +232,9 @@ class LiteLLMProvider:
         self._extra_headers = extra_headers or {}
 
     def stream(self, *, model: str, system: str, messages: list[dict],
-               tools: list[dict], max_tokens: int) -> Iterator[StreamEvent]:
+               tools: list[dict], max_tokens: int,
+               asset_store: Any = None) -> Iterator[StreamEvent]:
+        # TODO: hydrate image blocks when LiteLLM supports them
         import litellm  # local import — keeps cold-start fast if unused
 
         # litellm emits a noisy deprecation warning for every call; mute
