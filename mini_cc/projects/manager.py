@@ -119,6 +119,7 @@ class Project:
             prompt_tools=self.prompt_tools or set(),
             tenant_id=self.meta.tenant_id,
             metrics=self._metrics,
+            assets=self.assets,
         )
 
     def rescan_skills(self) -> None:

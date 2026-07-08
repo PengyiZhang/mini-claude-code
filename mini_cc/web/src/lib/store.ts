@@ -114,7 +114,11 @@ export interface ChatMessage {
 export interface PendingAssetRef {
   asset_id: string;
   media_type: string;
-  url: string;
+  // Optional since Bug B fix: UserMessageContent no longer uses this
+  // field — it derives the blob URL via useAssetUrl(profile,pid,sid,
+  // asset_id). Kept for back-compat with callers that pre-bake the URL
+  // (Task 13's composer pending state).
+  url?: string;
 }
 
 interface ChatState {

@@ -243,6 +243,11 @@ class ProjectRef:
     prompt_tools: set[str] = field(default_factory=set)
     tenant_id: str = ""
     metrics: "object | None" = None  # MetricsRegistry or None
+    # AssetStore handle. Injected so LLM providers can hydrate
+    # {type:image, asset_id:"..."} transcript refs into Anthropic base64
+    # image blocks at call time. None on old/test refs is fine — the
+    # hydrate path falls back to a "[image: missing]" text placeholder.
+    assets: "object | None" = None
 
 
 class AgentLoop:

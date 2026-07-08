@@ -49,3 +49,35 @@ export default function UserMessageContent({
     </div>
   );
 }
+
+function UserImage({
+  profile,
+  pid,
+  sid,
+  assetId,
+}: {
+  profile: TenantProfile;
+  pid: string;
+  sid: string;
+  assetId: string;
+}) {
+  const { url, error } = useAssetUrl(profile, pid, sid, assetId);
+  if (error) {
+    return (
+      <div className="text-destructive text-xs">[image: failed to load]</div>
+    );
+  }
+  if (!url) {
+    return (
+      <div className="animate-pulse h-32 w-32 bg-muted rounded"
+           aria-label="loading image" />
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      className="max-w-64 rounded border border-border/50"
+    />
+  );
+}
