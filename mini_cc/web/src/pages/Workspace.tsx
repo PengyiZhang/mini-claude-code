@@ -4,6 +4,7 @@ import TopBar from "../components/TopBar";
 import FileTree from "../components/FileTree";
 import FilePreview from "../components/FilePreview";
 import MessageBubble from "../components/MessageBubble";
+import UserImage from "../components/UserImage";
 import PermissionPrompt, {
   PermissionPromptData,
   pendingToData,
@@ -867,9 +868,11 @@ export default function Workspace() {
                         className="relative"
                         data-testid={`pending-asset-${a.asset_id}`}
                       >
-                        <img
-                          src={a.url}
-                          alt=""
+                        <UserImage
+                          profile={profile}
+                          pid={pid}
+                          sid={sid!}
+                          assetId={a.asset_id}
                           className="w-12 h-12 object-cover rounded border border-border"
                         />
                         <button
