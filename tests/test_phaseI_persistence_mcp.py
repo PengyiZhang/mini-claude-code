@@ -397,8 +397,9 @@ class _FakeReader:
 
 
 def _frame(payload: dict) -> bytes:
+    # NDJSON framing — matches the modern MCP stdio transport.
     body = json.dumps(payload).encode("utf-8")
-    return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+    return body + b"\n"
 
 
 def test_stdio_mcp_client_handshake_and_call_tool():
