@@ -104,6 +104,11 @@ def test_assembly_records_failed_attempt_from_disk(tmp_path, monkeypatch):
     _connect_configured_mcp_servers(
         pool, data_dir=tmp_path, tenant_id="t",
         workspace=tmp_path / "ws")
+    # _connect_configured_mcp_servers now dispatches async so project
+    # load isn't blocked by cold MCP startups. Wait for the background
+    # connect to settle before asserting.
+    assert pool.wait_for_connect("dead", timeout=10.0), (
+        "background connect did not settle in time")
     attempts = pool.list_attempts()
     assert "dead" in attempts
     assert attempts["dead"].ok is False
