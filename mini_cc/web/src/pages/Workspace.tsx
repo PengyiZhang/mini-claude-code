@@ -36,7 +36,7 @@ import { fetchCommands, streamRunCommand } from "../lib/commands";
 import type { CommandDef } from "../lib/commands";
 import { useComposerAttachments } from "./useComposerAttachments";
 
-type Tab = "chat" | "files" | "run" | "channels";
+type Tab = "Chat" | "Files" | "Run" | "Channels";
 
 const EMPTY: ChatMessage[] = [];
 const EMPTY_PERMS: PermissionPromptData[] = [];
@@ -44,7 +44,7 @@ const EMPTY_PERMS: PermissionPromptData[] = [];
 export default function Workspace() {
   const { pid = "" } = useParams();
   const profile = useAuth((s) => s.current())!;
-  const [tab, setTab] = useState<Tab>("chat");
+  const [tab, setTab] = useState<Tab>("Chat");
   const [sessions, setSessions] = useState<string[]>([]);
   const [warmSet, setWarmSet] = useState<Record<string, boolean>>({});
   const [sid, setSid] = useState<string | null>(null);
@@ -63,6 +63,7 @@ export default function Workspace() {
   const addTeammateMessage = useChat((s) => s.addTeammateMessage);
   const startAssistant = useChat((s) => s.startAssistant);
   const appendText = useChat((s) => s.appendText);
+  const appendThinking = useChat((s) => s.appendThinking);
   const addActivity = useChat((s) => s.addActivity);
   const addCard = useChat((s) => s.addCard);
   const setActivityResult = useChat((s) => s.setActivityResult);
@@ -448,6 +449,10 @@ export default function Workspace() {
         ensureStreamingBubble(key);
         appendText(key, ev.text);
         break;
+      case "thinking":
+        ensureStreamingBubble(key);
+        appendThinking(key, ev.text);
+        break;
       case "tool_use":
         ensureStreamingBubble(key);
         addActivity(key, {
@@ -744,7 +749,7 @@ export default function Workspace() {
         {/* Sidebar */}
         <aside className="w-64 border-r border-border bg-bg-panel p-3 flex flex-col gap-3 overflow-y-auto shrink-0">
           <div className="flex gap-1 text-sm">
-            {(["chat", "files", "run", "channels"] as Tab[]).map((t) => (
+            {(["Chat", "Files", "Run", "Channels"] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -757,7 +762,7 @@ export default function Workspace() {
             ))}
           </div>
 
-          {tab === "chat" && (
+          {tab === "Chat" && (
             <div className="space-y-2">
               <div className="text-xs text-ink-dim uppercase tracking-wide">sessions</div>
               <button
@@ -784,7 +789,7 @@ export default function Workspace() {
             </div>
           )}
 
-          {tab === "files" && (
+          {tab === "Files" && (
             <div className="space-y-2">
               <div className="text-xs text-ink-dim">
                 Workspace files live in the tree. Use the <span className="font-mono">＋</span> button at the top of the tree to upload, and the <span className="font-mono">⬇</span> button to download. Right-click any folder for per-folder actions.
@@ -792,11 +797,11 @@ export default function Workspace() {
             </div>
           )}
 
-          {tab === "run" && (
+          {tab === "Run" && (
             <RunTablePanel profile={profile} pid={pid} sid={sid} />
           )}
 
-          {tab === "channels" && (
+          {tab === "Channels" && (
             <ChannelsPanel profile={profile} pid={pid} />
           )}
 
@@ -816,7 +821,7 @@ export default function Workspace() {
             </div>
           )}
 
-          {tab === "chat" && (
+          {tab === "Chat" && (
             <>
               {/* Pending permission prompts */}
               {sid && pending.length > 0 && (
@@ -1096,7 +1101,7 @@ export default function Workspace() {
             </>
           )}
 
-          {tab === "files" && (
+          {tab === "Files" && (
             <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-0 min-h-0">
               <div className="border-r border-border overflow-auto p-3">
                 <FileTree
@@ -1119,7 +1124,7 @@ export default function Workspace() {
           )}
 
           </div>
-          {tab === "chat" && (
+          {tab === "Chat" && (
             <TeamSidebar pid={pid} sid={sid} setSid={setSid} />
           )}
         </main>

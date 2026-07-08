@@ -785,6 +785,8 @@ class AgentLoop:
                                 partial_text_parts.append(ev.text)
                                 assistant_text_parts.append(ev.text)
                                 yield {"type": "text", "text": ev.text}
+                            elif ev.kind == "thinking_delta" and ev.thinking:
+                                yield {"type": "thinking", "text": ev.thinking}
                             elif ev.kind == "tool_use":
                                 # Litellm provider emits streaming tool_use
                                 # events; capture the partial so cancel/error

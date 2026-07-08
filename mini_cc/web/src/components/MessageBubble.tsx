@@ -5,14 +5,37 @@ import { lineDiff, diffStats } from "../lib/diff"
 import BackgroundTile from "./BackgroundTile"
 import { useAuth, useSessionNav } from "../lib/store"
 import { CardView } from "./cards"
+import UserMessageContent from "./UserMessageContent"
 
 export default function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "user") {
+    // Task 14: render attached image assets alongside the text. Pure-text
+    // turns still take the historical fast path (just render {msg.text}).
+    // When assets are present, defer to UserMessageContent so the <img>
+    // src is built via assetUrl(profile, pid, sid, asset_id) and the
+    // browser fetches through the authenticated asset endpoint.
+    const hasAssets = (msg.assets?.length ?? 0) > 0;
+    // chatKey shape is `${pid}/${sid}` — injected by MessageBubbleWithKey
+    // at the Workspace render site. Missing key = legacy/test path; we
+    // can't build asset URLs without it, so fall back to text-only.
+    const chatKey = (msg as unknown as { __key?: string }).__key;
+    const [pid, sid] = (chatKey ?? "::").split("::");
+    const profileFromStore = useAuth((s) => s.current());
     return (
       <div className="flex gap-3 justify-end">
         <div className="flex-1 flex justify-end">
           <div className="bg-accent/15 border border-accent/30 text-ink rounded-lg rounded-br-sm px-4 py-2 max-w-[80%] whitespace-pre-wrap break-words">
-            {msg.text}
+            {hasAssets && profileFromStore && pid && sid ? (
+              <UserMessageContent
+                text={msg.text}
+                assets={msg.assets}
+                profile={profileFromStore}
+                pid={pid}
+                sid={sid}
+              />
+            ) : (
+              msg.text
+            )}
           </div>
         </div>
         <div className="size-8 rounded-md bg-gradient-to-br from-slate-500 to-slate-400 shrink-0 mt-0.5 flex items-center justify-center text-white text-xs font-semibold uppercase" title="You">
@@ -49,6 +72,7 @@ export default function MessageBubble({ msg }: { msg: ChatMessage }) {
       </div>
       <div className="flex-1 space-y-2 min-w-0">
         {nameBadge}
+        {msg.thinking && <ThinkingDisclosure text={msg.thinking} />}
         {msg.cards?.map((c) => (
           <CardView key={c.id} card={c} parentCardId={c.id} chatKey={chatKey} />
         ))}
@@ -79,6 +103,32 @@ export default function MessageBubble({ msg }: { msg: ChatMessage }) {
 }
 
 import { useChat } from "../lib/store";
+
+function ThinkingDisclosure({ text }: { text: string }) {
+  // Collapsible disclosure for extended-thinking reasoning. Default
+  // collapsed — reasoning is auxiliary; the user opts in to read it.
+  // Rendered above the answer text via MarkdownRenderer so links /
+  // code fences in the reasoning still format correctly.
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="text-xs border border-border/50 bg-bg-hover/40 rounded-md overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-hover text-ink-dim"
+      >
+        <span>{open ? "▼" : "▶"}</span>
+        <span>🧠 thinking</span>
+        <span className="ml-auto opacity-70">{text.length} chars</span>
+      </button>
+      {open && (
+        <div className="border-t border-border/50 px-3 py-2 text-ink-dim">
+          <MarkdownRenderer content={text} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Activity({
   msg,

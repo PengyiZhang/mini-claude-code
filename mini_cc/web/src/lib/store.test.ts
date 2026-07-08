@@ -318,3 +318,128 @@ describe("rawToChatMessages — legacy nested-shape cards", () => {
     expect(asst?.cards ?? []).toHaveLength(0);
   });
 });
+
+// Task 14: server replay of a user message that carried image blocks.
+// After a page reload, the backend persists user content as
+//   {role:"user", content:[{type:"text",...},{type:"image",asset_id:...}]}
+// and rawToChatMessages must rebuild a ChatMessage with text + assets,
+// not treat it as tool_result and silently drop it.
+describe("rawToChatMessages — user image blocks (Task 14)", () => {
+  it("hydrates user content as list of text+image blocks into text + assets", () => {
+    const raw = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "what is this?" },
+          { type: "image", asset_id: "abc123", media_type: "image/png" },
+        ],
+      },
+    ];
+    const out = rawToChatMessages(raw as never);
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe("user");
+    expect(out[0].text).toBe("what is this?");
+    expect(out[0].assets?.[0]?.asset_id).toBe("abc123");
+    expect(out[0].assets?.[0]?.media_type).toBe("image/png");
+    // url is NOT set by hydrate — UserMessageContent re-derives it via
+    // assetUrl(profile, pid, sid, asset_id) at render time.
+    expect(out[0].assets?.[0]?.url).toBe("");
+  });
+
+  it("hydrates a pure-image user turn (no text block)", () => {
+    const raw = [
+      {
+        role: "user",
+        content: [
+          { type: "image", asset_id: "onlyimg", media_type: "image/jpeg" },
+        ],
+      },
+    ];
+    const out = rawToChatMessages(raw as never);
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe("user");
+    expect(out[0].text).toBe("");
+    expect(out[0].assets?.[0]?.asset_id).toBe("onlyimg");
+  });
+
+  it("still skips array content that is pure tool_result (legacy path)", () => {
+    // Sanity: an array of only tool_result blocks must continue to be
+    // treated as the in-flight assistant continuation, not a new user turn.
+    const raw = [
+      { role: "user", content: "/agents" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "t1", name: "list_agents", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "t1", content: "ok" },
+        ],
+      },
+    ];
+    const out = rawToChatMessages(raw as never);
+    // One user bubble (the /agents turn) + one assistant bubble. The
+    // tool_result user message must NOT surface as a second user bubble.
+    expect(out.filter((m) => m.role === "user")).toHaveLength(1);
+  });
+});
+
+describe("useChat.appendThinking", () => {
+  beforeEach(() => {
+    useChat.getState().clear("p/s");
+    useChat.getState().startAssistant("p/s");
+  });
+
+  it("concatenates reasoning onto the streaming assistant bubble's .thinking", () => {
+    useChat.getState().appendThinking("p/s", "hello ");
+    useChat.getState().appendThinking("p/s", "world");
+    const msgs = useChat.getState().messages["p/s"];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].thinking).toBe("hello world");
+  });
+
+  it("leaves finished bubbles alone (only streams into a streaming tail)", () => {
+    useChat.getState().finishAssistant("p/s");
+    useChat.getState().appendThinking("p/s", "ignored");
+    const msgs = useChat.getState().messages["p/s"];
+    expect(msgs[0].thinking).toBeUndefined();
+  });
+});
+
+describe("rawToChatMessages — thinking blocks", () => {
+  it("rehydrates Anthropic thinking blocks into ChatMessage.thinking", () => {
+    // Persisted shape (Anthropic SDK model_dump): {type:"thinking",
+    // thinking:"...", signature:"..."}. The signature stays in the
+    // transcript for the next turn's round-trip; we only surface the
+    // text in the UI.
+    const raw = [
+      { role: "user", content: "why?" },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "step 1: …", signature: "sig-1" },
+          { type: "thinking", thinking: "step 2: …", signature: "sig-2" },
+          { type: "text", text: "because" },
+        ],
+      },
+    ];
+    const out = rawToChatMessages(raw as never);
+    const assistant = out.find((m) => m.role === "assistant");
+    expect(assistant).toBeDefined();
+    expect(assistant!.text).toBe("because");
+    expect(assistant!.thinking).toBe("step 1: …step 2: …");
+  });
+
+  it("omits thinking field on assistant turns without thinking blocks", () => {
+    const raw = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: [{ type: "text", text: "yo" }] },
+    ];
+    const out = rawToChatMessages(raw as never);
+    const assistant = out.find((m) => m.role === "assistant");
+    expect(assistant!.thinking).toBeUndefined();
+  });
+});

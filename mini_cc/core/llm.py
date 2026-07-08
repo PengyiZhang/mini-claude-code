@@ -12,7 +12,7 @@ Loop.py consumes :class:`StreamEvent` instances from either provider
 and never touches the underlying SDK shapes.
 """
 from __future__ import annotations
-
+import logging
 import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Literal, Protocol
@@ -27,6 +27,7 @@ LITELLM_PREFIXES: tuple[str, ...] = (
     "perplexity/", "voyage/", "ai21/", "baseten/", "custom/",
 )
 
+logger = logging.getLogger(__name__)
 
 def looks_like_litellm(model: str) -> bool:
     """Return True if ``model`` should route through the litellm backend."""
@@ -41,6 +42,10 @@ class StreamEvent:
 
     - ``text_delta``  — partial assistant text. Loop yields it as a
       streaming ``{"type": "text"}`` event to the client.
+    - ``thinking_delta`` — partial reasoning content from Claude's
+      extended-thinking blocks. Loop yields it as a streaming
+      ``{"type": "thinking"}`` event so the UI can render a
+      collapsible "thinking" disclosure alongside the answer.
     - ``tool_use``    — completed tool-call block (accumulated across
       deltas by the provider). Loop dispatches the tool and emits the
       matching tool_result.
@@ -50,8 +55,11 @@ class StreamEvent:
     - ``error``       — provider raised mid-stream. ``message`` carries
       the human-readable string; loop decides whether to retry or surface.
     """
-    kind: Literal["text_delta", "tool_use", "message_stop", "error"]
+    kind: Literal["text_delta", "thinking_delta", "tool_use",
+                  "message_stop", "error"]
     text: str | None = None
+    # Carries partial reasoning text when kind == "thinking_delta".
+    thinking: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
     tool_input: dict | None = None
@@ -99,6 +107,9 @@ def _hydrate_messages(messages: list[dict], store: Any) -> list[dict]:
                     and "asset_id" in b):
                 hydrated = (store.hydrate_block(b["asset_id"])
                             if store is not None else None)
+                if hydrated is None:
+                    logger.warning(
+                        "hydrate_messages: unknown asset_id %s", b["asset_id"])
                 new_blocks.append(hydrated
                                   or {"type": "text",
                                       "text": "[image: missing]"})
@@ -178,7 +189,12 @@ class AnthropicProvider:
                 if etype == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     dtype = getattr(delta, "type", None) if delta else None
-                    if dtype == "text_delta":
+                    if dtype == "thinking_delta":
+                        thinking = getattr(delta, "thinking", "") or ""
+                        if thinking:
+                            yield StreamEvent(
+                                kind="thinking_delta", thinking=thinking)
+                    elif dtype == "text_delta":
                         text = getattr(delta, "text", "") or ""
                         if text:
                             yield StreamEvent(kind="text_delta", text=text)
