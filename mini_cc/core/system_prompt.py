@@ -21,7 +21,8 @@ def assemble_system_prompt(*,
                            memories: str = "",
                            mcp_servers: list[str] | None = None,
                            skills_catalog: str = "",
-                           project_guide: str = "") -> str:
+                           project_guide: str = "",
+                           vision_tools: Iterable | None = None) -> str:
     now = datetime.now()
     sections = [PROMPT_IDENTITY, PROMPT_TOOLS,
                 f"Working directory: {project_root}",
@@ -44,7 +45,28 @@ def assemble_system_prompt(*,
         sections.append(f"Relevant memories:\n{memories}")
     if mcp_servers:
         sections.append(f"Connected MCP servers: {', '.join(mcp_servers)}")
+    vision_list = list(vision_tools) if vision_tools else []
+    if vision_list:
+        sections.append(_vision_section(vision_list))
     return "\n\n".join(sections)
+
+
+def _vision_section(vision_tools: list) -> str:
+    """Compose the vision-tools system-prompt section. Emitted only when
+    the model can't process images natively — tells it which MCP tool to
+    pass each signed URL to."""
+    lines = ["This deployment's model does not process images directly. "
+             "When a user message references an image at a URL "
+             "(e.g. \"[image attached at http://.../shared/asset/sh_...]\"), "
+             "call one of these vision tools with that URL:"]
+    for t in vision_tools:
+        name = getattr(t, "name", str(t))
+        desc = (getattr(t, "description", "") or "").strip()
+        if desc:
+            lines.append(f"- {name}: {desc}")
+        else:
+            lines.append(f"- {name}")
+    return "\n".join(lines)
 
 
 def load_project_guide(project_root: Path) -> str:

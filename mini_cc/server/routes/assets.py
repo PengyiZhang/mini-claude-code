@@ -97,3 +97,41 @@ def get_asset(
     meta = project.assets.get_meta(aid) or {}
     return FileResponse(str(path), media_type=meta.get("media_type",
                                                        "application/octet-stream"))
+
+
+# ── Public unauthenticated route ──────────────────────────────────────
+# Mounted at root (no tenant/project/session prefix) so vision MCP tools
+# — typically subprocesses without API credentials — can fetch an image
+# by signed URL alone. The token IS the auth: HMAC-signed, short-TTL,
+# scoped to a single asset. This is the handoff path for the
+# vision-gated image feature (MINI_CC_MODEL_VISION=false).
+
+public_router = APIRouter(tags=["assets"])
+
+
+@public_router.get("/shared/asset/{token}")
+def get_shared_asset(token: str, request: Request, pm=Depends(get_pm)):
+    """Fetch an asset by signed URL token. No Authorization header
+    required — the token's HMAC signature replaces it.
+
+    Used by MCP vision tools (zai-mcp-server, playwright-mcp) to read
+    an image attached to a chat message without needing the user's API
+    key. Tokens are minted by the agent loop when hydrating image
+    blocks for a vision-incapable model.
+    """
+    from ..errors import Unauthorized
+    from ...sharing.tokens import BadShareToken, verify_asset_token
+    try:
+        claims = verify_asset_token(token)
+    except BadShareToken as e:
+        raise Unauthorized(f"invalid asset token: {e}")
+    try:
+        project = pm.get(claims.project_id)
+    except KeyError as e:
+        raise NotFound(str(e) or "project not found")
+    path = project.assets.get_path(claims.asset_id)
+    if path is None:
+        raise NotFound(f"asset {claims.asset_id} not found")
+    meta = project.assets.get_meta(claims.asset_id) or {}
+    return FileResponse(str(path), media_type=meta.get(
+        "media_type", "application/octet-stream"))

@@ -119,6 +119,8 @@ def cmd_serve(args) -> int:
     port = int(_env("MINI_CC_PORT", "8000"))
 
     backend_name = type(ctx._runtime).__name__ if ctx._runtime else "none"
+    from ..config import default_config as _dc
+    _cfg = _dc()
     logging.getLogger("mini_cc").info(
         "starting server",
         extra={"host": host, "port": port,
@@ -126,7 +128,9 @@ def cmd_serve(args) -> int:
                "rate_limit_overrides": overrides,
                "data_dir": str(data_dir),
                "docker_available": backend_available,
-               "sandbox_backend": backend_name})
+               "sandbox_backend": backend_name,
+               "model_vision": getattr(_cfg, "model_vision", True),
+               "public_base_url": getattr(_cfg, "public_base_url", None)})
     # P0-3: warn loudly when LLM credentials are missing. Server starts
     # anyway (so operators can debug config) but /health reflects the
     # state and the first /send will 401.

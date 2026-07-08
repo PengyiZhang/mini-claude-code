@@ -74,7 +74,10 @@ class LLMProvider(Protocol):
 
     def stream(self, *, model: str, system: str, messages: list[dict],
                tools: list[dict], max_tokens: int,
-               asset_store: Any = None) -> Iterator[StreamEvent]:
+               asset_store: Any = None,
+               vision_capable: bool = True,
+               asset_url_minter: Callable[[str], str | None] | None = None
+               ) -> Iterator[StreamEvent]:
         ...
 
     @property
@@ -84,7 +87,11 @@ class LLMProvider(Protocol):
 
 # ── Anthropic backend ──────────────────────────────────────────────────────
 
-def _hydrate_messages(messages: list[dict], store: Any) -> list[dict]:
+def _hydrate_messages(messages: list[dict], store: Any,
+                      *,
+                      vision_capable: bool = True,
+                      asset_url_minter: Callable[[str], str | None] | None = None
+                      ) -> list[dict]:
     """Walk ``messages`` and expand ``{type:"image", asset_id:"..."}`` blocks
     into Anthropic base64 image blocks via ``store.hydrate_block``.
 
@@ -93,6 +100,14 @@ def _hydrate_messages(messages: list[dict], store: Any) -> list[dict]:
       placeholder so message count stays aligned with the transcript.
     - String content and non-image blocks pass through untouched.
     - Non-dict blocks (pydantic objects, etc.) pass through untouched.
+
+    Vision gating: when ``vision_capable=False`` and ``asset_url_minter``
+    is callable, image blocks are instead replaced with a text block
+    carrying a short-lived signed URL. The model is then expected to
+    pass that URL to a vision-capable MCP tool (the system prompt tells
+    it which tool to use). If the minter returns None (e.g. no
+    ``MINI_CC_PUBLIC_BASE_URL`` configured), fall back to base64
+    embedding so the request still goes through.
     """
     out: list[dict] = []
     for m in messages:
@@ -105,6 +120,15 @@ def _hydrate_messages(messages: list[dict], store: Any) -> list[dict]:
             if (isinstance(b, dict)
                     and b.get("type") == "image"
                     and "asset_id" in b):
+                if not vision_capable and asset_url_minter is not None:
+                    url = asset_url_minter(b["asset_id"])
+                    if url:
+                        new_blocks.append({
+                            "type": "text",
+                            "text": (f"[image attached at {url} — use a "
+                                     f"vision tool to inspect]"),
+                        })
+                        continue
                 hydrated = (store.hydrate_block(b["asset_id"])
                             if store is not None else None)
                 if hydrated is None:
@@ -169,13 +193,18 @@ class AnthropicProvider:
 
     def stream(self, *, model: str, system: str, messages: list[dict],
                tools: list[dict], max_tokens: int,
-               asset_store: Any = None) -> Iterator[StreamEvent]:
+               asset_store: Any = None,
+               vision_capable: bool = True,
+               asset_url_minter: Callable[[str], str | None] | None = None
+               ) -> Iterator[StreamEvent]:
         # Hydrate {type:image, asset_id:"..."} transcript references into
         # Anthropic base64 image blocks before the SDK call. Unknown /
         # missing asset_id → placeholder text block (message count stays
         # aligned so user/assistant alternation isn't broken). Pure-text
         # turns are a no-op pass-through.
-        messages = _hydrate_messages(messages, asset_store)
+        messages = _hydrate_messages(messages, asset_store,
+                                     vision_capable=vision_capable,
+                                     asset_url_minter=asset_url_minter)
         # Use the SDK's context-manager form so the underlying HTTP
         # stream is closed deterministically. We yield events while
         # inside the context, then a final message_stop after.
@@ -249,7 +278,10 @@ class LiteLLMProvider:
 
     def stream(self, *, model: str, system: str, messages: list[dict],
                tools: list[dict], max_tokens: int,
-               asset_store: Any = None) -> Iterator[StreamEvent]:
+               asset_store: Any = None,
+               vision_capable: bool = True,
+               asset_url_minter: Callable[[str], str | None] | None = None
+               ) -> Iterator[StreamEvent]:
         # Hydrate {type:image, asset_id:"..."} transcript references into
         # Anthropic base64 image blocks before converting. _convert_messages
         # then rewrites them to OpenAI image_url data-URI form so the image
@@ -257,7 +289,9 @@ class LiteLLMProvider:
         # via any LiteLLM-routed provider (DeepSeek/Qwen/Gemini/etc.) would
         # be silently dropped by _convert_messages (which only handles
         # text + tool_result user-block types).
-        messages = _hydrate_messages(messages, asset_store)
+        messages = _hydrate_messages(messages, asset_store,
+                                     vision_capable=vision_capable,
+                                     asset_url_minter=asset_url_minter)
         import litellm  # local import — keeps cold-start fast if unused
 
         # litellm emits a noisy deprecation warning for every call; mute

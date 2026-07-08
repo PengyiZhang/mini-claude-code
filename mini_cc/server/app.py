@@ -239,6 +239,7 @@ def build_app(*, data_dir: Path,
     app.include_router(sessions_routes.router)
     app.include_router(team_routes.router)
     app.include_router(assets_routes.router)
+    app.include_router(assets_routes.public_router)
     app.include_router(resources_routes.router)
     app.include_router(resources_routes.download_router)
     app.include_router(permissions_routes.router)

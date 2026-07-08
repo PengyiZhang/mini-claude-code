@@ -464,3 +464,35 @@ class MCPPool:
                     fn=_make_fn(),
                 ))
         return wrappers
+
+    # Parameter names that strongly indicate "this tool takes an image".
+    # Bare ``url`` is intentionally excluded — too generic (could be a
+    # fetch endpoint, S3 link, etc.); the prefixed variants
+    # (image_url, image_path) are safe.
+    _VISION_PARAM_NAMES = frozenset({
+        "image", "imagesource", "imageurl", "image_url",
+        "image_path", "picture", "screenshot",
+    })
+    _VISION_DESC_KEYWORDS = ("image", "screenshot", "picture")
+
+    def vision_tools(self):
+        """Subset of all_tools() limited to MCP tools that look like
+        they accept an image input — used to compose the vision-gated
+        system prompt when the configured model lacks native vision."""
+        seen = set()
+        out = []
+        for tool in self.all_tools():
+            if tool.name in seen:
+                continue
+            schema = getattr(tool, "input_schema", {}) or {}
+            props = set((schema.get("properties") or {}).keys())
+            props_lower = {p.lower() for p in props}
+            if props_lower & self._VISION_PARAM_NAMES:
+                seen.add(tool.name)
+                out.append(tool)
+                continue
+            desc = (getattr(tool, "description", "") or "").lower()
+            if any(k in desc for k in self._VISION_DESC_KEYWORDS):
+                seen.add(tool.name)
+                out.append(tool)
+        return out

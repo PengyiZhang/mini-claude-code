@@ -44,6 +44,14 @@ def _env_first(*names: str) -> Optional[str]:
     return None
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Parse a boolean env var. Accepts true/false/1/0/yes/no (case-insensitive)."""
+    v = os.getenv(name)
+    if not v:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _mcp_servers_from_env() -> dict[str, dict] | None:
     """Parse ``MINI_CC_MCP_SERVERS`` as JSON. Expected shape::
 
@@ -104,6 +112,16 @@ class AnthropicConfig:
     # ``{command: [...], env: {...}, cwd: "..."}``. Sourced from
     # ``MINI_CC_MCP_SERVERS`` as JSON, or set programmatically.
     mcp_servers: dict[str, dict] | None = None
+    # Whether the configured model can process images natively. When
+    # False, the hydrator swaps each image block for a signed URL and
+    # the system prompt names a vision MCP tool to call with it.
+    # Default True for backwards compat — only deployments that know
+    # their model lacks vision should set MINI_CC_MODEL_VISION=false.
+    model_vision: bool = True
+    # Public base URL the MCP vision tool uses to fetch signed asset
+    # URLs. Required when model_vision=False — without it the minter
+    # declines and the hydrator falls back to base64 embedding.
+    public_base_url: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> "AnthropicConfig":
@@ -119,6 +137,9 @@ class AnthropicConfig:
             tavily_api_key=_env_first(
                 "TAVILY_API_KEY", "MINI_CC_TAVILY_API_KEY"),
             mcp_servers=_mcp_servers_from_env(),
+            model_vision=_env_bool("MINI_CC_MODEL_VISION", default=True),
+            public_base_url=_env_first(
+                "MINI_CC_PUBLIC_BASE_URL", "MINI_CC_PUBLIC_URL"),
         )
 
     def build_client(self) -> Anthropic:
