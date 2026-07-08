@@ -1,5 +1,17 @@
 """POST/GET /tenants/{tid}/projects/{pid}/sessions/{sid}/assets — image
-upload + download for the Web UI composer."""
+upload + download for the Web UI composer.
+
+Access model
+------------
+Assets are **project-scoped**, not session-scoped. The session prefix in
+the URL exists only for namespacing / lifecycle (uploads tag the source
+session in ``src="web:upload:{sid}"``); any caller with ``sessions:read``
+on *any* session of the project may read *any* asset in that project's
+``.assets`` store. This is by design — teammates within a project share
+images, and the design doc (§4.1) explicitly locates the store at
+``{project_dir}/.assets`` rather than per-session. Cross-tenant access
+still 404s via ``_check_project_tenant``.
+"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Path, Request, UploadFile

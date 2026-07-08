@@ -234,7 +234,14 @@ class LiteLLMProvider:
     def stream(self, *, model: str, system: str, messages: list[dict],
                tools: list[dict], max_tokens: int,
                asset_store: Any = None) -> Iterator[StreamEvent]:
-        # TODO: hydrate image blocks when LiteLLM supports them
+        # Hydrate {type:image, asset_id:"..."} transcript references into
+        # Anthropic base64 image blocks before converting. _convert_messages
+        # then rewrites them to OpenAI image_url data-URI form so the image
+        # actually reaches the model. Without this, image attachments sent
+        # via any LiteLLM-routed provider (DeepSeek/Qwen/Gemini/etc.) would
+        # be silently dropped by _convert_messages (which only handles
+        # text + tool_result user-block types).
+        messages = _hydrate_messages(messages, asset_store)
         import litellm  # local import — keeps cold-start fast if unused
 
         # litellm emits a noisy deprecation warning for every call; mute
@@ -442,6 +449,23 @@ class LiteLLMProvider:
                         })
                     elif bt == "text":
                         plain.append(b.get("text", ""))
+                    elif bt == "image":
+                        # Anthropic-shape image block (output of
+                        # _hydrate_messages). OpenAI expects image_url
+                        # with a data: URI. If the block lacks source
+                        # data (shouldn't happen post-hydrate, but be
+                        # defensive), fall back to a text placeholder so
+                        # the user knows the image was dropped.
+                        src = b.get("source") or {}
+                        if src.get("type") == "base64" and src.get("data"):
+                            mt = src.get("media_type", "image/png")
+                            url = f"data:{mt};base64,{src['data']}"
+                            out.append({"role": "user",
+                                        "content": [{"type": "image_url",
+                                                     "image_url": {"url": url}}]})
+                        else:
+                            out.append({"role": "user",
+                                        "content": "[image: missing]"})
                     elif isinstance(b, str):
                         plain.append(b)
                 if tool_results:

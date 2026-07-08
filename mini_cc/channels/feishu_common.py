@@ -231,7 +231,12 @@ def download_image(image_key: str,
         url,
         headers={"Authorization": f"Bearer {token}"},
         params={"image_type": "message"},
-        timeout=_HTTP_TIMEOUT,
+        # Image fetches can be 5MB over slow links — give them more room
+        # than the 5s default (which is sized for token-refresh + the
+        # inbound-event API). A timeout here degrades to a text placeholder
+        # ("[image: download failed: ...]"), which is correct behavior —
+        # but a longer timeout gives the image a fighting chance to land.
+        timeout=15.0,
     )
     resp.raise_for_status()
     media_type = (resp.headers.get("Content-Type", "image/jpeg")
