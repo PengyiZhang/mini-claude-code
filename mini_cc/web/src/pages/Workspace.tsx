@@ -747,7 +747,7 @@ export default function Workspace() {
       <TopBar title={`${pid}`} />
       <div className="flex-1 flex min-h-0">
         {/* Sidebar */}
-        <aside className="w-64 border-r border-border bg-bg-panel p-3 flex flex-col gap-3 overflow-y-auto shrink-0">
+        <aside className="w-80 border-r border-border bg-bg-panel p-3 flex flex-col gap-3 overflow-y-auto shrink-0">
           <div className="flex gap-1 text-sm">
             {(["Chat", "Files", "Run", "Channels"] as Tab[]).map((t) => (
               <button
@@ -1102,8 +1102,8 @@ export default function Workspace() {
           )}
 
           {tab === "Files" && (
-            <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-0 min-h-0">
-              <div className="border-r border-border overflow-auto p-3">
+            <div className="flex-1 grid grid-cols-1 xl:grid-cols-[1.5fr_1fr] gap-0 min-h-0">
+              <div className="border-r border-border overflow-auto p-3 min-w-0">
                 <FileTree
                   pid={pid}
                   onPickFile={(p) => setPreviewPath(p)}

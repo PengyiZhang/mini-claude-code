@@ -37,7 +37,7 @@ export default function TeamSidebar({
 
   if (masterCollapsed) {
     return (
-      <aside className="border-l border-border bg-bg-panel w-10 shrink-0 flex flex-col items-center gap-2 py-2">
+      <aside className="border-l border-border bg-bg-panel w-12 shrink-0 flex flex-col items-center gap-2 py-2">
         <button
           onClick={() => setMasterCollapsed(false)}
           className="text-xs text-ink-dim hover:text-ink px-1.5 py-0.5 rounded hover:bg-bg-hover"
@@ -57,7 +57,7 @@ export default function TeamSidebar({
   }
 
   return (
-    <aside className="border-l border-border bg-bg-panel w-80 shrink-0 flex flex-col min-h-0">
+    <aside className="border-l border-border bg-bg-panel w-96 shrink-0 flex flex-col min-h-0">
       {/* Master header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
         <div className="text-xs uppercase tracking-wide text-ink-dim">Team</div>
