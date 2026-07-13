@@ -140,9 +140,10 @@ def _maybe_build_image_blocks(user_input, metadata: dict, project):
     blocks: list[dict] = []
     if user_input:
         blocks.append({"type": "text", "text": user_input})
+    msg_id = metadata.get("message_id", "")
     for image_key in metadata.get("image_keys", []):
         try:
-            data, media_type = download_image(image_key, cache)
+            data, media_type = download_image(msg_id, image_key, cache)
             aid = project.assets.put(
                 data, media_type=media_type,
                 src=f"{source}:{image_key}")

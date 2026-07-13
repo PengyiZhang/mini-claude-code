@@ -205,8 +205,10 @@ class TokenCache:
             return token
 
 
-def download_image(image_key: str,
-                   token_cache: "TokenCache") -> tuple[bytes, str]:
+def download_image(
+            message_id: str,
+            image_key: str,
+            token_cache: "TokenCache") -> tuple[bytes, str]:
     """Download a Feishu image by ``image_key``. Returns
     ``(content_bytes, media_type)``.
 
@@ -226,11 +228,14 @@ def download_image(image_key: str,
             "no tenant_access_token; check app_id/app_secret")
     if not _HAS_REQUESTS:
         raise ConnectionError("requests not installed")
-    url = f"{token_cache.open_base}/open-apis/im/v1/images/{image_key}"
+    # 机器人消息中获取图片的接口已经变更为： 
+    # url = f"{token_cache.open_base}/open-apis/im/v1/images/{image_key}"
+    # 用户消息接口
+    url = f"{token_cache.open_base}/open-apis/im/v1/messages/{message_id}/resources/{image_key}"
     resp = requests.get(
         url,
         headers={"Authorization": f"Bearer {token}"},
-        params={"image_type": "message"},
+        params={"type": "image"},
         # Image fetches can be 5MB over slow links — give them more room
         # than the 5s default (which is sized for token-refresh + the
         # inbound-event API). A timeout here degrades to a text placeholder
