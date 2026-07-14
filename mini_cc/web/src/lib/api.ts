@@ -689,7 +689,9 @@ export async function createChannel(
   profile: TenantProfile,
   pid: string,
   body: {
+    id?: string | null;
     kind: string;
+    enable: string;
     config: Record<string, unknown>;
     session_id?: string | null;
     event_types?: string[];

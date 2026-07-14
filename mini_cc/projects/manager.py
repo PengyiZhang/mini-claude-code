@@ -372,7 +372,7 @@ class ProjectManager:
                 from ..channels import get_supervisor
                 sup = get_supervisor()
                 for b in project.channels.list():
-                    if getattr(b, "transport", "webhook") == "ws":
+                    if getattr(b, "transport", "webhook") == "ws" and getattr(b, "enable", "false") == "true":
                         sup.start_for(project, b)
             except Exception:
                 # Channels subsystem might be unavailable (legacy deploy

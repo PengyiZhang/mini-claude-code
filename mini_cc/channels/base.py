@@ -93,6 +93,7 @@ class ChannelBinding:
     """
     id: str
     kind: str
+    enable: str
     config: dict
     # Lead session the channel routes inbound into. None = project's
     # default session (resolved by the HTTP layer via SessionManager).
@@ -177,6 +178,7 @@ class ChannelRegistry:
                 out[rec["id"]] = ChannelBinding(
                     id=rec["id"],
                     kind=rec["kind"],
+                    enable=rec.get("enable", "false"),
                     config=dict(rec.get("config") or {}),
                     session_id=rec.get("session_id"),
                     event_types=list(rec.get("event_types") or []),
@@ -197,6 +199,7 @@ class ChannelRegistry:
                 "event_types": list(b.event_types),
                 "created_at": b.created_at,
                 "transport": b.transport,
+                "enable": b.enable,
             }
             for b in self._bindings.values()
         ]
@@ -213,7 +216,7 @@ class ChannelRegistry:
         with self._lock:
             return self._bindings.get(channel_id)
 
-    def add(self, kind: str, config: dict,
+    def add(self, kind: str, enable: str, config: dict,
             *, session_id: str | None = None,
             event_types: Iterable[str] = (),
             transport: str = "ws") -> ChannelBinding:
@@ -221,6 +224,7 @@ class ChannelRegistry:
             binding = ChannelBinding(
                 id=f"chan_{uuid.uuid4().hex[:12]}",
                 kind=kind,
+                enable=enable,
                 config=dict(config),
                 session_id=session_id,
                 event_types=[t for t in event_types if t],
@@ -235,10 +239,18 @@ class ChannelRegistry:
     def update(self, channel_id: str, *,
                config: dict | None = None,
                session_id: str | None | "UNSET" = "UNSET",  # type: ignore[assignment]
-               event_types: list[str] | None = None) -> ChannelBinding | None:
-        """Patch a binding in place. ``session_id`` accepts None to
-        rebind to project default; pass the literal ``"UNSET"`` sentinel
-        (default) to leave the field untouched."""
+               event_types: list[str] | None = None,
+               enable: str | None = None,
+               transport: str | None = None) -> ChannelBinding | None:
+        """Patch a binding in place.
+
+        ``session_id`` accepts None to rebind to project default; pass the
+        literal ``"UNSET"`` sentinel (default) to leave the field
+        untouched.
+
+        New optional fields ``enable`` and ``transport`` allow updating
+        those persisted values as well.
+        """
         with self._lock:
             b = self._bindings.get(channel_id)
             if b is None:
@@ -249,6 +261,10 @@ class ChannelRegistry:
                 b.session_id = session_id  # type: ignore[assignment]
             if event_types is not None:
                 b.event_types = list(event_types)
+            if enable is not None:
+                b.enable = enable
+            if transport is not None:
+                b.transport = transport
             self._persist_locked()
             return b
 
@@ -367,6 +383,11 @@ class ChannelDispatcher:
         if not targets:
             return
         for binding in targets:
+            if binding.enable != "true":
+                _log.info(
+                    "ChannelDispatcher: skipping disabled binding %s (%s)",
+                    binding.id, binding.kind)
+                continue
             try:
                 channel = self._channel_factory(binding)
             except Exception:

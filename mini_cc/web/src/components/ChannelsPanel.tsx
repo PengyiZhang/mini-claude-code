@@ -83,6 +83,8 @@ export default function ChannelsPanel({
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showModify, setShowModify] = useState(false);
+  const [modifyBinding, setModifyBinding] = useState<ChannelOut | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -113,6 +115,11 @@ export default function ChannelsPanel({
     } catch (e) {
       setErr((e as Error).message);
     }
+  }
+
+  async function handleModify(b: ChannelOut) {
+    setModifyBinding(b);
+    setShowModify(true);
   }
 
   return (
@@ -148,7 +155,7 @@ export default function ChannelsPanel({
       ) : (
         <div className="space-y-2">
           {items.map((b) => (
-            <ChannelRow key={b.id} binding={b} onDelete={() => void handleDelete(b)} />
+            <ChannelRow key={b.id} binding={b} onDelete={() => void handleDelete(b)} onModify={() => void handleModify(b)} />
           ))}
         </div>
       )}
@@ -170,6 +177,29 @@ export default function ChannelsPanel({
           ) as Record<Kind, Transport[]>}
         />
       )}
+      {showModify && modifyBinding && (
+        <ModifyModal
+          sessions={sessions}
+          binding={modifyBinding}
+          onClose={() => {
+            setShowModify(false);
+            setModifyBinding(null);
+          }}
+          onModified={() => {
+            setShowModify(false);
+            setModifyBinding(null);
+            void refresh();
+          }}
+          onError={(e) => setErr(e)}
+          onSubmit={async (vals) => {
+            await createChannel(profile, pid, vals);
+          }}
+          kinds={Object.fromEntries(
+            Object.entries(KIND_CONFIG).map(([k, v]) => [k, v.supported_transports]),
+          ) as Record<Kind, Transport[]>}
+        />
+      )}  
+
     </div>
   );
 }
@@ -177,11 +207,14 @@ export default function ChannelsPanel({
 function ChannelRow({
   binding,
   onDelete,
+  onModify,
 }: {
   binding: ChannelOut;
   onDelete: () => void;
+  onModify: () => void;
 }) {
   const kind = binding.kind as Kind;
+  const enable = binding.enable;
   const kindMeta = KIND_CONFIG[kind];
   const [copied, setCopied] = useState(false);
   const webhookUrl = channelWebhookUrl(binding.id);
@@ -222,7 +255,22 @@ function ChannelRow({
         >
           {transport}
         </span>
+
+        <span
+          className={`text-[10px] px-1.5 py-0.5 rounded border ${TRANSPORT_TONES[transport]}`}
+        >
+          {enable === "true" ? "enabled" : "disabled"}
+        </span>
         <span className="font-mono text-xs text-ink-dim truncate">{binding.id}</span>
+
+        <button
+          onClick={onModify}
+          className="ml-auto text-xs text-ink-faint hover:text-err"
+          title="modify"
+        >
+          ✍
+        </button>
+
         <button
           onClick={onDelete}
           className="ml-auto text-xs text-ink-faint hover:text-err"
@@ -293,6 +341,7 @@ function CreateModal({
   onError: (msg: string) => void;
   onSubmit: (vals: {
     kind: string;
+    enable: string;
     transport: Transport;
     config: Record<string, unknown>;
     session_id: string | null;
@@ -303,6 +352,7 @@ function CreateModal({
   kinds: Record<Kind, Transport[]>;
 }) {
   const [kind, setKind] = useState<Kind>("feishu");
+  const [enable, setEnable] = useState<string>("true");
   const [transport, setTransport] = useState<Transport>("ws");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [sessionId, setSessionId] = useState<string>("");
@@ -341,6 +391,7 @@ function CreateModal({
       }
       await onSubmit({
         kind,
+        enable,
         transport,
         config: cfg,
         session_id: sessionId.trim() || null,
@@ -382,6 +433,19 @@ function CreateModal({
                 {v.label}
               </option>
             ))}
+          </select>
+        </Field>
+
+        <Field label="Enable">
+          <select
+            value={enable}
+            onChange={(e) => {
+              setEnable(e.target.value);
+            }}
+            className="w-full bg-bg rounded px-3 py-2 border border-border focus:border-accent outline-none"
+          >
+            <option value="true">Yes</option>
+            <option value="false">No</option>
           </select>
         </Field>
 
@@ -476,6 +540,231 @@ function CreateModal({
             className="px-3 py-1.5 bg-accent text-white rounded disabled:opacity-50"
           >
             {busy ? "…" : "create"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ModifyModal({
+  sessions,
+  onClose,
+  onModified,
+  onError,
+  onSubmit,
+  kinds,
+  binding,
+}: {
+  sessions: SessionMeta[];
+  onClose: () => void;
+  onModified: () => void;
+  onError: (msg: string) => void;
+  onSubmit: (vals: {
+    id: string;
+    kind: string;
+    enable: string;
+    transport: Transport;
+    config: Record<string, unknown>;
+    session_id: string | null;
+    event_types: string[];
+  }) => Promise<void>;
+  /** kind → supported transports. Drives the Transport radio + auto-fallback
+   *  when a kind can't carry the currently-selected transport. */
+  kinds: Record<Kind, Transport[]>;
+  binding: ChannelOut;
+}) {
+  const [id, setId] = useState<string>(binding.id);
+  const [kind, setKind] = useState<Kind>(binding.kind as Kind);
+  const [enable, setEnable] = useState<string>(binding.enable);
+  const [transport, setTransport] = useState<Transport>(binding.transport as Transport ?? "ws");
+  const [config, setConfig] = useState<Record<string, string>>(binding.config as Record<string, string>);
+  const [sessionId, setSessionId] = useState<string>(binding.session_id ?? "");
+  const [eventTypes, setEventTypes] = useState<string[]>(binding.event_types);
+  const [busy, setBusy] = useState(false);
+
+  const meta = KIND_CONFIG[kind];
+
+  // If the user switches Kind to one that can't carry the current transport,
+  // snap to the kind's first supported transport rather than letting the
+  // submitted value silently mismatch what the backend will accept.
+  function changeKind(next: Kind) {
+    setKind(next);
+    const sup = kinds[next] ?? ["webhook"];
+    if (!sup.includes(transport)) {
+      setTransport(sup[0]);
+    }
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    // Validate required fields up-front so the user gets a clear message
+    // instead of a 400 from the backend.
+    for (const f of meta.fields) {
+      if (f.required && !(config[f.name] ?? "").trim()) {
+        onError(`${f.label} is required`);
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      const cfg: Record<string, unknown> = {};
+      for (const f of meta.fields) {
+        const v = (config[f.name] ?? "").trim();
+        if (v) cfg[f.name] = v;
+      }
+      await onSubmit({
+        id,
+        kind,
+        enable,
+        transport,
+        config: cfg,
+        session_id: sessionId.trim() || null,
+        event_types: eventTypes,
+      });
+      onModified();
+    } catch (e) {
+      onError(e instanceof ApiError ? e.message : (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleEvent(key: string) {
+    setEventTypes((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+      <form
+        onSubmit={submit}
+        className="bg-bg-card border border-border rounded-lg p-6 w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto"
+      >
+        <div className="text-lg font-semibold">new channel</div>
+
+        <Field label="Kind">
+          <select
+            value={kind}
+            onChange={(e) => {
+              changeKind(e.target.value as Kind);
+              setConfig({});
+            }}
+            className="w-full bg-bg rounded px-3 py-2 border border-border focus:border-accent outline-none"
+          >
+            {Object.entries(KIND_CONFIG).map(([k, v]) => (
+              <option key={k} value={k}>
+                {v.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Enable">
+          <select
+            value={enable}
+            onChange={(e) => {
+              setEnable(e.target.value);
+            }}
+            className="w-full bg-bg rounded px-3 py-2 border border-border focus:border-accent outline-none"
+          >
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </Field>
+
+        <Field label="Transport">
+          <div className="space-y-1">
+            {(kinds[kind] ?? ["webhook"]).map((t) => (
+              <label key={t} className="flex items-start gap-2 text-xs">
+                <input
+                  type="radio"
+                  name="channel-transport"
+                  value={t}
+                  checked={transport === t}
+                  onChange={() => setTransport(t)}
+                  className="mt-0.5"
+                />
+                <span className="text-ink-dim">
+                  <span className="text-ink">{t}</span>
+                  {t === "ws" && <span className="text-ink-faint"> — 推荐，长连接，无需公网 URL</span>}
+                  {t === "webhook" && <span className="text-ink-faint"> — 事件订阅 URL（需公网可达）</span>}
+                </span>
+              </label>
+            ))}
+            {transport === "webhook" && (
+              <div className="text-[11px] text-ink-faint pl-5">
+                注册后请把 webhook URL 填到飞书「事件订阅」页
+              </div>
+            )}
+          </div>
+        </Field>
+
+        <div className="space-y-3">
+          {meta.fields.map((f) => (
+            <Field key={f.name} label={f.label + (f.required ? " *" : "")}>
+              <input
+                type={f.secret ? "password" : "text"}
+                value={config[f.name] ?? ""}
+                onChange={(e) => setConfig({ ...config, [f.name]: e.target.value })}
+                placeholder={f.placeholder}
+                className="w-full bg-bg rounded px-3 py-2 border border-border focus:border-accent outline-none font-mono text-sm"
+              />
+              {f.hint && <div className="text-[11px] text-ink-faint">{f.hint}</div>}
+            </Field>
+          ))}
+        </div>
+
+        <Field label="Session (optional — blank = project default)">
+          <select
+            value={sessionId}
+            onChange={(e) => setSessionId(e.target.value)}
+            className="w-full bg-bg rounded px-3 py-2 border border-border focus:border-accent outline-none"
+          >
+            <option value="">(project default)</option>
+            {sessions.map((s) => (
+              <option key={s.session_id} value={s.session_id}>
+                {s.session_id}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Outbound event types">
+          <div className="space-y-1">
+            {ALL_EVENT_TYPES.map((ev) => (
+              <label key={ev.key} className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={eventTypes.includes(ev.key)}
+                  onChange={() => toggleEvent(ev.key)}
+                  className="mt-0.5"
+                />
+                <span className="text-ink-dim">{ev.label}</span>
+              </label>
+            ))}
+          </div>
+        </Field>
+
+        <div className="text-[11px] text-ink-faint">
+          注册后立刻能看到 webhook URL，把它填到飞书「事件订阅」里。
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 border border-border rounded hover:bg-bg-hover"
+          >
+            cancel
+          </button>
+          <button
+            type="submit"
+            disabled={busy}
+            className="px-3 py-1.5 bg-accent text-white rounded disabled:opacity-50"
+          >
+            {busy ? "…" : "update"}
           </button>
         </div>
       </form>

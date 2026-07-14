@@ -294,6 +294,7 @@ export interface CardEvent {
 export interface ChannelOut {
   id: string;
   kind: string;
+  enable: string; // "true" or "false" (string, not boolean) to match backend wire contract
   config: Record<string, unknown>;
   session_id: string | null;
   event_types: string[];

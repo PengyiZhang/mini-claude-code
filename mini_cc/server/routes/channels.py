@@ -86,7 +86,9 @@ def _registry_for(pm, pid: str, tid: str):
 
 
 class CreateChannelRequest(BaseModel):
+    id: str | None = Field(default=None, description="Optional existing channel id for update (e.g. 'chan_xxx').")
     kind: str = Field(..., description="Channel kind, e.g. 'feishu'.")
+    enable: str = Field(default="true", description="Enable channel: 'true' or 'false'")
     config: dict = Field(default_factory=dict,
                          description="Per-kind config (see docs).")
     session_id: str | None = Field(
@@ -105,6 +107,7 @@ class CreateChannelRequest(BaseModel):
 class ChannelOut(BaseModel):
     id: str
     kind: str
+    enable: str
     config: dict
     session_id: str | None
     event_types: list[str]
@@ -118,7 +121,8 @@ def _to_out(b) -> ChannelOut:
     # them on GET would be a security regression. Masked keys are the
     # known set across all implemented kinds; future kinds can add theirs.
     safe_config = _mask_secrets(b.config)
-    return ChannelOut(id=b.id, kind=b.kind, config=safe_config,
+    return ChannelOut(id=b.id, kind=b.kind, 
+                      enable=b.enable, config=safe_config,
                       session_id=b.session_id, event_types=list(b.event_types),
                       created_at=b.created_at,
                       transport=getattr(b, "transport", "webhook"))
@@ -146,13 +150,17 @@ def list_channels(pid: str = Path(...),
     reg, _project = _registry_for(pm, pid, tid)
     return [_to_out(b) for b in reg.list()]
 
-
+# 创建或修改 channel 时，可能需要在 session 中注册 ChannelDispatcher，以便将事件分发到相应的 channel。以下是一个示例代码片段，展示了如何在创建或修改 channel 时注册 ChannelDispatcher：
 @router.post("", response_model=ChannelOut, status_code=201)
 def create_channel(body: CreateChannelRequest,
                    pid: str = Path(...),
                    tid: str = Depends(require_scope("projects:write")),
                    pm=Depends(get_pm),
                    request: Request = None) -> ChannelOut:
+    """Create a new channel binding, or update an existing one when
+    ``body.id`` is provided. Update is a full-replace of the persisted
+    fields (config, session_id, event_types, enable, transport).
+    """
     validate_id(pid)
     reg, project = _registry_for(pm, pid, tid)
     # Validate kind early so an unknown kind returns 400 (not a silent
@@ -170,16 +178,75 @@ def create_channel(body: CreateChannelRequest,
             f"transport '{body.transport}'")
     if body.session_id is not None:
         validate_id(body.session_id)
-    binding = reg.add(body.kind, body.config,
+
+    # If an id is supplied, perform an update of the existing binding.
+    if body.id:
+        validate_id(body.id)
+        existing = reg.get(body.id)
+        if existing is None:
+            raise NotFound(f"channel {body.id} not found")
+        if existing.kind != body.kind:
+            raise BadRequest("cannot change channel kind")
+        old_transport = getattr(existing, "transport", "webhook")
+        # If switching away from ws, stop the receiver before persisting so
+        # a racing inbound event doesn't hit an inconsistent state.
+        if old_transport == "ws" and body.transport != "ws":
+            try:
+                from ...channels import get_supervisor
+                get_supervisor().stop_for(tid, pid, body.id)
+            except Exception:
+                pass
+        # Preserve existing secret values when the client submits the
+        # masked representation (e.g. '***' or 'abc***') returned by
+        # GET/list. This allows clients to round-trip the channel object
+        # without re-sending sensitive secrets.
+        new_config = dict(body.config or {})
+        for k, v in list(new_config.items()):
+            if k in _SECRET_KEYS and isinstance(v, str) and "***" in v:
+                # keep existing secret if present; else leave the masked
+                # value (validation will fail later when the receiver starts).
+                existing_val = getattr(existing, "config", {}).get(k)
+                if existing_val:
+                    new_config[k] = existing_val
+        updated = reg.update(body.id,
+                             config=new_config,
+                             session_id=body.session_id,
+                             event_types=body.event_types,
+                             enable=body.enable,
+                             transport=body.transport)
+        if updated is None:
+            raise NotFound(f"channel {body.id} not found")
+        # If switching to ws, start the receiver so the binding is live.
+        try:
+            from ...channels import get_supervisor
+            # Start only when transport is ws *and* the binding is enabled.
+            if getattr(updated, "transport", "webhook") == "ws" and old_transport != "ws" and updated.enable == "true":
+                get_supervisor().start_for(project, updated)
+            # If enable went from true -> false, stop the receiver.
+            if old_transport == "ws" and getattr(existing, "enable", "true") == "true" and updated.enable != "true":
+                try:
+                    get_supervisor().stop_for(tid, pid, body.id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return _to_out(updated)
+
+    # Otherwise create a fresh binding.
+    binding = reg.add(body.kind,
+                      body.enable,
+                      body.config,
                       session_id=body.session_id,
                       event_types=body.event_types,
-                      transport=body.transport)
+                      transport=body.transport,
+    )
     # Spawn the WS receiver immediately for ws-mode bindings so a fresh
     # binding is live before the API returns. Supervisor is a no-op for
     # webhook transport (returns False) so we don't need to branch here.
     try:
         from ...channels import get_supervisor
-        get_supervisor().start_for(project, binding)
+        if getattr(binding, "transport", "webhook") == "ws" and binding.enable == "true":
+            get_supervisor().start_for(project, binding)
     except Exception:
         # Receiver spawn failed (missing SDK, bad creds, etc.) — log it
         # but don't roll back the binding. The user can fix the config
@@ -189,6 +256,7 @@ def create_channel(body: CreateChannelRequest,
     if idx is not None:
         idx[binding.id] = (tid, pid)
     return _to_out(binding)
+
 
 
 @router.delete("/{channel_id}", status_code=204)
