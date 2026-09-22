@@ -1,6 +1,6 @@
 """Per-project MCP client pool.
 
-Ports s20 lines 1531-1646 from s20_comprehensive/code.py with these changes:
+Ports s20 lines 1531-1646 from reference/learn-claude-code/s20_comprehensive/code.py with these changes:
 - No module-global mcp_clients dict — instance state on MCPPool
 - Server factories are registered on a class-level registry (app setup),
   per-project MCPPool holds the connected clients

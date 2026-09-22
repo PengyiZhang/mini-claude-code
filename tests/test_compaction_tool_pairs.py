@@ -8,10 +8,11 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+COURSE_ROOT = REPO_ROOT / "reference" / "learn-claude-code"
 MODULES = {
-    "s08": REPO_ROOT / "s08_context_compact" / "code.py",
-    "s09": REPO_ROOT / "s09_memory" / "code.py",
-    "s20": REPO_ROOT / "s20_comprehensive" / "code.py",
+    "s08": COURSE_ROOT / "s08_context_compact" / "code.py",
+    "s09": COURSE_ROOT / "s09_memory" / "code.py",
+    "s20": COURSE_ROOT / "s20_comprehensive" / "code.py",
 }
 
 

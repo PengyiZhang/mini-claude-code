@@ -2,7 +2,7 @@
 
 Multi-tenant, sandboxed, backend-integrable mini Claude Code. A
 reference port of the 19-subsystem harness pattern from
-`s20_comprehensive/`, restructured for production multi-tenant use:
+`reference/learn-claude-code/s20_comprehensive/`, restructured for production multi-tenant use:
 per-project isolation, pluggable storage, no module globals, and an
 optional HTTP/SSE transport.
 

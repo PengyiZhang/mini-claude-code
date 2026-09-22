@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = REPO_ROOT / "agents" / "s_full.py"
+MODULE_PATH = REPO_ROOT / "reference" / "learn-claude-code" / "agents" / "s_full.py"
 
 
 def load_s_full_module(temp_cwd: Path):

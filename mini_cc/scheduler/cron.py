@@ -1,6 +1,6 @@
 """Per-project cron scheduler.
 
-Ports s20 lines 1330-1500 from s20_comprehensive/code.py with these changes:
+Ports s20 lines 1330-1500 from reference/learn-claude-code/s20_comprehensive/code.py with these changes:
 - No module-global scheduled_jobs / cron_queue / cron_lock — instance state
 - Persisted via Storage (which is already keyed by project_id)
 - No background thread: tick() is called by the AgentLoop at the top of each

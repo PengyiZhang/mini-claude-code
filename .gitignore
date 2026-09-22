@@ -4,9 +4,10 @@ __pycache__/
 *$py.class
 
 # mini_cc runtime data + test artifacts
-/mini_cc_data_e2e/
+/mini_cc_data*/
 /test-results/
 /.claude/
+mini_cc/web/mini_cc_data*/
 
 # C extensions
 *.so
@@ -227,9 +228,9 @@ marimo/_lsp/
 __marimo__/
 
 # Web app
-web/node_modules/
-web/.next/
-web/out/
+node_modules/
+.next/
+out/
 .vercel
 .env*.local
 test_providers.py

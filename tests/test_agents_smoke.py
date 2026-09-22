@@ -7,7 +7,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AGENTS_DIR = ROOT / "agents"
+AGENTS_DIR = ROOT / "reference" / "learn-claude-code" / "agents"
 AGENT_FILES = sorted(
     path for path in AGENTS_DIR.glob("*.py") if path.name != "__init__.py"
 )

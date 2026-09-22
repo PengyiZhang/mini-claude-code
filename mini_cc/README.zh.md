@@ -1,7 +1,7 @@
 # mini_cc — 可集成后端的 Agent 框架
 
 多租户、沙箱化、可被后端集成的 mini Claude Code。参考
-`s20_comprehensive/` 中 19 个子系统的 harness 模式重新组织,面向
+`reference/learn-claude-code/s20_comprehensive/` 中 19 个子系统的 harness 模式重新组织,面向
 生产级多租户场景:按项目隔离、可插拔存储、无模块级全局状态、
 可选的 HTTP/SSE 传输层。
 
