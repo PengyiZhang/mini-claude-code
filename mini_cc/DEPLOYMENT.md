@@ -4,7 +4,7 @@
 
 > **运维 Runbook**:线上运维操作(健康检查、密钥轮换、备份恢复、容器沙箱运维、
 > 事故响应、升级、容量规划、安全清单)请参考
-> [`docs/zh/2026-06-28-deploy-runbook.zh.md`](../docs/zh/2026-06-28-deploy-runbook.zh.md)。
+> [`docs/plans/2026-06-28-deploy-runbook.zh.md`](../docs/plans/2026-06-28-deploy-runbook.zh.md)。
 > 本文档只覆盖"怎么把它跑起来",**线上怎么管**去翻 runbook。
 
 ```
