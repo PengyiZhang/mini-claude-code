@@ -23,21 +23,24 @@
 
 ---
 
-## M1. 稳定性基础（工程卫生）— 建议立即执行
+## M1. 稳定性基础（工程卫生）— 建议立即执行 ✅ 2026-09-22 完成
 
 目标：让"跑测试"与"装依赖"两件事在任何机器上都成立。
 
-- [ ] **M1-1 建立 CI**（新仓库目前零 workflow）：GitHub Actions，矩阵
+- [x] **M1-1 建立 CI**（新仓库目前零 workflow）：GitHub Actions，矩阵
   `ubuntu + windows` / `python 3.11+3.12`，`pip install -r requirements.txt && pytest tests/ -q --ignore=tests/test_teammate_real_llm.py`。前端可先只跑 `tsc --noEmit`。
-- [ ] **M1-2 补齐未声明依赖**：`portalocker`（`teams/__init__.py:37` 有守卫但默认安装
+- [x] **M1-2 补齐未声明依赖**：`portalocker`（`teams/__init__.py:37` 有守卫但默认安装
   会**静默降级为无文件锁**）与 `requests`（`channels/feishu.py:53`、
   `sharing/webhooks.py:34`）加入 requirements.txt + pyproject.toml；或改用已依赖的 httpx。
-- [ ] **M1-3 修复 flaky 测试**：`test_loop_nudge.py` 5 处 `time.sleep` 改事件/条件等待；
+- [x] **M1-3 修复 flaky 测试**：`test_loop_nudge.py` 5 处 `time.sleep` 改事件/条件等待；
   顺带盘点 tests/ 其余 85 处 sleep 的高危子集。
-- [ ] **M1-4 修正 mini_cc/README.md 陈旧声明**：`289 tests`→以 CI 徽章替代硬数字；
+  （实际根因：最后一项断言在"错误事件已发、`_running` 未清"窗口内急切断言——
+  `_run_impl` 在 try 内 emit、finally 才清标志。已改为 deadline 等待；50 次循环 0 失败，
+  修复前约 1/3 失败。其余 sleep 均已是 deadline 轮询模式，无需改。）
+- [x] **M1-4 修正 mini_cc/README.md 陈旧声明**：`289 tests`→以 CI 徽章替代硬数字；
   `:289/:650 "P5 work, not yet shipped"`→opensandbox 已发布；
   `:573 8002 端口轶事`→改为参数化说明（默认 8000，见 `server/cli.py:119`）。
-- [ ] **M1-5 版本单一事实源**：`pyproject.toml` 与 `mini_cc/__init__.py:55` 双写 0.1.0，
+- [x] **M1-5 版本单一事实源**：`pyproject.toml` 与 `mini_cc/__init__.py:55` 双写 0.1.0，
   改为 `importlib.metadata` 读取或同步脚本；建立 git tag + CHANGELOG.md 惯例。
 
 ## M2. 安全加固（上线阻塞项）— 来自 production-hardening，逐项复核均未修
@@ -117,3 +120,4 @@
 | 日期 | 项 | commit | 说明 |
 |---|---|---|---|
 | 2026-09-22 | 预备 | (本次) | 回收误入 reference/ 的 3 份用户文档（deploy-runbook 等），修复 DEPLOYMENT.md 断链 |
+| 2026-09-22 | M1 全部 | M1-hygiene commit（2026-09-22） | CI workflow（pytest 双平台矩阵 + web build/test）+ CI 徽章；portalocker/requests 入依赖清单（mailbox 15 测试转绿）；nudge flaky 断言修复（50 次循环验证，1343 全绿）；README 三处陈旧声明修正；版本单一源 + CHANGELOG.md + v0.1.0 tag |

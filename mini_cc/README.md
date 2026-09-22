@@ -284,9 +284,10 @@ are auto-promoted to `KeyRecord` on first read with
 not rewritten until the next mutation, so existing fixtures stay
 byte-identical.
 
-**Soft sandbox, not containerized:** the sandbox is a defense-in-depth
-layer, not a hard security boundary. For untrusted code, run mini_cc
-inside a container or VM (P5 work, not yet shipped).
+**Soft sandbox by default:** the `SubprocessSandbox` is a defense-in-depth
+layer, not a hard security boundary. For untrusted code, enable the
+per-tenant container sandbox (see "Container sandbox (P5)" below) or run
+mini_cc inside a VM.
 
 ---
 
@@ -538,8 +539,9 @@ gate) still applies independently.
 
 ## Testing
 
-The framework ships with 289 passing tests + 24 subtests (pytest).
-Mirrors of s20's mocking patterns live in `tests/test_p0_*.py`.
+The test suite (1000+ tests across 128 files) runs on every push via
+CI — see the status badge at the repo root. Mirrors of s20's mocking
+patterns live in `tests/test_p0_*.py`.
 
 ```bash
 pip install -r requirements.txt
@@ -570,17 +572,17 @@ Router. Playwright drives the e2e suite.
 
 ### Running locally
 
-The dev backend listens on `127.0.0.1:8002` (8001 was occupied by
-another service on the dev machine; the frontend's default API base
-follows suit). A LiteLLM Anthropic-compatible proxy on `:8000`
-proxies model calls to e.g. `glm-4.7`.
+The backend listens on `127.0.0.1:8000` by default (override with
+`MINI_CC_PORT`). If you route model calls through a LiteLLM
+Anthropic-compatible proxy, point `ANTHROPIC_BASE_URL` at it and set the
+frontend's API base accordingly.
 
 ```bash
 # one-time
 pip install -r requirements.txt              # adds python-multipart for uploads
 cd mini_cc/web && npm install
 
-# terminal 1 — backend (port 8002)
+# terminal 1 — backend
 python -m mini_cc.server keygen my_tenant    # prints mck_<hex>
 MINI_CC_DATA_DIR=$PWD/mini_cc_data \
 ANTHROPIC_BASE_URL=http://127.0.0.1:8000 \

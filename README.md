@@ -1,5 +1,7 @@
 English | [中文](./README.zh.md)
 
+[![CI](https://github.com/PengyiZhang/mini-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/PengyiZhang/mini-claude-code/actions/workflows/ci.yml)
+
 # mini_cc — a multi-tenant, backend-integrable mini Claude Code
 
 A multi-tenant, sandboxed, backend-integrable reimplementation of the Claude

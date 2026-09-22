@@ -1,5 +1,7 @@
 [English](./README.md) | 中文
 
+[![CI](https://github.com/PengyiZhang/mini-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/PengyiZhang/mini-claude-code/actions/workflows/ci.yml)
+
 # mini_cc — 多租户、可后端集成的 mini Claude Code
 
 对 Claude Code harness 的多租户、沙箱化、可后端集成复刻：既可作为 Python

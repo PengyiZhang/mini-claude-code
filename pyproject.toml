@@ -20,6 +20,8 @@ dependencies = [
     "pydantic>=2.5",
     "httpx>=0.26",
     "python-multipart>=0.0.9",
+    "portalocker>=2.8",
+    "requests>=2.31",
 ]
 
 [project.scripts]

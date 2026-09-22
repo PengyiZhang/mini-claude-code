@@ -227,5 +227,11 @@ def test_nudge_worker_emits_error_event_on_exception(tmp_path):
     # the original message; the daemon must route it through _emit
     # (this is the regression — pre-fix, the daemon dropped it).
     assert "script exhausted" in errs[0].get("message", "")
-    # _running must have been released — no deadlock.
+    # _running must have been released — no deadlock. The error event
+    # lands in `captured` synchronously while the worker is still
+    # between the _emit and the finally that clears _running, so wait
+    # for the flag instead of asserting it instantly.
+    deadline = time.time() + 10
+    while time.time() < deadline and loop._running:
+        time.sleep(0.02)
     assert not loop._running

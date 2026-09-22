@@ -52,7 +52,11 @@ from .teams import (MessageBus, ProtocolState, ProtocolTracker, TeammateInfo,
 from .tools import FunctionTool, Tool, ToolContext, builtin_tools
 from .tools.background import BackgroundScheduler
 
-__version__ = "0.1.0"
+try:  # single source of truth: pyproject.toml
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    __version__ = _pkg_version("mini-cc")
+except PackageNotFoundError:  # running from source without install
+    __version__ = "0.1.0"
 
 __all__ = [
     # config
