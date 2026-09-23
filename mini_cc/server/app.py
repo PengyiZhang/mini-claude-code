@@ -234,6 +234,16 @@ def build_app(*, data_dir: Path,
         configured = bool(getattr(cfg, "has_llm_credentials", lambda: False)())
         return {"ok": True, "llm_configured": configured}
 
+    @app.get("/readyz", tags=["meta"])
+    def readyz() -> JSONResponse:
+        """M4-3: readiness (storage/llm gating, docker informational).
+        Cached 5s — probes touch the filesystem and may spawn docker."""
+        from .health import readiness_payload
+        payload = readiness_payload(pm.data_dir)
+        return JSONResponse(
+            status_code=200 if payload["status"] == "ready" else 503,
+            content=payload)
+
     @app.get("/metrics", tags=["meta"])
     def metrics_text() -> PlainTextResponse:
         """Prometheus 0.0.4 text format. Trusted-network only — no auth."""
