@@ -148,4 +148,4 @@
 |---|---|---|---|
 | 2026-09-22 | 预备 | (本次) | 回收误入 reference/ 的 3 份用户文档（deploy-runbook 等），修复 DEPLOYMENT.md 断链 |
 | 2026-09-22 | M1 全部 | M1-hygiene commit（2026-09-22） | CI workflow（pytest 双平台矩阵 + web build/test）+ CI 徽章；portalocker/requests 入依赖清单（mailbox 15 测试转绿）；nudge flaky 断言修复（50 次循环验证，1343 全绿）；README 三处陈旧声明修正；版本单一源 + CHANGELOG.md + v0.1.0 tag |
-| 2026-09-23 | M2 全部 | M2-security commit | 8 项全落地（TDD，各配 PoC 测试）：结构性元字符拒绝 + 拒绝 cmd.exe 回退；key sha256 落盘 + key_hint + 旧明文自动迁移；mounts 敏感前缀恒拒 + 可选严格白名单；fs 操作 fd 化 + 身份比对；get/list/delete 强制 tid + 显式 get_any/list_all（并修复 app.py 死代码关机清理）；渠道 webhook 强制校验材料 + 每渠道限流 + 索引（顺带根治 feishu 注册顺序依赖）；宽限期旧 key 只读投影；/shared 按客户端 IP 限流 |
+| 2026-09-23 | M2 全部 | `0b28238` | 8 项全落地（TDD，各配 PoC 测试）：结构性元字符拒绝 + 拒绝 cmd.exe 回退；key sha256 落盘 + key_hint + 旧明文自动迁移；mounts 敏感前缀恒拒 + 可选严格白名单；fs 操作 fd 化 + 身份比对；get/list/delete 强制 tid + 显式 get_any/list_all（并修复 app.py 死代码关机清理）；渠道 webhook 强制校验材料 + 每渠道限流 + 索引（顺带根治 feishu 注册顺序依赖）；宽限期旧 key 只读投影；/shared 按客户端 IP 限流。CI 双平台 5/5 绿（Linux 实跑 symlink TOCTOU 用例） |
