@@ -1074,12 +1074,14 @@ class AgentLoop:
         if (bg is not None and should_run_background(name, tool_input)
                 and name in self._handlers):
             bg_id = bg.start(ctx, self._handlers, name, tool_input, tool_use_id)
-            return (f"[Background task {bg_id} started] "
-                    "Result will arrive as a task_notification.")
-        tool = self._handlers.get(name)
-        if tool is None:
-            return f"Unknown tool: {name}"
-        output = tool.handle(ctx, tool_input)
+            output = (f"[Background task {bg_id} started] "
+                      "Result will arrive as a task_notification.")
+        else:
+            tool = self._handlers.get(name)
+            if tool is None:
+                output = f"Unknown tool: {name}"
+            else:
+                output = tool.handle(ctx, tool_input)
         if self.hooks is not None:
             self.hooks.trigger(Hooks.PostToolUse, name, tool_input, output)
         return output

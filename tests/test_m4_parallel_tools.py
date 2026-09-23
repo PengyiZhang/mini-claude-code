@@ -185,3 +185,77 @@ def test_unflagged_tool_stays_serial(tmp_path, monkeypatch):
     results = [e for e in events if e["type"] == "tool_result"]
     assert len(results) == 2
     assert elapsed >= 0.55  # 未加白名单 → 串行
+
+
+# ── PostToolUse regression: hook must fire on ALL non-denied paths ───────────
+# 3b8d592 introduced early returns on the bg-offload and unknown-tool
+# paths that skipped the PostToolUse trigger. Original semantics:
+# denied → no PostToolUse; everything else → PostToolUse(name, input, output).
+
+class _HooksStub:
+    """Minimal Hooks stand-in. Records every trigger(event, *args) call;
+    PreToolUse returns pre_denial (None → allow), matching the
+    deny-by-non-None-return protocol of real Hooks.trigger."""
+
+    def __init__(self, pre_denial=None):
+        self.calls = []
+        self.pre_denial = pre_denial
+
+    def trigger(self, event, *args):
+        self.calls.append((event, args))
+        return self.pre_denial if event == "PreToolUse" else None
+
+
+class _BgStub:
+    """BackgroundScheduler stand-in: start() records the call and
+    returns a fixed bg_id."""
+
+    def __init__(self, bg_id="bg-7"):
+        self.bg_id = bg_id
+        self.started = []
+
+    def start(self, ctx, tools, name, tool_input, tool_use_id):
+        self.started.append((name, tool_input, tool_use_id))
+        return self.bg_id
+
+
+def test_run_one_fires_posttooluse_for_unknown_tool(tmp_path):
+    loop = _build_loop(tmp_path, [])
+    stub = _HooksStub()
+    loop.hooks = stub
+    ctx = loop._make_ctx()
+
+    out = loop._run_one(ctx, "nope", {}, "t1")
+
+    assert out == "Unknown tool: nope"
+    assert ("PostToolUse", ("nope", {}, out)) in stub.calls
+
+
+def test_run_one_fires_posttooluse_for_background_offload(tmp_path):
+    loop = _build_loop(tmp_path, [_slow_tool("bash", 0.0)])
+    stub = _HooksStub()
+    loop.hooks = stub
+    bg = _BgStub("bg-7")
+    loop.project.background = bg
+    ctx = loop._make_ctx()
+    # should_run_background requires tool "bash" + run_in_background
+    # truthy (or a SLOW_KEYWORDS command match).
+    tool_input = {"command": "sleep 5", "run_in_background": True}
+
+    out = loop._run_one(ctx, "bash", tool_input, "t2")
+
+    assert "[Background task bg-7 started]" in out
+    assert bg.started == [("bash", tool_input, "t2")]
+    assert ("PostToolUse", ("bash", tool_input, out)) in stub.calls
+
+
+def test_run_one_denied_skips_posttooluse(tmp_path):
+    loop = _build_loop(tmp_path, [_slow_tool("x", 0.0)])
+    stub = _HooksStub(pre_denial="denied!")
+    loop.hooks = stub
+    ctx = loop._make_ctx()
+
+    out = loop._run_one(ctx, "x", {}, "t3")
+
+    assert out == "denied!"
+    assert not [c for c in stub.calls if c[0] == "PostToolUse"]
