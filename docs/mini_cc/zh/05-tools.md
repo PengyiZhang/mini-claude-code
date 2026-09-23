@@ -106,6 +106,11 @@ ToolContext
 dispatcher 永远不直接 import 工具实现 —— 它只走 `self._handlers[name]`，那只是一个字典。
 "Unknown tool" 会变成普通字符串结果，让模型能用别的名字重试。
 
+上面这条严格串行的流程有一个例外：同一轮 assistant 消息里连续出现的、带 `parallel_safe`
+标记的只读工具会在一个小线程池里并发执行。整批的 `tool_use` 事件仍会先全部发出，
+`tool_result` 事件随后按完成顺序到达；批次之后的串行工具会等批次结束。线程池大小由
+`MINI_CC_TOOL_WORKERS` 控制（默认 4；小于 2 视为串行）。
+
 ### 内置工具分类
 
 约 45 个内置工具归为九族。文件和 bash 操作是根基，其余都叠在上面。
@@ -189,6 +194,7 @@ loop = AgentLoop(project, session_id, tools=tools, ...)
 |------|-----------|
 | `TAVILY_API_KEY` | `web_search`（Tavily 必需） |
 | `MINI_CC_MCP_SERVERS` | 项目加载时自动连接的 MCP 服务器；其工具以 `mcp__*` 出现 |
+| `MINI_CC_TOOL_WORKERS` | `parallel_safe` 工具批次的线程池大小（默认 4；小于 2 = 串行） |
 | `ANTHROPIC_API_KEY` / `MODEL_ID` | 决定 `connect_mcp` 与工具调用能否被服务 |
 
 ### 各工具的可调项（硬编码，见源码）

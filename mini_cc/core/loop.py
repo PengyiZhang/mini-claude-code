@@ -1093,7 +1093,13 @@ class AgentLoop:
         permission prompt, hooks, the subagent sink, or background
         offload — completion order is the only visible delta vs serial.
         All tool_use events were already yielded; tool_result events
-        are yielded in completion order."""
+        are yielded in completion order.
+
+        Failure semantics: if one call raises, sibling calls may
+        already have executed (serial execution would never have
+        started them), and abandoning this generator mid-batch blocks
+        in the executor's __exit__ until in-flight calls finish —
+        bounded because the whitelist is read-only tools."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         ctx.on_subagent_event = None
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1148,11 +1154,17 @@ class AgentLoop:
                 tool_use_id = block.id
 
             # M4-7 eligibility: only explicitly-whitelisted read-only
-            # tools enter the parallel batch, and only when hooks or
-            # the interactive permission prompt aren't installed
-            # (neither may observe interleaved execution).
+            # tools enter the parallel batch, and only when no
+            # Pre/PostToolUse hook is CONFIGURED (a bare Hooks registry
+            # with no subscribers can't observe interleaved execution —
+            # interactive server sessions always install one, so
+            # checking `is None` would disable the feature everywhere)
+            # and the interactive permission prompt isn't installed.
+            hooks_may_observe = (self.hooks is not None
+                                 and (self.hooks.has(Hooks.PreToolUse)
+                                      or self.hooks.has(Hooks.PostToolUse)))
             eligible = (workers >= 2
-                        and self.hooks is None
+                        and not hooks_may_observe
                         and name not in self.project.prompt_tools
                         and getattr(self._handlers.get(name),
                                     "parallel_safe", False))
@@ -1259,4 +1271,3 @@ class AgentLoop:
         # call) still needs its executor pass.
         if batch:
             yield from self._run_parallel_batch(ctx, batch, workers)
-            batch = []

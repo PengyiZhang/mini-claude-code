@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from mini_cc.core.loop import AgentLoop, ProjectRef
+from mini_cc.core.hooks import Hooks
+from mini_cc.core.loop import AgentLoop, ProjectRef, _tool_worker_count
 from mini_cc.core.llm import AnthropicProvider
 from mini_cc.sandbox import SubprocessSandbox
 from mini_cc.storage import FSStorage
@@ -152,6 +153,9 @@ def test_events_all_uses_before_results_in_batch(tmp_path, monkeypatch):
 
     events = list(loop.run("go"))
     kinds = [e["type"] for e in events]
+    # 先确认有结果，否则 ValueError from .index() 会掩盖真实失败
+    assert any(k == "tool_result" for k in kinds), \
+        "batch produced no tool_result events"
     first_result = kinds.index("tool_result")
     # 批内所有 tool_use 先于任何 tool_result（两阶段执行的事件形状）。
     assert all(k != "tool_use" for k in kinds[first_result:])
@@ -185,6 +189,97 @@ def test_unflagged_tool_stays_serial(tmp_path, monkeypatch):
     results = [e for e in events if e["type"] == "tool_result"]
     assert len(results) == 2
     assert elapsed >= 0.55  # 未加白名单 → 串行
+
+
+def test_empty_hooks_registry_still_parallelizes(tmp_path, monkeypatch):
+    """C1: production sessions always carry a Hooks registry
+    (projects/manager._assemble builds one unconditionally and
+    session/manager passes it to every loop). An EMPTY registry has
+    nothing subscribed to Pre/PostToolUse and can't observe interleaved
+    execution, so the gate must key on configured subscribers — not on
+    the Hooks instance's existence."""
+    monkeypatch.delenv("MINI_CC_TOOL_WORKERS", raising=False)
+    tools = [_slow_tool("slow_a", 0.3, parallel_safe=True),
+             _slow_tool("slow_b", 0.3, parallel_safe=True)]
+    loop = _build_loop(tmp_path, tools)
+    loop.hooks = Hooks()  # production shape: empty registry, not None
+
+    t0 = time.monotonic()
+    events = list(loop.run("go"))
+    elapsed = time.monotonic() - t0
+
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert len(results) == 2
+    assert {r["content"] for r in results} == {"slow_a done", "slow_b done"}
+    assert elapsed < 0.55  # 串行 ≥0.6s；空 Hooks 不应关闭并行
+
+
+def test_configured_pretooluse_hook_forces_serial(tmp_path, monkeypatch):
+    """C1 guard: a Hooks registry WITH a subscribed PreToolUse listener
+    keeps serial semantics — hooks may observe or deny each call, so
+    execution must not interleave."""
+    monkeypatch.delenv("MINI_CC_TOOL_WORKERS", raising=False)
+    tools = [_slow_tool("slow_a", 0.3, parallel_safe=True),
+             _slow_tool("slow_b", 0.3, parallel_safe=True)]
+    loop = _build_loop(tmp_path, tools)
+    hooks = Hooks()
+    hooks.register(Hooks.PreToolUse, lambda name, inp: None)  # no-op
+    loop.hooks = hooks
+
+    t0 = time.monotonic()
+    events = list(loop.run("go"))
+    elapsed = time.monotonic() - t0
+
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert len(results) == 2
+    assert elapsed >= 0.55  # 有订阅者 → 串行
+
+
+def test_mixed_batch_flushes_before_serial_call(tmp_path, monkeypatch):
+    """I1: a non-eligible call after a parallel batch flushes the batch
+    BEFORE its own tool_use is emitted — the serial tool runs strictly
+    after the batch completes. Durations differ (0.1 vs 0.3) so the
+    batch's completion order — and thus the tool_result order — is
+    deterministic."""
+    monkeypatch.delenv("MINI_CC_TOOL_WORKERS", raising=False)
+    c_start: list[float] = []
+
+    def _record_start(ctx, args):
+        c_start.append(time.monotonic())
+        return "serial_c done"
+
+    tools = [_slow_tool("slow_a", 0.1, parallel_safe=True),
+             _slow_tool("slow_b", 0.3, parallel_safe=True),
+             _slow_tool("serial_c", 0.0, fn=_record_start)]
+    loop = _build_loop(tmp_path, tools)
+
+    t0 = time.monotonic()
+    events = list(loop.run("go"))
+
+    seq = [(e["type"], e.get("id") or e.get("tool_use_id"))
+           for e in events if e["type"] in ("tool_use", "tool_result")]
+    assert seq == [("tool_use", "tu-0"), ("tool_use", "tu-1"),
+                   ("tool_result", "tu-0"), ("tool_result", "tu-1"),
+                   ("tool_use", "tu-2"), ("tool_result", "tu-2")]
+    # c 只在批（~0.3s）完成后才启动
+    assert c_start and c_start[0] >= t0 + 0.25
+
+
+# ── _tool_worker_count clamp ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("value,expected", [
+    ("0", 1),      # <2 → 1，即纯串行
+    ("abc", 4),    # 非法值 → 默认
+    ("99", 16),    # 上限截断
+    (None, 4),     # 未设置 → 默认
+    ("2", 2),      # 合法值原样通过
+])
+def test_tool_worker_count_clamps(value, expected, monkeypatch):
+    if value is None:
+        monkeypatch.delenv("MINI_CC_TOOL_WORKERS", raising=False)
+    else:
+        monkeypatch.setenv("MINI_CC_TOOL_WORKERS", value)
+    assert _tool_worker_count() == expected
 
 
 # ── PostToolUse regression: hook must fire on ALL non-denied paths ───────────

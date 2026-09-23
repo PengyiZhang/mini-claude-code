@@ -116,6 +116,13 @@ The dispatcher never imports tool implementations directly — it goes through
 `self._handlers[name]`, which is just a dict. "Unknown tool" becomes a plain
 string result so the model can retry with a different name.
 
+One departure from the strictly serial flow above: consecutive read-only
+tools flagged `parallel_safe` in a single assistant turn run concurrently in a
+small thread pool. The `tool_use` events for the whole batch are still emitted
+first, and the `tool_result` events follow in completion order; a serial tool
+after the batch waits for it. The pool size comes from
+`MINI_CC_TOOL_WORKERS` (default 4; below 2 means serial).
+
 ### Built-in tool categories
 
 The ~45 built-ins group into nine families. File and bash operations are the
@@ -210,6 +217,7 @@ you control the full toolset.
 |-----|----------------|
 | `TAVILY_API_KEY` | `web_search` (required for Tavily) |
 | `MINI_CC_MCP_SERVERS` | MCP servers auto-connected at project load; their tools appear as `mcp__*` |
+| `MINI_CC_TOOL_WORKERS` | Thread-pool size for `parallel_safe` tool batches (default 4; below 2 = serial) |
 | `ANTHROPIC_API_KEY` / `MODEL_ID` | Determines whether `connect_mcp` and tool calls can be served at all |
 
 ### Per-tool tunables (hardcoded, see source)

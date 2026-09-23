@@ -73,6 +73,19 @@ with the tool results appended as a new user turn; `end_turn` exits. The
 `CONTINUATION_PROMPT` up to `MAX_RECOVERY_RETRIES` times before giving up
 (`mini_cc/core/loop.py:681-695`).
 
+### Conservative parallel tool execution
+
+Read-only tools flagged `parallel_safe` (`read_file`, `glob`, `grep`,
+`web_fetch`, `web_search`) may run concurrently when several appear in one
+assistant turn. All `tool_use` events for such a batch are emitted first; the
+batch's `tool_result` events follow in completion order, which may differ from
+submission order. A non-eligible tool after a parallel batch waits for the
+batch to finish, so cross-tool ordering is preserved. Parallelism is disabled
+whenever a `PreToolUse`/`PostToolUse` hook is subscribed or an interactive
+permission prompt is configured — hooks always observe serial semantics. The
+pool size is set by `MINI_CC_TOOL_WORKERS` (default 4; values below 2 fall
+back to serial).
+
 ### Per-session re-entrancy lock
 
 Two threads entering `run()` on the same loop would race on `self.messages` and

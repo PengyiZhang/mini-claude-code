@@ -67,6 +67,16 @@
 `ESCALATED_MAX_TOKENS`，`mini_cc/config.py:27-28`），若仍然撞上限，则发送
 `CONTINUATION_PROMPT` 最多 `MAX_RECOVERY_RETRIES` 次后放弃（`mini_cc/core/loop.py:681-695`）。
 
+### 保守的并行工具执行
+
+带有 `parallel_safe` 标记的只读工具（`read_file`、`glob`、`grep`、`web_fetch`、
+`web_search`）在同一轮 assistant 消息里连续出现时可以并发执行。这类批次的所有
+`tool_use` 事件先全部发出，批内的 `tool_result` 事件随后按完成顺序（可能与提交顺序
+不同）依次到达。并行批次之后的非并行工具会等批次结束后才运行，跨工具的先后顺序因此
+保持不变。只要订阅了 `PreToolUse`/`PostToolUse` 钩子或配置了交互式权限审批，并行即被
+关闭 —— 钩子观察到的永远是串行语义。线程池大小由 `MINI_CC_TOOL_WORKERS` 控制
+（默认 4；小于 2 视为串行）。
+
 ### 按会话的重入锁
 
 两个线程同时进入同一个 loop 的 `run()`，会在 `self.messages` 上竞争并损坏 transcript。
