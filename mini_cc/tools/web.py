@@ -90,6 +90,8 @@ WEB_FETCH_TOOL = FunctionTool(
         "required": ["url"],
     },
     fn=_web_fetch,
+    # M4-7: read-only — safe to run in the parallel batch.
+    parallel_safe=True,
 )
 
 

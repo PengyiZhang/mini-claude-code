@@ -13,6 +13,7 @@ be resumed across crashes.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -89,6 +90,16 @@ def _block_id(b) -> str | None:
     if isinstance(b, dict):
         return b.get("id")
     return getattr(b, "id", None)
+
+
+def _tool_worker_count() -> int:
+    """M4-7: 并行工具线程数。MINI_CC_TOOL_WORKERS 可调（默认 4，
+    <2 视为 1 即纯串行）。"""
+    try:
+        n = int(os.environ.get("MINI_CC_TOOL_WORKERS", "4"))
+    except ValueError:
+        n = 4
+    return max(1, min(n, 16))
 
 
 def repair_dangling_tool_uses(messages: list[dict]) -> bool:
@@ -1051,6 +1062,51 @@ class AgentLoop:
         ctx.workflow_dispatch = _workflow_dispatch  # type: ignore[attr-defined]
         return ctx
 
+    def _run_one(self, ctx, name, tool_input, tool_use_id):
+        """Execute one tool call: PreToolUse hook → background offload →
+        handler → PostToolUse hook. Permission prompting and the
+        subagent-event sink stay with the caller (serial semantics)."""
+        denied = (self.hooks.trigger(Hooks.PreToolUse, name, tool_input)
+                  if self.hooks is not None else None)
+        if denied is not None:
+            return str(denied)
+        bg = self.project.background
+        if (bg is not None and should_run_background(name, tool_input)
+                and name in self._handlers):
+            bg_id = bg.start(ctx, self._handlers, name, tool_input, tool_use_id)
+            return (f"[Background task {bg_id} started] "
+                    "Result will arrive as a task_notification.")
+        tool = self._handlers.get(name)
+        if tool is None:
+            return f"Unknown tool: {name}"
+        output = tool.handle(ctx, tool_input)
+        if self.hooks is not None:
+            self.hooks.trigger(Hooks.PostToolUse, name, tool_input, output)
+        return output
+
+    def _run_parallel_batch(self, ctx, batch, workers):
+        """M4-7: run a batch of parallel_safe calls concurrently.
+
+        Eligibility (caller-checked) guarantees none of these use the
+        permission prompt, hooks, the subagent sink, or background
+        offload — completion order is the only visible delta vs serial.
+        All tool_use events were already yielded; tool_result events
+        are yielded in completion order."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        ctx.on_subagent_event = None
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(self._run_one, ctx, n, inp, tid): (n, tid)
+                for (n, inp, tid) in batch}
+            for fut in as_completed(futures):
+                _name, tid = futures[fut]
+                output = fut.result()
+                self._rounds_since_todo += 1  # 白名单工具永不是 todo_write
+                yield {"type": "tool_result", "tool_use_id": tid,
+                       "content": output}
+                self._emit({"type": "tool_result", "tool_use_id": tid,
+                            "content": output})
+
     def _execute_tool_calls(self, content):
         """Yields tool_use + tool_result events for each tool call in content.
 
@@ -1065,8 +1121,16 @@ class AgentLoop:
         after the tool returns, so users see subagent tool_use /
         tool_result activities land live under the parent's current
         assistant bubble rather than vanishing into a hidden transcript.
+
+        M4-7: conservative parallelism — consecutive parallel_safe
+        read-only tools in one assistant turn run in a small thread
+        pool; everything else keeps the serial semantics below
+        unchanged, and a serial tool after a parallel batch only runs
+        once the batch completes.
         """
         ctx = self._make_ctx()
+        workers = _tool_worker_count()
+        batch: list[tuple[str, dict, str]] = []
         for block in content:
             btype = block.get("type") if isinstance(block, dict) \
                 else getattr(block, "type", None)
@@ -1080,6 +1144,29 @@ class AgentLoop:
                 name = block.name
                 tool_input = block.input or {}
                 tool_use_id = block.id
+
+            # M4-7 eligibility: only explicitly-whitelisted read-only
+            # tools enter the parallel batch, and only when hooks or
+            # the interactive permission prompt aren't installed
+            # (neither may observe interleaved execution).
+            eligible = (workers >= 2
+                        and self.hooks is None
+                        and name not in self.project.prompt_tools
+                        and getattr(self._handlers.get(name),
+                                    "parallel_safe", False))
+            if eligible:
+                batch.append((name, dict(tool_input), tool_use_id))
+                yield {"type": "tool_use", "name": name,
+                       "input": tool_input, "id": tool_use_id}
+                self._emit({"type": "tool_use", "name": name,
+                            "input": tool_input, "id": tool_use_id})
+                continue
+            if batch:
+                # Flush before the serial call so cross-tool ordering
+                # is preserved: the serial tool runs after the batch.
+                yield from self._run_parallel_batch(ctx, batch, workers)
+                batch = []
+
             yield {"type": "tool_use", "name": name,
                    "input": tool_input, "id": tool_use_id}
             self._emit({"type": "tool_use", "name": name,
@@ -1129,29 +1216,10 @@ class AgentLoop:
                     continue
                 # Decision = allow → fall through to normal execution.
 
-            # PreToolUse hook can deny the call; the denial string
-            # becomes the tool_result content.
-            denied = (self.hooks.trigger(Hooks.PreToolUse, name, tool_input)
-                      if self.hooks is not None else None)
-            if denied is not None:
-                output = str(denied)
-            else:
-                # Slow bash ops get offloaded; result lands as a
-                # notification in a later turn.
-                bg = self.project.background
-                if (bg is not None and should_run_background(name, tool_input)
-                        and name in self._handlers):
-                    bg_id = bg.start(ctx, self._handlers, name, tool_input, tool_use_id)
-                    output = (f"[Background task {bg_id} started] "
-                              "Result will arrive as a task_notification.")
-                else:
-                    tool = self._handlers.get(name)
-                    if tool is None:
-                        output = f"Unknown tool: {name}"
-                    else:
-                        output = tool.handle(ctx, tool_input)
-                if self.hooks is not None:
-                    self.hooks.trigger(Hooks.PostToolUse, name, tool_input, output)
+            # PreToolUse-hook denial, background offload, handler
+            # dispatch, and the PostToolUse hook all live in _run_one
+            # (shared verbatim with the M4-7 parallel batch).
+            output = self._run_one(ctx, name, tool_input, tool_use_id)
 
             if name == "todo_write":
                 self._rounds_since_todo = 0
@@ -1184,3 +1252,9 @@ class AgentLoop:
             # (SessionManager.send doesn't propagate on_event).
             if name == "todo_write":
                 yield {"type": "todos_updated", "todos": self.todos}
+
+        # M4-7: trailing parallel_safe batch (loop ended on an eligible
+        # call) still needs its executor pass.
+        if batch:
+            yield from self._run_parallel_batch(ctx, batch, workers)
+            batch = []

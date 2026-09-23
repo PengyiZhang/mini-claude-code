@@ -79,6 +79,8 @@ READ_TOOL = FunctionTool(
         "required": ["path"],
     },
     fn=_read,
+    # M4-7: read-only — safe to run in the parallel batch.
+    parallel_safe=True,
 )
 
 WRITE_TOOL = FunctionTool(
@@ -120,6 +122,8 @@ GLOB_TOOL = FunctionTool(
         "required": ["pattern"],
     },
     fn=_glob,
+    # M4-7: read-only — safe to run in the parallel batch.
+    parallel_safe=True,
 )
 
 GREP_TOOL = FunctionTool(
@@ -137,6 +141,8 @@ GREP_TOOL = FunctionTool(
         "required": ["pattern"],
     },
     fn=_grep,
+    # M4-7: read-only — safe to run in the parallel batch.
+    parallel_safe=True,
 )
 
 ALL = [READ_TOOL, WRITE_TOOL, EDIT_TOOL, GLOB_TOOL, GREP_TOOL]

@@ -74,6 +74,9 @@ class FunctionTool:
     description: str
     input_schema: dict
     fn: Callable[[ToolContext, dict], str]
+    # M4-7: 显式声明的只读工具可在同一轮 tool_use 批内并行执行。
+    # 默认 False——保守并行，只有白名单工具才进线程池。
+    parallel_safe: bool = False
 
     def handle(self, ctx: ToolContext, args: dict) -> str:
         try:

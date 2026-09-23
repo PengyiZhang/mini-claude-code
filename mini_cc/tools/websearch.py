@@ -143,6 +143,8 @@ WEB_SEARCH_TOOL = FunctionTool(
         "required": ["query"],
     },
     fn=_web_search,
+    # M4-7: read-only — safe to run in the parallel batch.
+    parallel_safe=True,
 )
 
 
