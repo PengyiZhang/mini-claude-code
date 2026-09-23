@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from mini_cc.commands.registry import (CommandContext, _cmd_search, _cmd_export,
-                                        default_registry)
+from mini_cc.commands.registry import CommandContext, default_registry
+from mini_cc.commands.builtin.session_cmds import _cmd_search, _cmd_export
 
 
 def _ctx(project_id="p1", session_id="sess_a", storage=None, project=None,

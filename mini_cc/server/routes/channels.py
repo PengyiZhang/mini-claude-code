@@ -33,6 +33,8 @@ the session.
 """
 from __future__ import annotations
 
+import logging
+import time
 import threading
 from typing import Any
 
@@ -42,6 +44,34 @@ from pydantic import BaseModel, Field
 
 from ..deps import get_pm, get_sm, require_scope, validate_id
 from ..errors import BadRequest, NotFound, TooManyRequests, Unauthorized
+
+log = logging.getLogger(__name__)
+
+# In-flight channel-inbound workers (M3-5). Daemon threads by design —
+# they must not block process exit — but lifespan shutdown drains them
+# so a turn already talking to the LLM gets its sink writes flushed
+# instead of being axed mid-flight.
+_INBOUND_WORKERS: set = set()
+_WORKERS_LOCK = threading.Lock()
+
+
+def drain_inbound_workers(timeout: float = 10.0) -> None:
+    """Join in-flight channel-inbound workers (bounded by ``timeout``).
+
+    Called from lifespan shutdown after teammates/MCP teardown. Workers
+    that overrun the timeout stay daemon-dropped, as before."""
+    with _WORKERS_LOCK:
+        workers = [w for w in _INBOUND_WORKERS if w.is_alive()]
+    deadline = time.monotonic() + timeout
+    for w in workers:
+        remaining = max(0.0, deadline - time.monotonic())
+        w.join(timeout=remaining)
+    # Prune only finished workers — ones that outlived the timeout stay
+    # tracked so a later drain can still join them.
+    with _WORKERS_LOCK:
+        for w in list(_INBOUND_WORKERS):
+            if not w.is_alive():
+                _INBOUND_WORKERS.discard(w)
 
 
 # ── Router 1: project-scoped CRUD (tenant auth required) ───────────────
@@ -269,20 +299,24 @@ async def inbound_webhook(channel_id: str = Path(...),
 
 
 def _enqueue_inbound_turn(sm, project, session_id: str | None,
-                          user_input: str, metadata: dict) -> None:
+                          user_input: str, metadata: dict) -> threading.Thread:
     """Fire-and-forget background thread that runs ``sm.send`` against
     the bound session. Creates the session lazily if it doesn't exist
     so a fresh channel binding can be the user's first message into the
     project.
 
-    Errors are swallowed — the inbound webhook already returned 200, so
-    surfacing a failure here would orphan the user's message. The agent
-    loop's own error handling will emit ``{"type":"error"}`` events that
-    flow back to the channel via the dispatcher."""
+    The webhook already returned 200 by the time this runs, so a failed
+    turn can't surface to the caller — but it must not vanish silently
+    either (M3-3): failures are logged with project/session context so
+    operators can trace lost inbound messages. Returns the worker
+    thread so callers/tests can join if they care."""
     def _worker():
         try:
             sid = session_id or _resolve_default_session(project, sm)
             if sid is None:
+                log.warning(
+                    "channel inbound turn dropped: no session to route "
+                    "into (project=%s)", project.project_id)
                 return
             for _ev in sm.send(project.project_id, sid, user_input):
                 # Events are persisted + dispatched by the session's
@@ -290,11 +324,20 @@ def _enqueue_inbound_turn(sm, project, session_id: str | None,
                 # turn actually runs.
                 pass
         except Exception:
-            pass
+            log.warning(
+                "channel inbound turn failed: project=%s session=%s "
+                "input=%r", project.project_id, session_id,
+                user_input[:120], exc_info=True)
+        finally:
+            with _WORKERS_LOCK:
+                _INBOUND_WORKERS.discard(threading.current_thread())
 
     t = threading.Thread(target=_worker, daemon=True,
                          name=f"channel-inbound:{project.project_id}")
+    with _WORKERS_LOCK:
+        _INBOUND_WORKERS.add(t)
     t.start()
+    return t
 
 
 def _resolve_default_session(project, sm) -> str | None:

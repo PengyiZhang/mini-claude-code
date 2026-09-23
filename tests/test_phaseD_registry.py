@@ -47,7 +47,7 @@ def test_lookup_returns_record_with_full_fields(tmp_path):
 
 def test_lookup_rejects_expired_key_lazily(tmp_path):
     reg = TenantKeyRegistry(tmp_path / "keys.json")
-    rec = reg.generate("t1", expires_in=1)  # 1 second
+    rec = reg.generate("t1", expires_in=60)  # generous; force-expiry below does the real work
     # Still valid immediately
     assert reg.lookup(rec.key) is not None
     # Manually expire by patching the on-disk record
@@ -60,7 +60,7 @@ def test_lookup_rejects_expired_key_lazily(tmp_path):
 def test_expired_key_still_listed_for_admin(tmp_path):
     """Lazy expiry: lookup rejects but list_for still includes expired keys."""
     reg = TenantKeyRegistry(tmp_path / "keys.json")
-    rec = reg.generate("t1", expires_in=1)
+    rec = reg.generate("t1", expires_in=60)
     raw = reg._read_raw()
     raw[reg._find_name(raw, rec.key)]["expires_at"] = "2000-01-01T00:00:00Z"
     reg._write(raw)

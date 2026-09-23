@@ -144,16 +144,16 @@ def test_logs_no_dir_yields_text_marker(tmp_path, monkeypatch):
     """When the logs directory doesn't exist the command should yield a
     text marker, not an empty card."""
     from pathlib import Path
-    import mini_cc.commands.registry as reg_mod
-    # Real layout: <pkg_root>/commands/registry.py with logs at
-    # <pkg_root>/logs. Mirror that so the handler's parent.parent
-    # lookup lands where we expect.
+    import mini_cc.commands.builtin.project_cmds as logs_mod
+    # Real layout: <pkg_root>/commands/builtin/project_cmds.py with
+    # logs at <pkg_root>/logs. Mirror that so the handler's
+    # parent.parent lookup lands where we expect.
     fake_pkg = tmp_path / "pkg"
     fake_cmds = fake_pkg / "commands"
     fake_cmds.mkdir(parents=True)
-    (fake_cmds / "registry.py").write_text("")
+    (fake_cmds / "project_cmds.py").write_text("")
     # pkg/logs deliberately NOT created
-    monkeypatch.setattr(reg_mod, "__file__", str(fake_cmds / "registry.py"))
+    monkeypatch.setattr(logs_mod, "__file__", str(fake_cmds / "project_cmds.py"))
     events = _run("logs", project=None)
     card = _card(events)
     assert card is None
@@ -161,16 +161,16 @@ def test_logs_no_dir_yields_text_marker(tmp_path, monkeypatch):
 
 def test_logs_with_files_yields_card(tmp_path, monkeypatch):
     from pathlib import Path
-    import mini_cc.commands.registry as reg_mod
+    import mini_cc.commands.builtin.project_cmds as logs_mod
     fake_pkg = tmp_path / "pkg"
     fake_cmds = fake_pkg / "commands"
     fake_cmds.mkdir(parents=True)
-    (fake_cmds / "registry.py").write_text("")
+    (fake_cmds / "project_cmds.py").write_text("")
     logs = fake_pkg / "logs"
     logs.mkdir()
     (logs / "build.md").write_text("hello")
     (logs / "error.log").write_text("err")
-    monkeypatch.setattr(reg_mod, "__file__", str(fake_cmds / "registry.py"))
+    monkeypatch.setattr(logs_mod, "__file__", str(fake_cmds / "project_cmds.py"))
     events = _run("logs", project=None)
     card = _card(events)
     assert card is not None

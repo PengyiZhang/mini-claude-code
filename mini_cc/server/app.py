@@ -93,6 +93,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 pool.disconnect_all()
         except Exception:
             pass
+    # M3-5: drain in-flight channel-inbound turns (bounded) so turns
+    # already talking to the LLM flush their sink writes instead of
+    # being axed mid-flight by process exit.
+    from .routes.channels import drain_inbound_workers
+    try:
+        drain_inbound_workers(timeout=10.0)
+    except Exception:
+        log.warning("channel worker drain failed", exc_info=True)
     # Stop every per-tenant container the runtime context owns.
     ctx = getattr(app.state, "server_runtime", None)
     if ctx is not None:

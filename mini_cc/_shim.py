@@ -1,11 +1,14 @@
 """Backward-compat shim: expose s20-style agent_loop(messages, context).
 
-Bridges to the new AgentLoop API using an ephemeral project rooted at cwd.
-For new code prefer:
-    from mini_cc import ProjectManager, SessionManager
+.. deprecated:: 0.2
+    Bridges to the new AgentLoop API using an ephemeral project rooted
+    at cwd. For new code prefer:
+        from mini_cc import ProjectManager, SessionManager
+    Scheduled for removal in 0.3 (M3-6 retirement plan).
 """
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 from .core.loop import AgentLoop, ProjectRef
@@ -22,10 +25,15 @@ def agent_loop(messages: list, context: dict):
     """Run the new agent loop with cwd as the project workspace.
 
     Mutates `messages` in place (s20 semantics). Prints events to stdout.
-
     The caller is expected to have already appended the user turn to
     `messages` before calling, matching s20's __main__ block.
     """
+    warnings.warn(
+        "mini_cc._shim.agent_loop is deprecated and will be removed in "
+        "0.3; use ProjectManager + SessionManager instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     cwd = Path.cwd()
     sandbox = SubprocessSandbox("shim", cwd)
     storage = FSStorage(cwd / ".mini_cc_state")

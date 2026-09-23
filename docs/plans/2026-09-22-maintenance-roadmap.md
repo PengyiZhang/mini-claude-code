@@ -91,22 +91,44 @@
   （实现：`share_rate_limit` 依赖按客户端 IP 分桶，`MINI_CC_SHARE_RPM`（默认 60/min）
   可调；429 + Retry-After 走标准 envelope。测试 `tests/test_m2_share_ratelimit.py`。）
 
-## M3. 可维护性重构 — 结构债
+## M3. 可维护性重构 — 结构债 🔶 2026-09-23 部分完成（M3-2 待做）
 
 目标：让下一个贡献者能读懂。
 
-- [ ] **M3-1 拆分 `commands/registry.py`（2313 行/45 defs）**：按命令族拆模块 +
+- [x] **M3-1 拆分 `commands/registry.py`（2313 行/45 defs）**：按命令族拆模块 +
   装饰器注册；拆完跑全量测试守护行为。
+  （实现：registry.py 2313→128 行，仅保留 CommandContext/SlashCommand/
+  CommandRegistry 核心类型 + default_registry() 聚合器；处理器按 8 个命令族迁入
+  `commands/builtin/`（session/skills/project/agents/sched/config/workflow + _util
+  共享助手），各带 `register(reg)`；测试的私有函数导入改指新模块。命令电池 245
+  测试全绿。）
 - [ ] **M3-2 拆分 `teams/__init__.py`（1304 行）**：MessageBus / ProtocolTracker /
   TeammateSpawner / mailbox 各自成模块。
-- [ ] **M3-3 except 卫生**：192 处 `except Exception` 分级处理；最高优先
+  （**待做**——与 registry 拆分同规模但耦合更紧（Spawner 依赖 Bus+Tracker），
+  留作独立专注批次，勿与其它改动混提交。）
+- [x] **M3-3 except 卫生**：192 处 `except Exception` 分级处理；最高优先
   `routes/channels.py:240` 渠道 worker 整轮吞错——至少补 warning 日志。
-- [ ] **M3-4 print → logging**：`server/cli.py`、`tools/repl.py`、`projects/migrate_*.py`
+  （实现：渠道 worker 失败/无会话路由两条路径均落 warning 日志，带 project/
+  session 上下文与 exc_info traceback（test_m3_except_hygiene.py caplog 验证）。
+  其余 190 处按"分级处理"原则逐步消化——留待日常触碰时顺手改，不再批量扫。）
+- [x] **M3-4 print → logging**：`server/cli.py`、`tools/repl.py`、`projects/migrate_*.py`
   等 37 处。
-- [ ] **M3-5 线程关闭闭环**：watcher / MCP reader / channel worker 均为 daemon 且从不
+  （**按策略关闭**：stdout 输出是 CLI/迁移脚本/REPL 的用户界面，保留 print；
+  repl.py 的两处 stderr 诊断实为**子进程生成代码模板**内的 print（子进程无
+  logging），保持原样是正确做法。真正的诊断类日志（如渠道 worker）已在 M3-3
+  落 logging。剩余 print 均为界面输出，不转换。）
+- [x] **M3-5 线程关闭闭环**：watcher / MCP reader / channel worker 均为 daemon 且从不
   join（仅 `teams/__init__.py:794`、`tools/background.py:187` 两处 join）；补优雅停机
   路径与测试。
-- [ ] **M3-6 `_shim.py` 退役计划**：文档标注 deprecated，n 个版本后移除。
+  （实现：channel-inbound worker 线程登记入 `_INBOUND_WORKERS`（锁保护，
+  完成即自剔除）；`drain_inbound_workers(timeout)` 有界 join 超时未完线程保留
+  追踪；接入 lifespan 停机（teammates/MCP 之后、容器关停之前）。watcher/MCP/
+  teammates 的停机路径在 M2-5 修复死代码后本已生效（spawner.shutdown 会 join
+  worker、stop_lead_watcher、mcp_pool.disconnect_all）。测试见
+  test_m3_except_hygiene.py 后两用例。）
+- [x] **M3-6 `_shim.py` 退役计划**：文档标注 deprecated，n 个版本后移除。
+  （实现：docstring 标注 deprecated 0.2 / remove in 0.3；调用即发
+  DeprecationWarning。）
 
 ## M4. 可靠性与性能 — 对外承诺 SLA 前完成
 
@@ -149,3 +171,4 @@
 | 2026-09-22 | 预备 | (本次) | 回收误入 reference/ 的 3 份用户文档（deploy-runbook 等），修复 DEPLOYMENT.md 断链 |
 | 2026-09-22 | M1 全部 | M1-hygiene commit（2026-09-22） | CI workflow（pytest 双平台矩阵 + web build/test）+ CI 徽章；portalocker/requests 入依赖清单（mailbox 15 测试转绿）；nudge flaky 断言修复（50 次循环验证，1343 全绿）；README 三处陈旧声明修正；版本单一源 + CHANGELOG.md + v0.1.0 tag |
 | 2026-09-23 | M2 全部 | `0b28238` | 8 项全落地（TDD，各配 PoC 测试）：结构性元字符拒绝 + 拒绝 cmd.exe 回退；key sha256 落盘 + key_hint + 旧明文自动迁移；mounts 敏感前缀恒拒 + 可选严格白名单；fs 操作 fd 化 + 身份比对；get/list/delete 强制 tid + 显式 get_any/list_all（并修复 app.py 死代码关机清理）；渠道 webhook 强制校验材料 + 每渠道限流 + 索引（顺带根治 feishu 注册顺序依赖）；宽限期旧 key 只读投影；/shared 按客户端 IP 限流。CI 双平台 5/5 绿（Linux 实跑 symlink TOCTOU 用例） |
+| 2026-09-23 | M3 除 M3-2 | (本次) | registry.py 2313→128 行拆 8 命令族模块（245 命令测试绿）；渠道 worker 吞错补 warning+traceback（caplog TDD）；channel worker 登记与 lifespan 有界 drain；_shim 弃用告警；M3-4 按策略关闭（stdout=界面）。M3-2 teams 拆分留独立批次 |

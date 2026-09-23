@@ -7,7 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "mini_cc"))
 
-from mini_cc.commands.registry import CommandContext, _cmd_fork  # noqa: E402
+from mini_cc.commands.registry import CommandContext  # noqa: E402
+from mini_cc.commands.builtin.session_cmds import _cmd_fork  # noqa: E402
 
 
 class _FakeStorage:

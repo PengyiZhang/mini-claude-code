@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import pytest
 
-from mini_cc.commands.registry import CommandContext, _cmd_mcp
+from mini_cc.commands.registry import CommandContext
+from mini_cc.commands.builtin.skills_cmds import _cmd_mcp
 from mini_cc.mcp import MCPPool
 
 
