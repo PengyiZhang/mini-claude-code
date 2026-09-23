@@ -666,23 +666,16 @@ class AgentLoop:
                         max_tokens=max_tokens,
                     )
 
-                def _is_rate_limit(e: Exception) -> bool:
-                    status = getattr(e, "status_code", None) or 0
-                    msg = str(e).lower()
-                    return (status == 429 or "ratelimit" in msg
-                            or "rate_limit" in msg)
-
-                def _is_overloaded(e: Exception) -> bool:
-                    status = getattr(e, "status_code", None) or 0
-                    msg = str(e).lower()
-                    return status == 529 or "overloaded" in msg
-
-                # Retry connection setup on 429 / 529 (the SDK already
-                # retries twice, this adds our backoff on top). Once the
-                # stream is open, mid-stream errors propagate. The
-                # iterator is lazy — opening just validates creds/rate.
+                # Retry connection setup on transient errors — 429 / 529 /
+                # network — classified via the shared recovery module
+                # (the SDK already retries twice, this adds our backoff
+                # on top). Permanent classes (auth/quota/invalid_request/
+                # unknown) re-raise immediately. Once the stream is open,
+                # mid-stream errors propagate. The iterator is lazy —
+                # opening just validates creds/rate.
                 stream_iter = None
                 first = None
+                last_exc: Exception | None = None
                 for attempt in range(MAX_RETRIES):
                     try:
                         stream_iter = _open_stream()
@@ -698,20 +691,34 @@ class AgentLoop:
                         first = None
                         break
                     except Exception as e:
-                        if _is_rate_limit(e):
+                        last_exc = e
+                        cls = classify_error(e)
+                        if cls.kind == "rate_limit":
                             self._emit({"type": "retry", "reason": "429",
                                         "attempt": attempt + 1})
                             time.sleep(retry_delay(attempt))
                             continue
-                        if _is_overloaded(e):
+                        if cls.kind == "overloaded":
                             self.state.consecutive_529 += 1
                             self._emit({"type": "retry", "reason": "529",
                                         "attempt": attempt + 1})
                             time.sleep(retry_delay(attempt))
                             continue
+                        if cls.transient:
+                            # network — same backoff shape as 429/529 so a
+                            # connection blip at stream-open doesn't kill
+                            # the turn (with_retry has the same semantics).
+                            self._emit({"type": "retry", "reason": cls.kind,
+                                        "attempt": attempt + 1})
+                            time.sleep(retry_delay(attempt))
+                            continue
                         raise
                 else:
-                    raise RuntimeError("Max retries exceeded opening stream")
+                    # Every attempt failed on a transient error. Re-raise
+                    # the last underlying exception (not a generic wrapper)
+                    # so the outer except classifies it as network/
+                    # rate_limit/etc. for the error event + transcript.
+                    raise last_exc
 
                 response = None  # becomes the message_stop StreamEvent
                 cancelled = False

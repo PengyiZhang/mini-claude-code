@@ -47,11 +47,30 @@ def classify_error(e: Exception) -> ErrorClass:
     Ordering matters: rate_limit/overloaded are matched before the
     permanent kinds because provider rate-limit messages often contain
     words like "quota" — a 429 must stay retryable (pre-existing
-    behavior).
+    behavior). An explicit ``status_code`` attribute is authoritative
+    and checked before the name/message heuristics.
+
+    The heuristics are substring-based and intentionally conservative:
+    anything unrecognized falls to ``unknown`` (non-transient), so a
+    misclassification never turns a permanent error into a retry — the
+    rate_limit-before-quota ordering above is the one deliberate
+    exception.
     """
     name = type(e).__name__.lower()
     msg = str(e).lower()
-    if "ratelimit" in name or "429" in msg:
+    status = getattr(e, "status_code", None)
+    if status == 429:
+        kind = "rate_limit"
+    elif status == 529:
+        kind = "overloaded"
+    elif status == 402:
+        kind = "quota"
+    elif status in (401, 403):
+        kind = "auth"
+    elif status == 400:
+        kind = "invalid_request"
+    elif ("ratelimit" in name or "ratelimit" in msg
+          or "rate_limit" in msg or "429" in msg):
         kind = "rate_limit"
     elif "overloaded" in name or "529" in msg or "overloaded" in msg:
         kind = "overloaded"
@@ -65,8 +84,8 @@ def classify_error(e: Exception) -> ErrorClass:
     elif ("invalid_request" in msg or "not_found_error" in msg
           or "modelnotfound" in msg or "400" in msg):
         kind = "invalid_request"
-    elif ("timeout" in name or "timed out" in msg or "connection" in msg
-          or "eof" in msg or "reset" in msg):
+    elif ("timeout" in name or "timed out" in msg or "connection" in name
+          or "connection" in msg or "eof" in msg or "reset" in msg):
         kind = "network"
     else:
         kind = "unknown"
