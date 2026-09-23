@@ -129,7 +129,7 @@ def test_expired_key_returns_401(tmp_path):
     rec = reg.generate("tenant1", expires_in="1s")
     # Force expiry on disk
     raw = reg._read_raw()
-    raw[rec.key]["expires_at"] = "2000-01-01T00:00:00Z"
+    raw[reg._find_name(raw, rec.key)]["expires_at"] = "2000-01-01T00:00:00Z"
     reg._write(raw)
     pm = ProjectManager(tmp_path / "projects")
     sm = SessionManager(pm)

@@ -54,7 +54,7 @@ def _append_event(client, pid, sid, event, *, sleep=0.0):
     can collide on fast machines)."""
     if sleep:
         time.sleep(sleep)
-    project = client.app.state.pm.get(pid)
+    project = client.app.state.pm.get(pid, tenant_id="tenant1")
     project.storage.append_session_event(pid, sid, event)
 
 

@@ -182,6 +182,14 @@ class FeishuChannel:
         self._token_expire: float = 0.0
         self._token_lock = threading.Lock()
 
+    @property
+    def verification_configured(self) -> bool:
+        """M2-6: without encrypt_key (signature) or verification_token
+        (per-event token), any forged payload would be accepted and
+        trigger a paid LLM turn. The inbound route refuses such
+        channels outright."""
+        return bool(self.encrypt_key or self.verification_token)
+
     # ── Inbound ──────────────────────────────────────────────────────
 
     def handle_inbound(self, body: bytes,

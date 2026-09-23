@@ -84,7 +84,9 @@ def test_tenant_boundary_on_channel_route(client):
     # we sanity-check the success path: a normal binding gets a chan_ id.
     r = client.post("/tenants/tenant1/projects/p1/channels",
                     headers=AUTH,
-                    json={"kind": "feishu", "config": {"app_id": "a"}})
+                    json={"kind": "feishu",
+                          "config": {"app_id": "a",
+                                     "verification_token": "vt"}})
     assert r.status_code == 201
     assert r.json()["id"].startswith("chan_")
 
@@ -95,10 +97,13 @@ def test_tenant_boundary_on_channel_route(client):
 
 
 def test_inbound_url_verification(client):
-    # Create a binding (no encrypt_key needed for plain mode).
+    # M2-6: verification material is mandatory — plain mode needs at
+    # least a verification_token.
     r = client.post("/tenants/tenant1/projects/p1/channels",
                     headers=AUTH,
-                    json={"kind": "feishu", "config": {"app_id": "a"}})
+                    json={"kind": "feishu",
+                          "config": {"app_id": "a",
+                                     "verification_token": "vt"}})
     cid = r.json()["id"]
 
     # Feishu setup-time handshake.
@@ -109,10 +114,12 @@ def test_inbound_url_verification(client):
 
 
 def test_inbound_text_message_returns_200(client, monkeypatch):
-    # Create a binding.
+    # Create a binding (verification_token satisfies M2-6).
     r = client.post("/tenants/tenant1/projects/p1/channels",
                     headers=AUTH,
-                    json={"kind": "feishu", "config": {"app_id": "a"}})
+                    json={"kind": "feishu",
+                          "config": {"app_id": "a",
+                                     "verification_token": "t"}})
     cid = r.json()["id"]
 
     # Stub the inbound-turn enqueue so we don't actually fire an LLM.

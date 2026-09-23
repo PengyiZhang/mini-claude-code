@@ -229,10 +229,14 @@ class ProjectManager:
 
     def get(self, project_id: str,
             tenant_id: str | None = None) -> Project:
-        if tenant_id is not None:
-            meta = read_meta(self.root, tenant_id, project_id)
-        else:
-            meta = find_meta(self.root, project_id)
+        """Fetch ``project_id`` for ``tenant_id``. ``tenant_id`` is
+        REQUIRED (S3): a forgotten tid must never silently widen the
+        lookup to every tenant. Cross-tenant tools use ``get_any``."""
+        if not tenant_id:
+            raise ValueError(
+                "tenant_id is required for get(); cross-tenant lookup "
+                "must use get_any() explicitly")
+        meta = read_meta(self.root, tenant_id, project_id)
         if meta is None:
             raise KeyError(f"project not found: {project_id}")
         key = (meta.tenant_id, project_id)
@@ -248,25 +252,36 @@ class ProjectManager:
         self._sigs[key] = sig
         return project
 
+    def get_any(self, project_id: str) -> Project:
+        """EXPLICIT cross-tenant lookup by global project scan. For
+        internal tooling (migrations, channel-index rebuilds) only —
+        request paths must resolve tenant first."""
+        meta = find_meta(self.root, project_id)
+        if meta is None:
+            raise KeyError(f"project not found: {project_id}")
+        return self.get(project_id, tenant_id=meta.tenant_id)
+
     def list(self, tenant_id: str | None = None) -> list[Project]:
+        if not tenant_id:
+            raise ValueError(
+                "tenant_id is required for list(); cross-tenant scans "
+                "must use list_all() explicitly")
         return [self.get(pid, tenant_id=tenant_id)
                 for pid in list_project_ids(self.root, tenant_id)]
 
+    def list_all(self) -> list[Project]:
+        """EXPLICIT cross-tenant listing (internal tooling only)."""
+        return [self.get_any(pid) for pid in list_project_ids(self.root, None)]
+
     def delete(self, project_id: str,
                tenant_id: str | None = None) -> None:
-        if tenant_id is not None:
-            meta = read_meta(self.root, tenant_id, project_id)
-            if meta is None:
-                raise KeyError(f"project not found: {project_id}")
-        else:
-            metas = find_metas(self.root, project_id)
-            if not metas:
-                raise KeyError(f"project not found: {project_id}")
-            if len(metas) > 1:
-                raise ValueError(
-                    f"project_id ambiguous across tenants: {project_id} "
-                    f"—— pass tenant_id to disambiguate")
-            meta = metas[0]
+        if not tenant_id:
+            raise ValueError(
+                "tenant_id is required for delete(); destructive calls "
+                "must never scan across tenants")
+        meta = read_meta(self.root, tenant_id, project_id)
+        if meta is None:
+            raise KeyError(f"project not found: {project_id}")
         # Wipe the on-disk project dir (workspace + meta.json) and the
         # tenant-scoped storage subdir. Both are scoped under
         # <root>/tenants/<tid>/ so the rmtree cannot touch another tenant.

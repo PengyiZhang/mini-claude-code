@@ -48,6 +48,17 @@ ALLOWED_ENV_VARS = frozenset({
 })
 
 
+# Structural, always-on rules — not part of the configurable deny-list
+# because they close deny-list bypasses rather than encode style:
+# a newline splits the command so later lines never match the regexes
+# scanned on the joined string, and $(...)/backticks substitute payload
+# after the scan. (S2 hardening.)
+_STRUCTURAL_RULES: list[tuple[str, "re.Pattern[str]"]] = [
+    ("newline_in_command", re.compile(r"[\r\n]")),
+    ("command_substitution", re.compile(r"\$\(|`")),
+]
+
+
 class Policy:
     def __init__(self,
                  blocked_patterns: list[tuple[str, str]] | None = None,
@@ -60,6 +71,10 @@ class Policy:
 
     def scan_command(self, command: str) -> list[Violation]:
         out: list[Violation] = []
+        for name, rx in _STRUCTURAL_RULES:
+            m = rx.search(command)
+            if m:
+                out.append(Violation(rule=name, match=m.group(0)))
         for name, rx in self._compiled:
             m = rx.search(command)
             if m:

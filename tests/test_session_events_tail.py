@@ -168,7 +168,7 @@ def test_events_endpoint_replays_missed_events_with_last_event_id(app,
     naturally, and TestClient returns the buffered replay batch.
     """
     _setup(app)
-    storage = app.app.state.pm.get("p1").storage
+    storage = app.app.state.pm.get("p1", tenant_id="tenant1").storage
     s1 = storage.append_session_event("p1", "s1", {"type": "text", "text": "a"})
     s2 = storage.append_session_event("p1", "s1", {"type": "text", "text": "b"})
     s3 = storage.append_session_event("p1", "s1", {"type": "done"})
@@ -214,7 +214,7 @@ def test_events_endpoint_skips_history_on_fresh_connect(app, monkeypatch):
     Same short-timeout trick as the replay test so TestClient can drain.
     """
     _setup(app)
-    storage = app.app.state.pm.get("p1").storage
+    storage = app.app.state.pm.get("p1", tenant_id="tenant1").storage
     MARKER = "PRECONNECT_MARKER_2b71"
     storage.append_session_event(
         "p1", "s1", {"type": "text", "text": MARKER})
@@ -262,7 +262,7 @@ def test_send_sse_id_matches_event_log_seq(app):
     in the log — NOT 1.
     """
     _setup(app)
-    storage = app.app.state.pm.get("p1").storage
+    storage = app.app.state.pm.get("p1", tenant_id="tenant1").storage
     # Pre-seed so the log's seq counter isn't 0 at the next /send.
     pre_seq = storage.append_session_event(
         "p1", "s1", {"type": "text", "text": "seeded-pre-send"})

@@ -43,26 +43,53 @@
 - [x] **M1-5 版本单一事实源**：`pyproject.toml` 与 `mini_cc/__init__.py:55` 双写 0.1.0，
   改为 `importlib.metadata` 读取或同步脚本；建立 git tag + CHANGELOG.md 惯例。
 
-## M2. 安全加固（上线阻塞项）— 来自 production-hardening，逐项复核均未修
+## M2. 安全加固（上线阻塞项）— 来自 production-hardening，逐项复核均未修 ✅ 2026-09-23 完成
 
 目标：堵住跨租户/宿主机面。
 
-- [ ] **M2-1 S2 shell 注入面**：`sandbox/subprocess_sandbox.py:239` cmd.exe `shell=True`
+- [x] **M2-1 S2 shell 注入面**：`sandbox/subprocess_sandbox.py:239` cmd.exe `shell=True`
   回退路径 + `sandbox/policy.py` 缺 `\n`/`$(`/反引号 拒绝。
-- [ ] **M2-2 S5 API key 明文**：`auth/keys.py:112` 磁盘明文存储；改 sha256 存储 +
+  （实现：`Policy.scan_command` 增加不可关闭的结构性规则 `newline_in_command` /
+  `command_substitution`；无 POSIX shell 时 `execute()` 抛 `no_posix_shell` 拒绝执行，
+  不再回退 cmd.exe。测试 `tests/test_m2_sandbox_policy.py`。）
+- [x] **M2-2 S5 API key 明文**：`auth/keys.py:112` 磁盘明文存储；改 sha256 存储 +
   `hmac.compare_digest` 校验（保留 key 前缀明文便于识别）。
-- [ ] **M2-3 S6 extra_mounts 无白名单**：`sandbox/config.py:157` 任意宿主路径可挂载；
+  （实现：keys.json 以 `sha256:<hex>` 为键存储，记录含非敏感 `key_hint` 前缀；
+  旧明文条目经 `_find_name` 回退继续认证、下次写入时自动再哈希；admin 路由改用
+  新增的 `registry.find()`。测试 `tests/test_auth_key_hashing.py`。）
+- [x] **M2-3 S6 extra_mounts 无白名单**：`sandbox/config.py:157` 任意宿主路径可挂载；
   加 `MINI_CC_EXTRA_MOUNTS_ALLOW` 白名单校验。
-- [ ] **M2-4 S1 路径 TOCTOU**：`sandbox/subprocess_sandbox.py:109` 仅 resolve 检查，
+  （实现：敏感宿主前缀（/etc /root /home /var/lib/docker /proc /sys /dev /boot /run
+  + data_dir）恒拒；env 配置后为严格白名单模式，且白名单不能豁免拒绝前缀。
+  测试 `tests/test_m2_mount_whitelist.py`。）
+- [x] **M2-4 S1 路径 TOCTOU**：`sandbox/subprocess_sandbox.py:109` 仅 resolve 检查，
   换 fd-based open（`os.open` + `O_NOFOLLOW` 等价物）。
-- [ ] **M2-5 S3 框架层租户守卫**：`projects/manager.py:233` `tenant_id=None` 全局扫描
+  （实现：read/write/edit 走 `_open_validated()`——校验解析路径 → `os.open` 拿 fd →
+  fstat 与 nofollow-stat 比对 inode/设备，最终组件成 symlink 或身份漂移即抛
+  `PathEscapeError`。symlink 竞态用例由 Linux CI 执行（本机无 symlink 权限）。
+  测试 `tests/test_m2_toctou.py`。）
+- [x] **M2-5 S3 框架层租户守卫**：`projects/manager.py:233` `tenant_id=None` 全局扫描
   仍是隐患 API，改为显式 require-tenant 或审计日志。
-- [ ] **M2-6 渠道 webhook 加固**：`routes/channels.py:179` 无鉴权无节流，飞书签名
+  （实现：`get/list/delete` 缺 tid 一律 ValueError；跨租户场景显式走新增的
+  `get_any()/list_all()`（migrate、渠道索引、分享 token 解析等内部工具）；
+  顺带修复 app.py 关机清理引用不存在的 `pm._projects` 导致队友/MCP 清理从未执行的
+  死代码 bug。测试 `tests/test_m2_tenant_guard.py`。）
+- [x] **M2-6 渠道 webhook 加固**：`routes/channels.py:179` 无鉴权无节流，飞书签名
   校验依赖可选 encrypt_key（`feishu.py:189`）→ 未配置即可伪造消息触发**付费 LLM 调用**；
   要求每渠道强制 secret + 复用 rate limiter + `_find_binding` 线性扫描加索引。
-- [ ] **M2-7 R8 轮换宽限期降权**：`auth/keys.py:187` 宽限期旧 key 保留全部 scope，
+  （实现：飞书渠道新增 `verification_configured`（encrypt_key 或 verification_token），
+  入站路由对无校验材料的渠道返回 401；`MINI_CC_CHANNEL_RPM`（默认 30/min）按渠道
+  限流 + 429/Retry-After；`app.state.channel_index` 缓存渠道→项目映射（create/delete
+  维护，miss 时单次扫描回填）。顺带根治飞书 kind 只在 lifespan 注册导致的测试
+  顺序依赖（移入 build_app）。测试 `tests/test_m2_channel_webhook.py`。）
+- [x] **M2-7 R8 轮换宽限期降权**：`auth/keys.py:187` 宽限期旧 key 保留全部 scope，
   应降为只读。
-- [ ] **M2-8 /shared/{token} 限流**（公开可爆破面，token 为 HMAC 签名但无速率限制）。
+  （实现：`_read_only_scopes()` 把宽限期旧 key 的 scope 投影为只读视图
+  （`*`→`read:*`、`sessions:*`→`sessions:read`、write-only 丢弃），绝不放宽；
+  重启重载后保持。测试见 `tests/test_auth_key_hashing.py` 后三用例。）
+- [x] **M2-8 /shared/{token} 限流**（公开可爆破面，token 为 HMAC 签名但无速率限制）。
+  （实现：`share_rate_limit` 依赖按客户端 IP 分桶，`MINI_CC_SHARE_RPM`（默认 60/min）
+  可调；429 + Retry-After 走标准 envelope。测试 `tests/test_m2_share_ratelimit.py`。）
 
 ## M3. 可维护性重构 — 结构债
 
@@ -121,3 +148,4 @@
 |---|---|---|---|
 | 2026-09-22 | 预备 | (本次) | 回收误入 reference/ 的 3 份用户文档（deploy-runbook 等），修复 DEPLOYMENT.md 断链 |
 | 2026-09-22 | M1 全部 | M1-hygiene commit（2026-09-22） | CI workflow（pytest 双平台矩阵 + web build/test）+ CI 徽章；portalocker/requests 入依赖清单（mailbox 15 测试转绿）；nudge flaky 断言修复（50 次循环验证，1343 全绿）；README 三处陈旧声明修正；版本单一源 + CHANGELOG.md + v0.1.0 tag |
+| 2026-09-23 | M2 全部 | M2-security commit | 8 项全落地（TDD，各配 PoC 测试）：结构性元字符拒绝 + 拒绝 cmd.exe 回退；key sha256 落盘 + key_hint + 旧明文自动迁移；mounts 敏感前缀恒拒 + 可选严格白名单；fs 操作 fd 化 + 身份比对；get/list/delete 强制 tid + 显式 get_any/list_all（并修复 app.py 死代码关机清理）；渠道 webhook 强制校验材料 + 每渠道限流 + 索引（顺带根治 feishu 注册顺序依赖）；宽限期旧 key 只读投影；/shared 按客户端 IP 限流 |

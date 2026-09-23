@@ -90,7 +90,7 @@ def list_tree(pid: str = FPath(...),
     """
     validate_id(pid)
     try:
-        project = pm.get(pid)
+        project = pm.get(pid, tenant_id=tid)
     except KeyError:
         raise NotFound(f"project {pid} not found")
     _check(project, pid, tid)
@@ -136,7 +136,7 @@ def read_content(pid: str = FPath(...),
     return metadata only (no ``content``)."""
     validate_id(pid)
     try:
-        project = pm.get(pid)
+        project = pm.get(pid, tenant_id=tid)
     except KeyError:
         raise NotFound(f"project {pid} not found")
     _check(project, pid, tid)
@@ -180,7 +180,7 @@ def make_dir(pid: str = FPath(...),
              path: str = Query(...)) -> dict:
     validate_id(pid)
     try:
-        project = pm.get(pid)
+        project = pm.get(pid, tenant_id=tid)
     except KeyError:
         raise NotFound(f"project {pid} not found")
     _check(project, pid, tid)
@@ -205,7 +205,7 @@ async def upload_files(pid: str = FPath(...),
     """
     validate_id(pid)
     try:
-        project = pm.get(pid)
+        project = pm.get(pid, tenant_id=tid)
     except KeyError:
         raise NotFound(f"project {pid} not found")
     _check(project, pid, tid)
@@ -237,7 +237,7 @@ def delete_path(pid: str = FPath(...),
                 path: str = Query(...)) -> dict:
     validate_id(pid)
     try:
-        project = pm.get(pid)
+        project = pm.get(pid, tenant_id=tid)
     except KeyError:
         raise NotFound(f"project {pid} not found")
     _check(project, pid, tid)
@@ -266,7 +266,7 @@ def download_zip(pid: str = FPath(...),
                  pm=Depends(get_pm)) -> StreamingResponse:
     validate_id(pid)
     try:
-        project = pm.get(pid)
+        project = pm.get(pid, tenant_id=tid)
     except KeyError:
         raise NotFound(f"project {pid} not found")
     _check(project, pid, tid)

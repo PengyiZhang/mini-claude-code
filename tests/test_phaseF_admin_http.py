@@ -162,11 +162,11 @@ def test_rotate_hard_revoke_default(admin_app):
     body = r.json()
     assert body["new_key"]["key"].startswith("mck_")
     assert body["old_key"] is None  # hard-revoked
-    # Old key is gone
+    # Old key is gone (listings identify keys by non-secret key_hint)
     r = client.get("/tenants/tenant1/admin/keys", headers=auth(keys["admin"]))
-    listed_keys = {k["key"] for k in r.json()}
-    assert target not in listed_keys
-    assert body["new_key"]["key"] in listed_keys
+    listed_hints = {k["key_hint"] for k in r.json()}
+    assert target[:11] not in listed_hints
+    assert body["new_key"]["key_hint"] in listed_hints
 
 
 def test_rotate_with_grace_keeps_old(admin_app):
@@ -182,9 +182,9 @@ def test_rotate_with_grace_keeps_old(admin_app):
     assert body["new_key"]["label"] == "rotated"
     # Both still listed
     r = client.get("/tenants/tenant1/admin/keys", headers=auth(keys["admin"]))
-    listed_keys = {k["key"] for k in r.json()}
-    assert target in listed_keys
-    assert body["new_key"]["key"] in listed_keys
+    listed_hints = {k["key_hint"] for k in r.json()}
+    assert target[:11] in listed_hints
+    assert body["new_key"]["key_hint"] in listed_hints
 
 
 # ── tenant-scoped metrics ───────────────────────────────────────────

@@ -29,7 +29,7 @@ def _registry_for(pm, pid: str, tid: str) -> WebhookRegistry:
     reach another tenant's project by guessing pid and silently register
     an attacker-controlled webhook URL."""
     try:
-        project = pm.get(pid)
+        project = pm.get(pid, tenant_id=tid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     if project.meta.tenant_id != tid:

@@ -29,6 +29,8 @@ File edits require a server restart.
 from __future__ import annotations
 
 import os
+
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -134,12 +136,58 @@ def _tenant_config_path(tid: str, tenants_dir: Path) -> Path:
     return tenants_dir / tid / "sandbox.toml"
 
 
-def load_tenant_config(tid: str, tenants_dir: Path) -> ContainerConfig | None:
+# S6: host prefixes a tenant must never mount into its container. The
+# data_dir (tenants_dir.parent) is appended at validation time.
+_DENIED_HOST_PREFIXES = (
+    "/etc", "/root", "/home", "/var/lib/docker", "/var/lib/containerd",
+    "/proc", "/sys", "/dev", "/boot", "/run",
+)
+
+_ENV_ALLOW = "MINI_CC_EXTRA_MOUNTS_ALLOW"
+
+
+def _normalize_prefix(p: str) -> str:
+    return os.path.normpath(str(p)).rstrip("\\/")
+
+
+def _is_under(host: str, prefix: str) -> bool:
+    h, p = _normalize_prefix(host), _normalize_prefix(prefix)
+    return h == p or h.startswith(p + os.sep) or h.startswith(p + "/")
+
+
+def _validate_mount_host(host: str, tenants_dir: Path,
+                         allow_hosts: list[str] | None) -> None:
+    denied = list(_DENIED_HOST_PREFIXES) + [str(tenants_dir.parent)]
+    for prefix in denied:
+        if _is_under(host, prefix):
+            raise ValueError(
+                f"sandbox.toml: extra_mounts host {host!r} is under a "
+                f"denied prefix ({prefix}); container mounts may not "
+                f"expose host system or mini_cc data paths")
+    if allow_hosts is None:
+        env = os.environ.get(_ENV_ALLOW)
+        allow_hosts = ([p.strip() for p in env.split(",") if p.strip()]
+                       if env is not None else None)
+    if allow_hosts is not None and allow_hosts != []:
+        if not any(_is_under(host, a) for a in allow_hosts):
+            raise ValueError(
+                f"sandbox.toml: extra_mounts host {host!r} is outside the "
+                f"operator allow-list (MINI_CC_EXTRA_MOUNTS_ALLOW); "
+                f"allowed prefixes: {allow_hosts}")
+
+
+def load_tenant_config(tid: str, tenants_dir: Path,
+                       *, allow_hosts: list[str] | None = None
+                       ) -> ContainerConfig | None:
     """Read ``<tenants_dir>/<tid>/sandbox.toml``. None if file missing.
 
+    ``allow_hosts``: None = deny set only, plus the strict list from
+    ``MINI_CC_EXTRA_MOUNTS_ALLOW`` if that env var is set; an explicit
+    list overrides the env entirely.
+
     Raises ValueError if the file exists but is malformed (unknown
-    network value, bad mount shape, etc.) — fail loud at config-load
-    time rather than silently mishandling later.
+    network value, bad mount shape, denied host path, etc.) — fail loud
+    at config-load time rather than silently mishandling later.
     """
     fp = _tenant_config_path(tid, tenants_dir)
     if not fp.exists():
@@ -158,6 +206,7 @@ def load_tenant_config(tid: str, tenants_dir: Path) -> ContainerConfig | None:
         if not isinstance(m, dict) or "host" not in m or "container" not in m:
             raise ValueError(
                 f"sandbox.toml: extra_mounts entry missing host/container: {m!r}")
+        _validate_mount_host(str(m["host"]), tenants_dir, allow_hosts)
         mounts.append(Mount(
             host=str(m["host"]),
             container=str(m["container"]),

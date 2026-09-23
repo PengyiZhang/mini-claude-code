@@ -149,7 +149,7 @@ def client(tmp_path):
 
 def _park_via_service(client, *, webhook_id=None, event_filter=None):
     pm = client.app.state.pm
-    project = pm.get("p1")
+    project = pm.get("p1", tenant_id="tenant1")
     svc = project.workflows_v2
     cfg = {}
     if webhook_id:
@@ -211,7 +211,7 @@ def test_http_resolve_webhook_non_webhook_step_404(client):
     """Hitting /webhook/{step_id} on an action step surfaces 404,
     not 400 — the endpoint is webhook-specific."""
     pm = client.app.state.pm
-    project = pm.get("p1")
+    project = pm.get("p1", tenant_id="tenant1")
     svc = project.workflows_v2
     d = svc.create_definition("p1", {
         "name": "wf",

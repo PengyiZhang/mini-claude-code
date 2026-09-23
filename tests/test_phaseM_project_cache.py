@@ -29,11 +29,12 @@ def test_get_returns_cached_project_object(tmp_path):
 
 
 def test_get_resolves_tenant_then_caches(tmp_path):
-    """get() with tenant_id=None resolves via find_meta, then caches
-    under the resolved (tenant, pid) key."""
+    """get_any() resolves via find_meta then delegates to the tenant-
+    scoped get(), so the cache lands under the resolved (tenant, pid)
+    key and the tenant-scoped call returns the same identity."""
     pm = ProjectManager(tmp_path)
     pm.create(tenant_id="t", project_id="p")
-    first = pm.get("p")           # no tenant_id
+    first = pm.get_any("p")       # explicit cross-tenant path
     second = pm.get("p", tenant_id="t")
     assert first is second
 

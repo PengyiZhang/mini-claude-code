@@ -20,6 +20,7 @@ router = APIRouter(prefix="/tenants/{tid}/admin", tags=["admin"])
 def _to_out(rec) -> KeyOut:
     return KeyOut(
         key=rec.key,
+        key_hint=rec.key_hint,
         tenant_id=rec.tenant_id,
         scopes=list(rec.scopes),
         created_at=rec.created_at,
@@ -63,11 +64,9 @@ def update_key(key: str,
                tid: str = Depends(require_scope("admin:write")),
                reg=Depends(get_registry)) -> KeyOut:
     # Resolve without lazy-expiry so admins can patch expired keys too.
-    with reg._lock:
-        raw = reg._read_raw().get(key)
-    if raw is None:
+    rec = reg.find(key)
+    if rec is None:
         raise NotFound(f"key not found: {key}")
-    rec = reg._record_from_raw(key, raw)
     _check_key_belongs_to(rec, tid)
     try:
         updated = reg.update(
@@ -87,11 +86,9 @@ def update_key(key: str,
 def revoke_key(key: str,
                tid: str = Depends(require_scope("admin:write")),
                reg=Depends(get_registry)) -> None:
-    with reg._lock:
-        raw = reg._read_raw().get(key)
-    if raw is None:
+    rec = reg.find(key)
+    if rec is None:
         raise NotFound(f"key not found: {key}")
-    rec = reg._record_from_raw(key, raw)
     _check_key_belongs_to(rec, tid)
     if not reg.revoke(key):
         # Race: revoked between lookup and call. Treat as not found.
@@ -103,11 +100,9 @@ def rotate_key(key: str,
                body: RotateKeyRequest,
                tid: str = Depends(require_scope("admin:write")),
                reg=Depends(get_registry)) -> RotateKeyOut:
-    with reg._lock:
-        raw = reg._read_raw().get(key)
-    if raw is None:
+    rec = reg.find(key)
+    if rec is None:
         raise NotFound(f"key not found: {key}")
-    rec = reg._record_from_raw(key, raw)
     _check_key_belongs_to(rec, tid)
     try:
         new_rec, old_rec = reg.rotate(

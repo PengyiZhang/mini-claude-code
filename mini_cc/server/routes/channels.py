@@ -41,7 +41,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ..deps import get_pm, get_sm, require_scope, validate_id
-from ..errors import BadRequest, NotFound
+from ..errors import BadRequest, NotFound, TooManyRequests, Unauthorized
 
 
 # ── Router 1: project-scoped CRUD (tenant auth required) ───────────────
@@ -56,7 +56,7 @@ def _registry_for(pm, pid: str, tid: str):
     """Resolve the project's channel registry. P0-1: enforces the tenant
     boundary exactly like the webhooks helper."""
     try:
-        project = pm.get(pid)
+        project = pm.get(pid, tenant_id=tid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     if project.meta.tenant_id != tid:
@@ -126,7 +126,8 @@ def list_channels(pid: str = Path(...),
 def create_channel(body: CreateChannelRequest,
                    pid: str = Path(...),
                    tid: str = Depends(require_scope("projects:write")),
-                   pm=Depends(get_pm)) -> ChannelOut:
+                   pm=Depends(get_pm),
+                   request: Request = None) -> ChannelOut:
     validate_id(pid)
     reg, _project = _registry_for(pm, pid, tid)
     # Validate kind early so an unknown kind returns 400 (not a silent
@@ -139,6 +140,9 @@ def create_channel(body: CreateChannelRequest,
     binding = reg.add(body.kind, body.config,
                       session_id=body.session_id,
                       event_types=body.event_types)
+    idx = _index(request)
+    if idx is not None:
+        idx[binding.id] = (tid, pid)
     return _to_out(binding)
 
 
@@ -146,11 +150,13 @@ def create_channel(body: CreateChannelRequest,
 def delete_channel(channel_id: str = Path(...),
                    pid: str = Path(...),
                    tid: str = Depends(require_scope("projects:write")),
-                   pm=Depends(get_pm)) -> None:
+                   pm=Depends(get_pm),
+                   request: Request = None) -> None:
     validate_id(pid)
     reg, _project = _registry_for(pm, pid, tid)
     if not reg.remove(channel_id):
         raise NotFound(f"channel {channel_id} not found")
+    _index(request).pop(channel_id, None)
 
 
 # ── Router 2: public inbound webhook ────────────────────────────────────
@@ -161,16 +167,39 @@ inbound_router = APIRouter(
 )
 
 
-def _find_binding(pm, channel_id: str):
-    """Linear scan over projects for a binding with ``channel_id``.
-    Returns ``(binding, project)`` or raises NotFound. Channel ids are
-    globally unique so the resolution is unambiguous."""
-    for project in pm.list():
+def _index(request) -> dict:
+    """channel_id -> (tenant_id, project_id) cache. Maintained by
+    create/delete; inbound misses fall back to one scan and repopulate."""
+    return getattr(request.app.state, "channel_index", None) if request is not None else None
+
+
+def _find_binding(pm, channel_id: str, index: dict | None = None):
+    """Resolve ``channel_id`` to ``(binding, project)`` or raise NotFound.
+
+    M2-6: consults the app-level index first (inbound webhooks used to
+    linear-scan every tenant's projects on EVERY request); a stale
+    entry falls through to the one-time scan, which repopulates it."""
+    if index is not None and channel_id in index:
+        tid, pid = index[channel_id]
+        try:
+            project = pm.get(pid, tenant_id=tid)
+        except KeyError:
+            project = None
+        if project is not None:
+            b = getattr(project, "channels", None)
+            b = b.get(channel_id) if b is not None else None
+            if b is not None:
+                return b, project
+        index.pop(channel_id, None)  # stale — rescan below
+    for project in pm.list_all():
         reg = getattr(project, "channels", None)
         if reg is None:
             continue
         b = reg.get(channel_id)
         if b is not None:
+            if index is not None:
+                index[channel_id] = (project.meta.tenant_id,
+                                     project.project_id)
             return b, project
     raise NotFound(f"channel {channel_id} not found")
 
@@ -186,14 +215,39 @@ async def inbound_webhook(channel_id: str = Path(...),
     * responds with the channel's verification handshake body (during
       webhook setup), or
     * enqueues a background turn on the bound session and responds 200.
+
+    M2-6 hardening: per-channel rate limit (``MINI_CC_CHANNEL_RPM``,
+    default 30/min) and a hard requirement that the channel has inbound
+    verification material — a binding whose kind can't verify payloads
+    (e.g. Feishu without encrypt_key/verification_token) gets 401
+    instead of silently accepting forged messages that trigger paid
+    LLM turns.
     """
-    binding, project = _find_binding(pm, channel_id)
+    import math as _math
+    limiter = getattr(request.app.state, "channel_limiter", None)
+    if limiter is not None:
+        allowed, retry_after = limiter.allow(f"chan:{channel_id}")
+        if not allowed:
+            retry_after_int = (max(1, _math.ceil(retry_after))
+                               if _math.isfinite(retry_after) else 60)
+            request.state.rate_limit_retry_after = retry_after_int
+            raise TooManyRequests(
+                "channel webhook rate limit exceeded",
+                details={"code": "rate_limited",
+                         "retry_after": retry_after_int})
+
+    binding, project = _find_binding(pm, channel_id, _index(request))
     # Build the channel. This must succeed since the binding was created
     # through ``create_channel`` which validates the kind — but defensive
     # in case a future kind was unregistered between create and now.
     channel = project.channels.get_channel(binding)
     if channel is None:
         raise NotFound(f"channel kind '{binding.kind}' unavailable")
+    if not getattr(channel, "verification_configured", False):
+        raise Unauthorized(
+            f"channel {channel_id} has no inbound verification material "
+            f"configured; set encrypt_key or verification_token for kind "
+            f"'{binding.kind}' before enabling the webhook")
 
     body = await request.body()
     headers = {k: v for k, v in request.headers.items()}

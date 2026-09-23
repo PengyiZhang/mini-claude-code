@@ -91,13 +91,17 @@ def test_keys_rotate_with_grace_hours_keeps_old(tmp_path):
     assert rc == 0, f"stderr={err}"
     assert "new:" in out
     assert "old:" in out
-    # Both keys present on disk
+    # Both keys present on disk (hashed names) and both authenticate
     on_disk = json.loads((tmp_path / "keys.json").read_text())
-    assert old_key in on_disk
     assert len(on_disk) == 2
+    assert all(k.startswith("sha256:") for k in on_disk)
+    assert old_key not in on_disk  # plaintext never at rest
+    from mini_cc.auth.keys import TenantKeyRegistry
+    reg = TenantKeyRegistry(tmp_path / "keys.json")
+    old_rec = reg.find(old_key)
+    assert old_rec is not None
     # Old key has a fresh expires_at within the next 24h+epsilon
-    old_rec = on_disk[old_key]
-    assert old_rec["expires_at"] is not None
+    assert old_rec.expires_at is not None
 
 
 def test_keys_rotate_unknown_key_returns_nonzero(tmp_path):

@@ -154,3 +154,26 @@ def _apply_rate_limit(request: Request, tid: str) -> str:
             details={"code": "rate_limited",
                      "retry_after": retry_after_int})
     return tid
+
+
+def share_rate_limit(request: Request) -> None:
+    """M2-8: token-bucket gate for the PUBLIC /shared/* endpoints.
+
+    These routes have no API key — the signed token is the only
+    authorization — so the abuse cap keys on the client IP instead of
+    tenant. Buckets live on ``app.state.share_limiter`` (wired from
+    ``MINI_CC_SHARE_RPM``, default 60/min).
+    """
+    limiter: TenantRateLimiter | None = getattr(
+        request.app.state, "share_limiter", None)
+    if limiter is None:
+        return
+    key = request.client.host if request.client else "__anon__"
+    allowed, retry_after = limiter.allow(f"share:{key}")
+    if not allowed:
+        retry_after_int = max(1, math.ceil(retry_after)) if math.isfinite(retry_after) else 60
+        request.state.rate_limit_retry_after = retry_after_int
+        raise TooManyRequests(
+            "share rate limit exceeded",
+            details={"code": "rate_limited",
+                     "retry_after": retry_after_int})

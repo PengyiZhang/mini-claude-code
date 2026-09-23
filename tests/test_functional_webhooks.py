@@ -238,7 +238,7 @@ def test_session_manager_installs_dispatcher_for_project_webhooks(tmp_path: Path
 
     pm = ProjectManager(tmp_path / "projects")
     pm.create(tenant_id="t1", project_id="p1")
-    project = pm.get("p1")
+    project = pm.get("p1", tenant_id="t1")
     # Registry must be cached on the Project (not None for FS-backed storage).
     assert project.webhooks is not None
     project.webhooks.add("https://hook.example.com", ["tool_use"])
@@ -275,7 +275,7 @@ def test_session_manager_skips_dispatch_when_no_registry(tmp_path: Path):
     pm.create(tenant_id="t1", project_id="p1")
     # Simulate a non-FS backend by clearing both cached registries
     # (webhooks + bidirectional channels) — both are gated on FS storage.
-    project = pm.get("p1")
+    project = pm.get("p1", tenant_id="t1")
     project.webhooks = None
     project.channels = None
 

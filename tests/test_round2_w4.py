@@ -283,7 +283,7 @@ def client(tmp_path):
 
 def _park_via_service(client, *, from_filter=None, subject_filter=None):
     pm = client.app.state.pm
-    project = pm.get("p1")
+    project = pm.get("p1", tenant_id="tenant1")
     svc = project.workflows_v2
     cfg = {}
     if from_filter: cfg["from_filter"] = from_filter

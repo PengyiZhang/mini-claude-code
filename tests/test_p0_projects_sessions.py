@@ -14,7 +14,7 @@ def test_create_and_get_project(tmp_path):
     assert p.meta.tenant_id == "t1"
     assert p.workspace.exists()
 
-    p2 = pm.get("proj-a")
+    p2 = pm.get("proj-a", tenant_id="t1")
     assert p2.project_id == "proj-a"
     assert p2.sandbox.project_root == p.workspace
 
@@ -38,9 +38,9 @@ def test_create_duplicate_raises(tmp_path):
 def test_delete_project(tmp_path):
     pm = ProjectManager(tmp_path / "projects")
     pm.create(tenant_id="t1", project_id="x")
-    pm.delete("x")
+    pm.delete("x", tenant_id="t1")
     with pytest.raises(KeyError):
-        pm.get("x")
+        pm.get("x", tenant_id="t1")
 
 
 def test_delete_project_cleans_up_storage_subdir(tmp_path):
@@ -57,7 +57,7 @@ def test_delete_project_cleans_up_storage_subdir(tmp_path):
         tmp_path / "projects" / "tenants" / "t1" / ".storage" / "x")
     assert storage_dir.exists(), "sanity: storage subdir should exist"
 
-    pm.delete("x")
+    pm.delete("x", tenant_id="t1")
 
     assert not storage_dir.exists(), (
         "storage subdir must be cleaned up on delete to avoid cross-tenant "
@@ -71,7 +71,7 @@ def test_delete_project_then_recreate_starts_clean(tmp_path):
     p1 = pm.create(tenant_id="t1", project_id="x")
     p1.storage.save_messages("x", "s1", [{"role": "user", "content": "secret"}])
     p1.storage.append_memory("x", "leaked memory line")
-    pm.delete("x")
+    pm.delete("x", tenant_id="t1")
 
     p2 = pm.create(tenant_id="t2", project_id="x")  # different tenant
     assert p2.storage.load_messages("x", "s1") == [], (
@@ -171,5 +171,5 @@ def test_project_id_accepts_safe_chars(tmp_path):
     pm = ProjectManager(tmp_path / "projects")
     for ok in ["a", "proj_a-b", "proj123", "A_B-C"]:
         pm.create(tenant_id="t1", project_id=ok)
-        assert pm.get(ok).project_id == ok
+        assert pm.get(ok, tenant_id="t1").project_id == ok
 

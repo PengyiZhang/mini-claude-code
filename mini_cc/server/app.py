@@ -59,14 +59,6 @@ def _warn_insecure_defaults() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _warn_insecure_defaults()
-    # Importing the Feishu channel module runs its ``register_channel_kind``
-    # side-effect so the registry knows about "feishu" bindings. Lazy
-    # import so unrelated code paths don't pay the (small) startup cost.
-    try:
-        from ..channels import _ensure_feishu_loaded
-        _ensure_feishu_loaded()
-    except Exception:
-        log.warning("Failed to register Feishu channel kind", exc_info=True)
     yield
     # Shutdown: stop every live session. Sessions are in-memory so they
     # die with the process anyway, but we want clean loop.stop() flags
@@ -83,9 +75,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Phase I.B-1.3: also stop each spawner's LeadWatcher so daemon
     # threads don't outlive the storage they're writing to.
     pm: ProjectManager = app.state.pm
-    for pid in list(pm._projects.keys()) if hasattr(pm, "_projects") else []:
+    for project in list(getattr(pm, "_cache", {}).values()):
         try:
-            project = pm.get(pid)
             spawner = getattr(project, "teams", None)
             if spawner is not None and hasattr(spawner, "shutdown"):
                 spawner.shutdown(timeout=5.0)
@@ -95,9 +86,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             pass
     # A3: disconnect MCP clients so stdio subprocesses / HTTP pools
     # don't leak across restarts.
-    for pid in list(pm._projects.keys()) if hasattr(pm, "_projects") else []:
+    for project in list(getattr(pm, "_cache", {}).values()):
         try:
-            project = pm.get(pid)
             pool = getattr(project, "mcp_pool", None)
             if pool is not None and hasattr(pool, "disconnect_all"):
                 pool.disconnect_all()
@@ -115,6 +105,8 @@ def build_app(*, data_dir: Path,
               sm: SessionManager,
               cors_origins: list[str] | None = None,
               rate_limiter: TenantRateLimiter | None = None,
+              share_limiter: TenantRateLimiter | None = None,
+              channel_limiter: TenantRateLimiter | None = None,
               metrics_registry: MetricsRegistry | None = None,
               server_runtime: "object | None" = None) -> FastAPI:
     """Wire a FastAPI app over the given SDK managers."""
@@ -127,11 +119,46 @@ def build_app(*, data_dir: Path,
 
     if metrics_registry is None:
         metrics_registry = default_registry()
+    if share_limiter is None:
+        # M2-8: the public /shared/* endpoints are unauthenticated;
+        # cap them per client IP (env-tunable) so signed-token brute
+        # force can't run at full line rate.
+        share_rpm = os.environ.get("MINI_CC_SHARE_RPM", "60")
+        try:
+            share_rpm = max(1, int(share_rpm))
+        except ValueError:
+            share_rpm = 60
+        share_limiter = TenantRateLimiter(share_rpm)
+    if channel_limiter is None:
+        # M2-6: public channel webhooks are likewise unauthenticated;
+        # cap per channel id (each forged payload can trigger a paid
+        # LLM turn, so the bucket is tighter than the share one).
+        chan_rpm = os.environ.get("MINI_CC_CHANNEL_RPM", "30")
+        try:
+            chan_rpm = max(1, int(chan_rpm))
+        except ValueError:
+            chan_rpm = 30
+        channel_limiter = TenantRateLimiter(chan_rpm)
+
+    # Importing the Feishu channel module runs its register_channel_kind
+    # side-effect. Done at build time (not just lifespan) so TestClient
+    # sessions without a lifespan context still see the kind — the old
+    # lifespan-only registration made channel tests order-dependent.
+    try:
+        from ..channels import _ensure_feishu_loaded
+        _ensure_feishu_loaded()
+    except Exception:
+        log.warning("Failed to register Feishu channel kind", exc_info=True)
 
     app.state.key_registry = key_registry
     app.state.pm = pm
     app.state.sm = sm
     app.state.rate_limiter = rate_limiter
+    app.state.share_limiter = share_limiter
+    app.state.channel_limiter = channel_limiter
+    # M2-6: channel_id -> (tenant_id, project_id) so inbound webhook
+    # lookups don't linear-scan every tenant's projects per request.
+    app.state.channel_index = {}
     app.state.metrics = metrics_registry
     app.state.server_runtime = server_runtime
 

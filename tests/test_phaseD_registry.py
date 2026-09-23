@@ -52,7 +52,7 @@ def test_lookup_rejects_expired_key_lazily(tmp_path):
     assert reg.lookup(rec.key) is not None
     # Manually expire by patching the on-disk record
     raw = reg._read_raw()
-    raw[rec.key]["expires_at"] = "2000-01-01T00:00:00Z"
+    raw[reg._find_name(raw, rec.key)]["expires_at"] = "2000-01-01T00:00:00Z"
     reg._write(raw)
     assert reg.lookup(rec.key) is None
 
@@ -62,11 +62,11 @@ def test_expired_key_still_listed_for_admin(tmp_path):
     reg = TenantKeyRegistry(tmp_path / "keys.json")
     rec = reg.generate("t1", expires_in=1)
     raw = reg._read_raw()
-    raw[rec.key]["expires_at"] = "2000-01-01T00:00:00Z"
+    raw[reg._find_name(raw, rec.key)]["expires_at"] = "2000-01-01T00:00:00Z"
     reg._write(raw)
     listed = reg.list_for("t1")
     assert len(listed) == 1
-    assert listed[0].key == rec.key
+    assert listed[0].key_hint == rec.key_hint
 
 
 def test_list_for_filters_by_tenant(tmp_path):
@@ -171,15 +171,20 @@ def test_migration_promotes_bare_string_format(tmp_path):
 
 def test_migration_survives_after_mutation(tmp_path):
     """After a generate()/revoke()/etc, the legacy bare-string entry is
-    promoted to the new object shape on disk."""
+    promoted to the new object shape on disk — and re-keyed under its
+    sha256 storage name (plaintext keys never persist after a write)."""
     path = tmp_path / "keys.json"
     path.write_text(json.dumps({"mck_legacy": "t1"}))
     reg = TenantKeyRegistry(path)
     reg.generate("t2")
     on_disk = json.loads(path.read_text())
-    assert isinstance(on_disk["mck_legacy"], dict)
-    assert on_disk["mck_legacy"]["tenant_id"] == "t1"
-    assert on_disk["mck_legacy"]["scopes"] == ["*"]
+    assert "mck_legacy" not in on_disk
+    migrated = [d for d in on_disk.values()
+                if d.get("key_hint") == "mck_legacy"]
+    assert len(migrated) == 1
+    assert migrated[0]["tenant_id"] == "t1"
+    assert migrated[0]["scopes"] == ["*"]
+    assert migrated[0]["key"].startswith("sha256:")
 
 
 def test_keyrecord_is_expired_tolerates_malformed():

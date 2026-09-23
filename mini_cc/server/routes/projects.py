@@ -67,7 +67,7 @@ def get_project(pid: str = Path(...),
                 pm=Depends(get_pm)) -> ProjectOut:
     validate_id(pid)
     try:
-        p = pm.get(pid)
+        p = pm.get(pid, tenant_id=tid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     if p.meta.tenant_id != tid:
@@ -82,12 +82,12 @@ def delete_project(pid: str = Path(...),
                    pm=Depends(get_pm)) -> None:
     validate_id(pid)
     try:
-        p = pm.get(pid)
+        p = pm.get(pid, tenant_id=tid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     if p.meta.tenant_id != tid:
         raise NotFound(f"project {pid} not found")
     try:
-        pm.delete(pid)
+        pm.delete(pid, tenant_id=tid)
     except Exception as e:
         raise map_sdk_exception(e)

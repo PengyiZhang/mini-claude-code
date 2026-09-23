@@ -82,7 +82,7 @@ class SessionManager:
         from persisted state. If new, an empty transcript is seeded.
         """
         # Validate project exists
-        project = self.pm.get(project_id)
+        project = self.pm.get_any(project_id)  # tenant check is the caller's (transport) duty
         session_id = session_id or f"sess_{uuid.uuid4().hex[:8]}"
 
         # Idempotent resume: if session exists on disk, warm it.
@@ -137,7 +137,7 @@ class SessionManager:
         key = (project_id, session_id)
         if key in self._sessions:
             return self._sessions[key]
-        project = self.pm.get(project_id)
+        project = self.pm.get_any(project_id)  # tenant check is the caller's (transport) duty
         existing = {m.session_id for m in project.storage.list_sessions(project_id)}
         if session_id not in existing:
             raise KeyError(f"session not found: {key}")
@@ -146,7 +146,7 @@ class SessionManager:
     def list(self, project_id: str) -> list[SessionMeta]:
         """Disk truth + in-memory flag. Sessions that exist on disk but
         aren't currently warmed appear with in_memory=False."""
-        project = self.pm.get(project_id)
+        project = self.pm.get_any(project_id)  # tenant check is the caller's (transport) duty
         metas = project.storage.list_sessions(project_id)
         warm_ids = {sid for (pid, sid) in self._sessions if pid == project_id}
         for m in metas:
@@ -164,7 +164,7 @@ class SessionManager:
         """Stop the session (if running), unregister it from memory, and
         delete its on-disk metadata + transcript. Returns True if
         anything was removed."""
-        project = self.pm.get(project_id)
+        project = self.pm.get_any(project_id)  # tenant check is the caller's (transport) duty
         sess = self._sessions.pop((project_id, session_id), None)
         if sess is not None:
             sess.stop()

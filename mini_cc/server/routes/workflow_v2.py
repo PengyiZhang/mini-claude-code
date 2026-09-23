@@ -34,7 +34,7 @@ def _service_for(pm, pid: str, tid: str) -> WorkflowService:
     enumerate another tenant's workflow definitions by guessing pid.
     """
     try:
-        project = pm.get(pid)
+        project = pm.get(pid, tenant_id=tid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     if project.meta.tenant_id != tid:
@@ -309,7 +309,7 @@ def list_approvers(run_id: str = Path(...),
     # _service_for enforces the tenant boundary; the project it
     # returns carries the .teams spawner we need.
     svc = _service_for(pm, pid, tid)
-    project = pm.get(pid)
+    project = pm.get(pid, tenant_id=tid)
     from ...workflow.approvers import list_candidate_approvers
     return list_candidate_approvers(project)
 
@@ -464,7 +464,7 @@ def _service_for_unauth(pm, pid: str) -> WorkflowService:
     bearer. The shared-secret (webhook_id query param) gate replaces
     the tenant boundary for this specific endpoint."""
     try:
-        project = pm.get(pid)
+        project = pm.get_any(pid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     svc = getattr(project, "workflows_v2", None)

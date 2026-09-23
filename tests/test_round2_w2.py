@@ -235,7 +235,7 @@ def _park_via_service(client, tmp_path, *, approvers=None):
         lambda: None)  # never matches; just to access pm via app state
     # Easier: reach into app state directly.
     pm = client.app.state.pm  # type: ignore[attr-defined]
-    project = pm.get("p1")
+    project = pm.get("p1", tenant_id="tenant1")
     svc = project.workflows_v2
     cfg = {"approvers": approvers} if approvers else {}
     d = svc.create_definition("p1", {

@@ -131,7 +131,7 @@ def test_resume_warms_cold_session(app):
     client, pm, sm, tmp_path = app
     _setup_project(client)
     # Seed a cold session directly via storage.
-    project = pm.get("p1")
+    project = pm.get("p1", tenant_id="tenant1")
     project.storage.save_messages("p1", "cold",
                                   [{"role": "user", "content": "hi"}])
 
@@ -171,7 +171,7 @@ def test_send_auto_resumes_cold_session(app):
     in memory auto-warms it instead of 404ing."""
     client, pm, sm, tmp_path = app
     _setup_project(client)
-    project = pm.get("p1")
+    project = pm.get("p1", tenant_id="tenant1")
     project.storage.save_messages("p1", "cold_send",
                                   [{"role": "user", "content": "hi"}])
     # Sanity: not in memory

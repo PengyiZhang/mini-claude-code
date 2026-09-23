@@ -13,6 +13,7 @@ import fnmatch
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -117,10 +118,40 @@ class SubprocessSandbox:
                 f"Path escapes project root: {path} (root={self.project_root})")
 
     # ── File operations ─────────────────────────────────────────────────
+    def _open_validated(self, path, flags: int) -> tuple[int, Path]:
+        """Validate-then-open atomically enough to close the classic
+        TOCTOU (S1): open the VALIDATED resolved path by fd, then
+        re-stat that path without following symlinks. If the final
+        component became a symlink, or the opened file's identity no
+        longer matches what the path now holds, the open raced an
+        attacker swap — refuse with PathEscapeError."""
+        resolved = (Path(path) if Path(path).is_absolute()
+                    else self.project_root / path).resolve()
+        self.validate_path(resolved)
+        fd = os.open(str(resolved), flags)
+        try:
+            fst = os.fstat(fd)
+            rst = os.stat(str(resolved), follow_symlinks=False)
+            if stat.S_ISLNK(rst.st_mode):
+                raise PathEscapeError(
+                    f"final component became a symlink after validation: "
+                    f"{resolved}")
+            if not stat.S_ISREG(fst.st_mode):
+                raise PathEscapeError(
+                    f"not a regular file: {resolved}")
+            if (rst.st_dev, rst.st_ino) != (fst.st_dev, fst.st_ino):
+                raise PathEscapeError(
+                    f"file identity changed between validation and open "
+                    f"(possible symlink swap): {resolved}")
+        except Exception:
+            os.close(fd)
+            raise
+        return fd, resolved
+
     def read(self, path, *, limit=None, offset=0):
-        fp = self.resolve_path(path)
-        self.validate_path(fp)
-        text = fp.read_text(encoding="utf-8")
+        fd, _fp = self._open_validated(path, os.O_RDONLY)
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
         lines = text.splitlines()
         offset = max(int(offset or 0), 0)
         lines = lines[offset:]
@@ -134,19 +165,25 @@ class SubprocessSandbox:
         fp = self.resolve_path(path)
         self.validate_path(fp)
         fp.parent.mkdir(parents=True, exist_ok=True)
-        fp.write_text(content, encoding="utf-8")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd, _fp = self._open_validated(path, flags)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
 
     def edit(self, path, old, new, replace_all=False):
-        fp = self.resolve_path(path)
-        self.validate_path(fp)
-        text = fp.read_text(encoding="utf-8")
+        fd, _fp = self._open_validated(path, os.O_RDONLY)
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
         if old not in text:
             return f"Error: text not found in {path}"
         if replace_all:
             text = text.replace(old, new)
         else:
             text = text.replace(old, new, 1)
-        fp.write_text(text, encoding="utf-8")
+        flags = os.O_WRONLY | os.O_TRUNC
+        fd, _fp = self._open_validated(path, flags)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
         return f"Edited {path}"
 
     def glob(self, pattern):
@@ -235,14 +272,18 @@ class SubprocessSandbox:
             text=True, encoding="utf-8", errors="replace",
         )
         # Prefer a real bash so Unix flags (mkdir -p), pipes, &&, and
-        # $VAR expansion behave the same on every platform. Only fall
-        # back to shell=True (cmd.exe on Windows) when no bash is found.
+        # $VAR expansion behave the same on every platform. Without a
+        # POSIX shell we REFUSE to execute (S2): shell=True routes
+        # through cmd.exe, which re-parses the raw string under
+        # different metachar rules — an unscannable injection surface.
         shell_path = _find_posix_shell()
         if shell_path:
             argv = [shell_path, "-c", command]
         else:
-            argv = command
-            popen_kwargs["shell"] = True
+            from .policy import Violation
+            raise CommandBlockedError([Violation(
+                rule="no_posix_shell",
+                match="no bash/sh on PATH; cmd.exe fallback disabled")])
 
         # Foreground path: cancel_event is None — use subprocess.run,
         # which handles its own timeout via wait(). No cancel needed.

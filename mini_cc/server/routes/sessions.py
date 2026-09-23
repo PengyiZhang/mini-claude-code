@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Header, Path, Request, Response
 from fastapi.responses import StreamingResponse
 
 from ..deps import (check_rate_limit_scope, get_pm, get_sm, require_scope,
-                    validate_id)
+                    share_rate_limit, validate_id)
 from ..errors import Conflict, NotFound, map_sdk_exception
 from ..schemas import (CreateSessionRequest, SendMessageRequest, SessionMeta,
                        SessionOut)
@@ -21,7 +21,7 @@ def _check_project_tenant(pid: str, tid: str, pm) -> None:
     """Ensure the project exists and belongs to this tenant. Raises 404
     for missing or cross-tenant access."""
     try:
-        p = pm.get(pid)
+        p = pm.get(pid, tenant_id=tid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     if p.meta.tenant_id != tid:
@@ -42,7 +42,7 @@ def start_session(body: CreateSessionRequest,
         validate_id(body.session_id)
     _check_project_tenant(pid, tid, pm)
 
-    project = pm.get(pid)
+    project = pm.get(pid, tenant_id=tid)
     existed = (body.session_id is not None
                and body.session_id in {m.session_id for m
                                        in project.storage.list_sessions(pid)})
@@ -118,7 +118,7 @@ def get_messages(sid: str = Path(...),
     validate_id(pid)
     validate_id(sid)
     _check_project_tenant(pid, tid, pm)
-    project = pm.get(pid)
+    project = pm.get(pid, tenant_id=tid)
     if sid not in {m.session_id for m in project.storage.list_sessions(pid)}:
         raise NotFound(f"session {sid} not found")
     msgs = project.storage.load_messages(pid, sid)
@@ -148,7 +148,7 @@ def get_todos(sid: str = Path(...),
     validate_id(pid)
     validate_id(sid)
     _check_project_tenant(pid, tid, pm)
-    project = pm.get(pid)
+    project = pm.get(pid, tenant_id=tid)
     if sid not in {m.session_id for m in project.storage.list_sessions(pid)}:
         raise NotFound(f"session {sid} not found")
     return project.storage.load_todos(pid, sid)
@@ -467,7 +467,7 @@ def create_share_link(sid: str = Path(...),
     validate_id(pid)
     validate_id(sid)
     _check_project_tenant(pid, tid, pm)
-    project = pm.get(pid)
+    project = pm.get(pid, tenant_id=tid)
     if sid not in {m.session_id for m in project.storage.list_sessions(pid)}:
         raise NotFound(f"session {sid} not found")
     from ...sharing.tokens import issue_share_token, warn_if_default_secret
@@ -480,7 +480,8 @@ def create_share_link(sid: str = Path(...),
 
 
 @share_router.get("/shared/{token}/embed")
-def shared_embed(token: str) -> Response:
+def shared_embed(token: str,
+                 _rl: None = Depends(share_rate_limit)) -> Response:
     """F7.3: minimal read-only embed page. Renders the transcript as
     static HTML so it can be iframed into docs / external sites. The
     page itself contains no secrets — it fetches /shared/{token}/messages
@@ -518,10 +519,11 @@ def shared_embed(token: str) -> Response:
 
 
 @share_router.get("/shared/{token}/messages")
-def shared_messages(token: str, request: Request) -> list[dict]:
+def shared_messages(token: str, request: Request,
+                    _rl: None = Depends(share_rate_limit)) -> list[dict]:
     """Public read-only endpoint: return the transcript referenced by a
     signed share token. No API key required — the token IS the
-    authorization."""
+    authorization. (Rate-limited per client IP — M2-8.)"""
     from ...sharing.tokens import BadShareToken, verify_share_token
     try:
         claims = verify_share_token(token)
@@ -530,7 +532,9 @@ def shared_messages(token: str, request: Request) -> list[dict]:
         raise Unauthorized(f"invalid share token: {e}")
     pm = request.app.state.pm
     try:
-        project = pm.get(claims.project_id)
+        # Token carries project_id only; cross-tenant lookup is the
+        # point of a share link (tenant check replaced by the signature).
+        project = pm.get_any(claims.project_id)
     except KeyError as e:
         from ..errors import NotFound
         raise NotFound(str(e) or "project not found")

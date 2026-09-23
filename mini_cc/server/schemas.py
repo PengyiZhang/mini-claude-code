@@ -75,6 +75,7 @@ class DecidePermissionRequest(BaseModel):
 
 class KeyOut(BaseModel):
     key: str
+    key_hint: str = ""
     tenant_id: str
     scopes: list[str]
     created_at: str

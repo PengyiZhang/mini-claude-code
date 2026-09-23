@@ -53,9 +53,9 @@ def test_list_for_returns_all_keys_for_tenant(tmp_path):
     r1 = reg.generate("tenant1")
     r2 = reg.generate("tenant1")
     r3 = reg.generate("tenant2")
-    keys = [r.key for r in reg.list_for("tenant1")]
-    assert r1.key in keys and r2.key in keys
-    assert r3.key not in keys
+    hints = [r.key_hint for r in reg.list_for("tenant1")]
+    assert r1.key_hint in hints and r2.key_hint in hints
+    assert r3.key_hint not in hints
 
 
 def test_registry_persists_across_instances(tmp_path):

@@ -309,7 +309,7 @@ def _project_teams(app, pid="p1"):
     # into the project manager that build_app closed over.
     # build_app stores pm on app.state.pm.
     pm = app.app.state.pm
-    project = pm.get(pid)
+    project = pm.get(pid, tenant_id="tenant1")
     return getattr(project, "teams", None)
 
 
@@ -430,7 +430,7 @@ def test_fresh_send_does_not_replay_persisted_history(app):
     it were live and bury this turn's output. Only a resume
     (Last-Event-Id present, sent on reconnect) replays missed events."""
     _setup(app)
-    storage = app.app.state.pm.get("p1").storage
+    storage = app.app.state.pm.get("p1", tenant_id="tenant1").storage
     MARKER = "OLD_SEEDED_MARKER_9f3c"
     # Seed two events as if from a prior turn.
     storage.append_session_event(

@@ -35,7 +35,7 @@ def tree_app(tmp_path, monkeypatch):
     client.post("/tenants/tenant1/projects",
                 headers=AUTH, json={"project_id": "p1"})
     # Seed both visible and hidden entries directly into the workspace.
-    ws = pm.get("p1").workspace
+    ws = pm.get("p1", tenant_id="tenant1").workspace
     (ws / "visible.txt").write_text("v", encoding="utf-8")
     (ws / ".hidden").mkdir()
     (ws / ".hidden" / "secret.txt").write_text("s", encoding="utf-8")

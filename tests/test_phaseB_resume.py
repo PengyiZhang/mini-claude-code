@@ -179,7 +179,7 @@ def test_list_after_disk_only_shows_in_memory_false(tmp_path):
     pm, sm = _make(tmp_path)
     # Seed a session on disk via storage directly (simulates a session
     # that was active before a restart).
-    project = pm.get("proj")
+    project = pm.get("proj", tenant_id="t1")
     project.storage.save_messages("proj", "cold1",
                                   [{"role": "user", "content": "hi"}])
     metas = {m.session_id: m for m in sm.list("proj")}
@@ -189,7 +189,7 @@ def test_list_after_disk_only_shows_in_memory_false(tmp_path):
 
 def test_ensure_warm_cold_loads_then_returns_same_instance(tmp_path):
     pm, sm = _make(tmp_path)
-    project = pm.get("proj")
+    project = pm.get("proj", tenant_id="t1")
     project.storage.save_messages("proj", "cold2",
                                   [{"role": "user", "content": "hi"}])
     first = sm._ensure_warm("proj", "cold2")
@@ -209,7 +209,7 @@ def test_ensure_warm_unknown_raises_keyerror(tmp_path):
 def test_start_session_with_existing_id_is_idempotent_resume(tmp_path):
     pm, sm = _make(tmp_path)
     s_first = sm.start_session("proj", "s_dup")
-    project = pm.get("proj")
+    project = pm.get("proj", tenant_id="t1")
     # Persist some messages so there's a transcript to resume.
     project.storage.save_messages("proj", "s_dup",
                                   [{"role": "user", "content": "hi"},
@@ -226,7 +226,7 @@ def test_start_session_with_existing_id_is_idempotent_resume(tmp_path):
 
 def test_warm_repairs_dangling_tool_use(tmp_path):
     pm, sm = _make(tmp_path)
-    project = pm.get("proj")
+    project = pm.get("proj", tenant_id="t1")
     project.storage.save_messages("proj", "crashed", [
         {"role": "user", "content": "do"},
         {"role": "assistant", "content": [
@@ -266,7 +266,7 @@ def test_simulated_restart_resumes_session(tmp_path):
     pm1.create(tenant_id="t1", project_id="proj")
     sm1 = SessionManager(pm1)
     sm1.start_session("proj", "persist_me")
-    project1 = pm1.get("proj")
+    project1 = pm1.get("proj", tenant_id="t1")
     project1.storage.save_messages("proj", "persist_me", [
         {"role": "user", "content": "hi"},
         {"role": "assistant",

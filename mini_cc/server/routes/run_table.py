@@ -37,7 +37,7 @@ router = APIRouter(
 
 def _check_project_tenant(pid: str, tid: str, pm) -> None:
     try:
-        p = pm.get(pid)
+        p = pm.get(pid, tenant_id=tid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     if p.meta.tenant_id != tid:

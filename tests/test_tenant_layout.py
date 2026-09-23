@@ -119,11 +119,14 @@ def test_pm_two_tenants_same_pid_no_collision(tmp_path):
     assert pb.storage.load_messages("x", "s1")[0]["content"] == "t2-msg"
 
 
-def test_pm_get_locates_via_tenant_scan(tmp_path):
+def test_pm_get_requires_tenant_id_with_get_any_escape(tmp_path):
+    """S3 guard: bare get() must not scan tenants. get_any() is the
+    explicit cross-tenant lookup for internal tooling."""
     pm = ProjectManager(tmp_path)
     pm.create(tenant_id="t1", project_id="p1")
-    p = pm.get("p1")
-    assert p.meta.tenant_id == "t1"
+    with pytest.raises(ValueError, match="tenant_id"):
+        pm.get("p1")
+    assert pm.get_any("p1").meta.tenant_id == "t1"
 
 
 def test_pm_get_with_tenant_id_is_scoped(tmp_path):
@@ -149,14 +152,17 @@ def test_pm_delete_with_tenant_id_targets_only_that_tenant(tmp_path):
     assert p.meta.tenant_id == "t2"
 
 
-def test_pm_delete_unspecified_tid_raises_when_ambiguous(tmp_path):
-    """delete(pid) without tid is ambiguous if two tenants own that pid —
-    must raise rather than silently nuke the wrong tenant's data."""
+def test_pm_delete_unspecified_tid_raises_regardless_of_ambiguity(tmp_path):
+    """S3 guard: delete(pid) without tid always raises — a destructive
+    call must never scan tenants, ambiguous or not."""
     pm = ProjectManager(tmp_path)
     pm.create(tenant_id="t1", project_id="x")
     pm.create(tenant_id="t2", project_id="x")
-    with pytest.raises(ValueError, match="ambiguous"):
+    with pytest.raises(ValueError, match="tenant_id"):
         pm.delete("x")
+    # Both tenants' data survive
+    assert pm.get("x", tenant_id="t1") is not None
+    assert pm.get("x", tenant_id="t2") is not None
 
 
 # ── ServerRuntimeContext mount path ───────────────────────────────────

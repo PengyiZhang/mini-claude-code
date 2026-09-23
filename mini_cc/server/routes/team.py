@@ -37,7 +37,7 @@ def _check_project_tenant(pid: str, tid: str, pm) -> None:
     for missing or cross-tenant access. Mirrors the helper in
     sessions.py — kept local so this router stays self-contained."""
     try:
-        p = pm.get(pid)
+        p = pm.get(pid, tenant_id=tid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     if p.meta.tenant_id != tid:
@@ -83,7 +83,7 @@ def get_team_activity(
     """
     validate_id(pid)
     _check_project_tenant(pid, tid, pm)
-    project = pm.get(pid)
+    project = pm.get(pid, tenant_id=tid)
 
     # Resolve the set of session ids we'll scan. If a teammate filter
     # is supplied, narrow to that single session id; otherwise scan
