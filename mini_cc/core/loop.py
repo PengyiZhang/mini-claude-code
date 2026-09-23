@@ -31,7 +31,8 @@ from ..tools.background import BackgroundScheduler, should_run_background
 from .compaction import prepare_context, compact_history
 from .hooks import Hooks
 from .permissions import PermissionInterceptor
-from .recovery import RecoveryState, is_prompt_too_long_error, retry_delay
+from .recovery import (RecoveryState, classify_error,
+                       is_prompt_too_long_error, retry_delay)
 from .system_prompt import assemble_system_prompt, load_project_guide
 
 CONTINUATION_PROMPT = ("Continue from the previous response. "
@@ -802,6 +803,7 @@ class AgentLoop:
                     return
             except Exception as e:
                 self._record_request_status("error")
+                cls = classify_error(e)
                 if is_prompt_too_long_error(e) and not self.state.has_attempted_reactive_compact:
                     self.messages[:] = compact_history(
                         self.messages, before_compact=self._save_transcript)
@@ -829,10 +831,12 @@ class AgentLoop:
                                 for tid in tool_use_ids
                             ],
                         })
+                prefix = "[Error][transient]" if cls.transient else "[Error]"
                 self.messages.append({"role": "assistant", "content": [
                     {"type": "text",
-                     "text": f"[Error] {type(e).__name__}: {e}"}]})
-                yield {"type": "error", "message": str(e)}
+                     "text": f"{prefix} {type(e).__name__}: {e}"}]})
+                yield {"type": "error", "message": str(e),
+                       "error_class": cls.kind, "transient": cls.transient}
                 self._persist()
                 return
 
