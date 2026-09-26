@@ -162,6 +162,12 @@ class FeishuWsChannel:
             text, metadata = parse_message_event(event_dict)
             if text is None or self._on_inbound is None:
                 return
+            # M3-3 spirit: ws-mode receives leave no HTTP trace, so log
+            # enough to debug "did the message even arrive" without a
+            # console round-trip.
+            log.info("feishu ws inbound: binding=%s chat=%s text=%r",
+                     self.binding.id, metadata.get("chat_id"),
+                     text[:80])
             # Remember the chat_id so deliver() can reply even when the
             # binding wasn't configured with one (common: operators add
             # the bot to a chat and start typing without knowing oc_xxx).

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -153,6 +154,12 @@ class ProjectManager:
         # Project object. See _config_signature for the invalidation rule.
         self._cache: dict[tuple[str, str], Project] = {}
         self._sigs: dict[tuple[str, str], tuple] = {}
+        # Serialises cache-miss assembly in get(). Without it, N parallel
+        # first requests each assemble the same project — each assembly
+        # re-runs the MCP connect sweep and (worse) churns WS channel
+        # receivers stop/start, where Feishu's frontier sees a burst of
+        # competing connections for one app. Double-checked inside get().
+        self._get_lock = threading.RLock()
 
     def _config_signature(self, tenant_id: str, workspace: Path) -> tuple:
         """Cheap fingerprint of the MCP plugin config across all tiers.
@@ -256,10 +263,16 @@ class ProjectManager:
         cached = self._cache.get(key)
         if cached is not None and self._sigs.get(key) == sig:
             return cached
-        project = self._assemble(project_id, meta)
-        self._cache[key] = project
-        self._sigs[key] = sig
-        return project
+        with self._get_lock:
+            # Double-check: a concurrent getter may have assembled while
+            # we waited on the lock.
+            cached = self._cache.get(key)
+            if cached is not None and self._sigs.get(key) == sig:
+                return cached
+            project = self._assemble(project_id, meta)
+            self._cache[key] = project
+            self._sigs[key] = sig
+            return project
 
     def get_any(self, project_id: str) -> Project:
         """EXPLICIT cross-tenant lookup by global project scan. For
