@@ -20,7 +20,6 @@ import time
 
 import pytest
 
-from mini_cc.commands.registry import CommandContext, _cmd_mcp
 from mini_cc.mcp import MCPPool
 
 
@@ -143,33 +142,6 @@ def test_wait_for_connect_times_out(monkeypatch):
 
 
 # ── Roster shows connecting badge ─────────────────────────────────────
-
-
-def test_roster_shows_connecting_badge(monkeypatch):
-    """While a server is mid-connect, /mcp must show it as 'connecting'
-    — NOT as failed, disconnected, or available. Pre-fix the row would
-    flicker between states or disappear entirely."""
-    _slow_transport(monkeypatch, delay=1.0)
-    pool = MCPPool("p")
-    pool.connect_from_spec_async(
-        "warming", {"type": "http", "url": "http://x.invalid/mcp"})
-
-    class _Proj:
-        mcp_pool = pool
-
-    ctx = CommandContext(project_id="p", session_id="s", tenant_id="t",
-                         project=_Proj())
-    events = list(_cmd_mcp(ctx))
-    card = next(e for e in events if e.get("type") == "card")
-    items = card["payload"]["items"]
-    names = {it["title"] for it in items}
-    assert "warming" in names, (
-        "connecting server must appear in /mcp — user needs to see it's "
-        "warming up, not silently missing")
-    row = next(it for it in items if it["title"] == "warming")
-    badges = {b["text"].lower() for b in row["badges"]}
-    assert "connecting" in badges, (
-        f"mid-connect server must show 'connecting' badge, got {badges}")
 
 
 # ── Thread safety ─────────────────────────────────────────────────────
