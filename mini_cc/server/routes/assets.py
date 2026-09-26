@@ -126,7 +126,10 @@ def get_shared_asset(token: str, request: Request, pm=Depends(get_pm)):
     except BadShareToken as e:
         raise Unauthorized(f"invalid asset token: {e}")
     try:
-        project = pm.get(claims.project_id)
+        # The signed token carries project_id only — resolve the owning
+        # tenant via the explicit cross-tenant lookup (the token's HMAC
+        # is the authorization here, not a tenant-scoped bearer).
+        project = pm.get_any(claims.project_id)
     except KeyError as e:
         raise NotFound(str(e) or "project not found")
     path = project.assets.get_path(claims.asset_id)
