@@ -234,8 +234,8 @@ def create_channel(body: CreateChannelRequest,
 
     # Otherwise create a fresh binding.
     binding = reg.add(body.kind,
-                      body.enable,
                       body.config,
+                      enable=body.enable,
                       session_id=body.session_id,
                       event_types=body.event_types,
                       transport=body.transport,
@@ -365,7 +365,15 @@ async def inbound_webhook(channel_id: str = Path(...),
     channel = project.channels.get_channel(binding)
     if channel is None:
         raise NotFound(f"channel kind '{binding.kind}' unavailable")
-    if not getattr(channel, "verification_configured", False):
+    # M2-6 gate applies to webhook-transport bindings only: their ingress
+    # IS this HTTP surface, so a binding whose kind can't verify payloads
+    # would accept forged messages that trigger paid LLM turns. WS-mode
+    # bindings receive events over the SDK-authenticated long connection;
+    # their handle_inbound answers only the url_verification handshake
+    # and silently drops everything else, so there is no forged-turn
+    # path to gate here.
+    if (getattr(binding, "transport", "webhook") == "webhook"
+            and not getattr(channel, "verification_configured", False)):
         raise Unauthorized(
             f"channel {channel_id} has no inbound verification material "
             f"configured; set encrypt_key or verification_token for kind "

@@ -93,8 +93,11 @@ class ChannelBinding:
     """
     id: str
     kind: str
-    enable: str
     config: dict
+    # Runtime on/off switch ('true'/'false' strings — matches the
+    # persisted JSON shape). Defaults to enabled; bindings written
+    # before this field existed were always active.
+    enable: str = "true"
     # Lead session the channel routes inbound into. None = project's
     # default session (resolved by the HTTP layer via SessionManager).
     session_id: str | None = None
@@ -178,7 +181,11 @@ class ChannelRegistry:
                 out[rec["id"]] = ChannelBinding(
                     id=rec["id"],
                     kind=rec["kind"],
-                    enable=rec.get("enable", "false"),
+                    # Bindings written before the enable field existed
+                    # were always active — default them to enabled rather
+                    # than silently disabling every hand-written
+                    # channels.json on upgrade.
+                    enable=str(rec.get("enable") or "true"),
                     config=dict(rec.get("config") or {}),
                     session_id=rec.get("session_id"),
                     event_types=list(rec.get("event_types") or []),
@@ -216,8 +223,9 @@ class ChannelRegistry:
         with self._lock:
             return self._bindings.get(channel_id)
 
-    def add(self, kind: str, enable: str, config: dict,
-            *, session_id: str | None = None,
+    def add(self, kind: str, config: dict,
+            *, enable: str = "true",
+            session_id: str | None = None,
             event_types: Iterable[str] = (),
             transport: str = "ws") -> ChannelBinding:
         with self._lock:

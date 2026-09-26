@@ -22,7 +22,8 @@ class _Boom(Exception):
 
 def test_channel_worker_logs_failed_turn(caplog):
     sm = SimpleNamespace(send=_raise_boom)
-    project = SimpleNamespace(project_id="p1")
+    project = SimpleNamespace(project_id="p1",
+                              storage=_null_storage())
     with caplog.at_level(logging.WARNING, logger="mini_cc"):
         worker = _enqueue_inbound_turn(sm, project, "s1", "hello", {})
         worker.join(timeout=5)
@@ -35,6 +36,14 @@ def test_channel_worker_logs_failed_turn(caplog):
     assert any(r.exc_info for r in msgs), "warning must carry the traceback"
 
 
+class _null_storage:
+    """The worker persists each event via project.storage — a no-op sink
+    keeps the fake project structurally compatible."""
+
+    def append_session_event(self, pid, sid, ev):
+        pass
+
+
 def _raise_boom(*a, **k):
     yield {}
     raise _Boom("LLM provider exploded")
@@ -44,6 +53,7 @@ def _raise_boom(*a, **k):
 
 def test_inflight_workers_tracked_and_drained():
     import threading
+    from mini_cc.channels import inbound as chan_inbound
     from mini_cc.server.routes import channels as chan
 
     started = threading.Event()
@@ -55,7 +65,8 @@ def test_inflight_workers_tracked_and_drained():
         yield {"type": "done"}
 
     sm = SimpleNamespace(send=slow_send)
-    project = SimpleNamespace(project_id="p_drain")
+    project = SimpleNamespace(project_id="p_drain",
+                              storage=_null_storage())
     worker = _enqueue_inbound_turn(sm, project, "s1", "hi", {})
     assert started.wait(5)
     assert worker.is_alive()
@@ -69,7 +80,7 @@ def test_inflight_workers_tracked_and_drained():
     # …and a real drain joins it.
     chan.drain_inbound_workers(timeout=5)
     assert not worker.is_alive()
-    assert worker not in chan._INBOUND_WORKERS
+    assert worker not in chan_inbound._WORKERS
 
 
 def test_drain_with_no_workers_is_noop():
