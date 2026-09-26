@@ -31,7 +31,7 @@ def _check_project_tenant(pid: str, tid: str, pm) -> None:
     """Ensure the project exists and belongs to this tenant. 404 (not
     403) on cross-tenant access so we don't leak project existence."""
     try:
-        p = pm.get(pid)
+        p = pm.get(pid, tenant_id=tid)
     except KeyError as e:
         raise NotFound(str(e) or f"project {pid} not found")
     if p.meta.tenant_id != tid:
@@ -61,7 +61,7 @@ def upload_asset(
     validate_id(pid)
     validate_id(sid)
     _check_project_tenant(pid, tid, pm)
-    project = pm.get(pid)
+    project = pm.get(pid, tenant_id=tid)
     _ensure_session(pm, sid, request, pid)
 
     data = file.file.read()
@@ -90,7 +90,7 @@ def get_asset(
     validate_id(sid)
     validate_id(aid)
     _check_project_tenant(pid, tid, pm)
-    project = pm.get(pid)
+    project = pm.get(pid, tenant_id=tid)
     path = project.assets.get_path(aid)
     if path is None:
         raise NotFound(f"asset {aid} not found")

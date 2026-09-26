@@ -632,8 +632,9 @@ def test_download_image_returns_bytes_and_media_type(monkeypatch):
         assert "tenant_access_token" not in headers, (
             "header should be Authorization Bearer, not raw token key")
         assert headers.get("Authorization") == "Bearer tok_xxx", headers
-        assert url.endswith("/images/img_key_abc"), url
-        assert params == {"image_type": "message"}, params
+        # 8fabb9e: 机器人消息图片接口已变更 — /messages/{msg_id}/resources/{key}?type=image
+        assert url.endswith("/messages/m1/resources/img_key_abc"), url
+        assert params == {"type": "image"}, params
         return FakeResp()
 
     monkeypatch.setattr(feishu_common.requests, "get", fake_get)
@@ -641,7 +642,7 @@ def test_download_image_returns_bytes_and_media_type(monkeypatch):
     cache = feishu_common.TokenCache("app_id_x", "app_secret_y")
     monkeypatch.setattr(cache, "get", lambda: "tok_xxx")
 
-    data, mt = feishu_common.download_image("img_key_abc", cache)
+    data, mt = feishu_common.download_image("m1", "img_key_abc", cache)
     assert data == b"\xff\xd8\xff\xe0fake-jpeg-bytes"
     assert mt == "image/jpeg"
 
@@ -660,7 +661,7 @@ def test_download_image_strips_content_type_charset(monkeypatch):
                         lambda *a, **kw: FakeResp())
     cache = feishu_common.TokenCache("a", "b")
     monkeypatch.setattr(cache, "get", lambda: "tok")
-    data, mt = feishu_common.download_image("k", cache)
+    data, mt = feishu_common.download_image("m1", "k", cache)
     assert mt == "image/png"
     assert data == b"\x89PNGfake"
 
@@ -674,4 +675,4 @@ def test_download_image_raises_when_token_missing(monkeypatch):
     cache = feishu_common.TokenCache("", "")
     # TokenCache.get returns "" when app_id missing — do not override.
     with pytest.raises(ConnectionError):
-        feishu_common.download_image("k", cache)
+        feishu_common.download_image("m1", "k", cache)

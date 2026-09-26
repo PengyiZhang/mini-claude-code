@@ -21,14 +21,14 @@ def _png_bytes() -> bytes:
 def test_project_has_asset_store(tmp_path: Path):
     pm = ProjectManager(tmp_path / "projects")
     pm.create("tenant1", "p1")
-    p = pm.get("p1")
+    p = pm.get("p1", tenant_id="tenant1")
     assert isinstance(p.assets, AssetStore)
     # Round-trip: put + hydrate.
     png = _png_bytes()
     aid = p.assets.put(png, media_type="image/png", src="test")
     # Reload from cache drop — persistence.
     pm.invalidate("p1", tenant_id="tenant1")
-    p2 = pm.get("p1")
+    p2 = pm.get("p1", tenant_id="tenant1")
     assert p2.assets.get_meta(aid) is not None
 
 
@@ -37,7 +37,7 @@ def test_assets_dir_lands_in_project_dir(tmp_path: Path):
     (sibling of the workspace dir, scoped to one project)."""
     pm = ProjectManager(tmp_path / "projects")
     pm.create("tenant1", "p1")
-    p = pm.get("p1")
+    p = pm.get("p1", tenant_id="tenant1")
     expected = (tmp_path / "projects" / "tenants" / "tenant1"
                 / "projects" / "p1" / ".assets")
     assert p.assets.root == expected
@@ -70,7 +70,7 @@ def test_as_ref_propagates_assets(tmp_path: Path):
     image, even though the bytes are on disk."""
     pm = ProjectManager(tmp_path / "projects")
     pm.create("tenant1", "p1")
-    p = pm.get("p1")
+    p = pm.get("p1", tenant_id="tenant1")
     aid = p.assets.put(_png_bytes(), media_type="image/png", src="test")
 
     ref = p.as_ref()
