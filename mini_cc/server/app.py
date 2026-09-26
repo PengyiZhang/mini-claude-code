@@ -302,8 +302,15 @@ def build_app(*, data_dir: Path,
             Client-side routing (HashRouter here, but kept generic)
             needs this to support direct-loads of deep links. API
             routes and /assets/* are registered before this handler
-            and take precedence."""
-            return FileResponse(str(web_dist_path / "index.html"))
+            and take precedence.
+
+            ``no-cache`` (revalidate, not "don't store"): without an
+            explicit directive browsers heuristic-cache index.html, so
+            after a rebuild users keep booting the OLD hashed bundle
+            until a hard refresh. /assets/* need no such header —
+            filenames are content-hashed, so they're immutable."""
+            return FileResponse(str(web_dist_path / "index.html"),
+                                headers={"Cache-Control": "no-cache"})
 
         # Catch-all GET — must come after all real routes.
         app.add_route("/{path:path}", _spa_fallback, methods=["GET"])
