@@ -227,7 +227,7 @@ data: [DONE]\n\n
 | `POST`   | `/tenants/{tid}/projects/{pid}/webhooks`          | 注册 webhook;body `{url, event_types[]}`  |
 | `DELETE` | `/tenants/{tid}/projects/{pid}/webhooks/{hook_id}` | 删除 webhook                               |
 | `GET`    | `/tenants/{tid}/projects/{pid}/channels`          | 列出双向 channel 绑定(飞书 / Slack / …)   |
-| `POST`   | `/tenants/{tid}/projects/{pid}/channels`          | 创建绑定;body `{kind, config, session_id?, event_types[]}`;GET 返回时敏感字段(app_secret / encrypt_key / verification_token)掩码为 `***` |
+| `POST`   | `/tenants/{tid}/projects/{pid}/channels`          | 创建绑定;body `{kind, transport, config, session_id?, event_types[]}`(`transport` 默认 `"ws"`,飞书支持 `"ws"`/`"webhook"`);GET 返回时敏感字段(app_secret / encrypt_key / verification_token)掩码为 `***` |
 | `DELETE` | `/tenants/{tid}/projects/{pid}/channels/{channel_id}` | 删除绑定                              |
 | `POST`   | `/channels/{channel_id}/webhook`                  | **公开**入站 webhook(无 tenant auth);channel_id 全局唯一,签名验证由对应 transport 自己做 |
 
@@ -677,49 +677,61 @@ key,再加上 `e2e_proj` 项目。用例覆盖鉴权、项目创建、文件上�
 
 mini_cc 的 `channels/` 子系统把 IM 群(飞书 / 未来 Slack / Discord …)
 接入成**双向 channel**:用户在飞书群里 @ 机器人 → 触发一轮 agent turn →
-关键事件再推回飞书 chat。详细设计见
-`docs/plans/2026-07-07-channels-feishu-design.zh.md`。
+关键事件再推回飞书 chat。
 
-**3 步接入:**
+支持**两种入站模式**:
+
+| 模式       | 工作方式                              | 部署要求                | 默认 |
+|------------|---------------------------------------|-------------------------|------|
+| `ws`       | 进程主动 wss 出站连到飞书,飞书推事件 | 仅需出站网络,无公网 IP | ✅    |
+| `webhook`  | 飞书 POST 到我们的公网 URL            | 公网 IP + 域名 + HTTPS  |      |
+
+WS 模式用 `lark-oapi` SDK 自带握手/ack/重连,本地开发 / 内网部署无需
+公网;webhook 模式保留为可选,继续用纯 stdlib + PyCryptodome。
+
+**3 步接入(ws 模式):**
 
 1. 在 [飞书开放平台](https://open.feishu.cn/) 建一个自建应用,启用机器人
-   能力,订阅 `im.message.receive_v1` 事件,记录 `app_id` / `app_secret`
-   (可选启用加密模式,记录 `encrypt_key`、`verification_token`)。
+   能力,订阅 `im.message.receive_v1` 事件,事件订阅页切到「使用长连接接收」,
+   记录 `app_id` / `app_secret`。
 
 2. **(推荐)Web UI:** 打开任一项目 → 左侧 sidebar `channels` tab →
-   `＋ new` → 选 `feishu` 填入凭证 → 创建,直接看到 webhook URL,
-   点 📋 复制。也可以用 API:
+   `＋ new` → Kind 选 `feishu`、Transport 选 `ws`(默认)、填入凭证 →
+   创建。也可以用 API:
 
    ```bash
    curl -X POST http://127.0.0.1:8002/tenants/$TENANT/projects/$PID/channels \
      -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
      -d '{
        "kind": "feishu",
+       "transport": "ws",
        "config": {
          "app_id": "cli_xxx",
          "app_secret": "secret_xxx",
-         "encrypt_key": "enc_xxx",
-         "verification_token": "tok_xxx",
          "chat_id": "oc_xxx"
        },
        "session_id": null,
        "event_types": ["text", "teammate_message", "lead_nudged"]
      }'
-   # → { "id": "chan_abcdef123456", ... }
+   # → { "id": "chan_abcdef123456", "transport": "ws", ... }
    ```
 
-3. 把 webhook URL(`https://your-host/channels/<channel_id>/webhook`,UI
-   会直接显示并复制;curl 路径需要自己拼)填到飞书「事件订阅」配置里 ——
-   飞书会发 `url_verification` 握手,server 自动 echo。
+3. server 日志看到 `ws binding chan_xxx: receiver started` 即握手成功。
+   群里 @ 机器人说话就会触发 agent turn,关键回复自动推回飞书 chat。
 
-完成后在群里 @ 机器人说话就会触发 agent turn,lead / teammate 的关键
-回复自动推回飞书 chat。
+Webhook 模式需要把 server 暴露公网 + 把 webhook URL 填回飞书「事件订阅」,
+飞书会发 `url_verification` 握手,server 自动 echo。
+
+**完整教程**(凭证细节、加密模式、Slack/Discord 扩展、运维排错):
+`docs/mini_cc/zh/16-feishu-channel.md`。
 
 **安全模型:** 入站端点 `/channels/{channel_id}/webhook` 是公开的(无
 tenant auth,因为外部 IM 不可能带我们的 Bearer key),靠两点:
 - `channel_id` 全局唯一(`chan_<12 hex>`);
 - 每个 binding 自带 transport 级签名验证(飞书 `X-Lark-Signature` /
   Slack `X-Slack-Signature` / …),由对应 `Channel.handle_inbound` 校验。
+
+WS 模式签名校验由 SDK 自动完成,server 不参与。
 
 ---
 

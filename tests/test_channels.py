@@ -38,6 +38,19 @@ from mini_cc.channels import feishu as feishu_mod  # noqa: E402
 _ensure_feishu_loaded()
 
 
+@pytest.fixture(autouse=True)
+def _clear_inbound_chat_cache():
+    """Clear the module-level inbound chat_id cache before every test so
+    a binding.id used in one test doesn't leak a chat_id into the next.
+    All tests here share id="chan_test", so without this a deliver()
+    fallback target set by an earlier test silently changes later
+    tests' behavior."""
+    from mini_cc.channels import feishu_common
+    feishu_common._INBOUND_CHAT_IDS.clear()
+    yield
+    feishu_common._INBOUND_CHAT_IDS.clear()
+
+
 # ── Registry ────────────────────────────────────────────────────────────
 
 def test_registry_add_persists_and_lists(tmp_path):
@@ -49,14 +62,17 @@ def test_registry_add_persists_and_lists(tmp_path):
     assert b.session_id == "sess-1"
     assert b.event_types == ["text"]
 
-    # Reload from disk: must survive a fresh instance.
+    # Reload from disk: must survive a fresh instance. Note: registry
+    # load backfills "assistant_message" into any non-empty event_types
+    # list missing it — see test_registry_load_backfills_assistant_message_*
+    # for the rationale.
     reg2 = ChannelRegistry(tmp_path, "p1")
     loaded = reg2.get(b.id)
     assert loaded is not None
     assert loaded.kind == "feishu"
     assert loaded.config == {"app_id": "a", "app_secret": "b"}
     assert loaded.session_id == "sess-1"
-    assert loaded.event_types == ["text"]
+    assert loaded.event_types == ["text", "assistant_message"]
 
 
 def test_registry_remove(tmp_path):
@@ -112,7 +128,136 @@ def test_registry_get_channel_unknown_kind_returns_none(tmp_path):
 
 def test_registered_kinds_includes_feishu():
     kinds = registered_kinds()
-    assert "feishu" in kinds
+    feishu_entry = next((k for k in kinds if k["kind"] == "feishu"), None)
+    assert feishu_entry is not None
+    # Each entry now declares supported_transports so the HTTP layer can
+    # validate ``transport`` at create time without instantiating.
+    assert "ws" in feishu_entry["supported_transports"]
+    assert "webhook" in feishu_entry["supported_transports"]
+
+
+def test_supports_transport_helper():
+    """``supports_transport`` backs the HTTP 400 path for kinds that can't
+    carry the requested transport. Returns True for unknown kinds only
+    when transport is webhook (so legacy bindings stay deletable)."""
+    from mini_cc.channels import supports_transport
+    assert supports_transport("feishu", "ws")
+    assert supports_transport("feishu", "webhook")
+    assert not supports_transport("feishu", "carrier-pigeon")
+    # Unknown kind: webhook still allowed so operators can clean up.
+    assert supports_transport("nonexistent_kind", "webhook")
+    assert not supports_transport("nonexistent_kind", "ws")
+
+
+def test_registry_add_defaults_to_ws_for_new_bindings(tmp_path):
+    """New bindings default to ws transport (the recommended path for
+    operators — no public URL needed). Old ``channels.json`` records
+    without the field fall back to webhook (covered below)."""
+    reg = ChannelRegistry(tmp_path, "p1")
+    b = reg.add("feishu", {"app_id": "a"})
+    assert b.transport == "ws"
+
+
+def test_registry_loads_old_records_as_webhook(tmp_path):
+    """Backward compat: a channels.json written before the transport field
+    existed must load with transport='webhook' so old deployments don't
+    silently flip modes on upgrade."""
+    fp = tmp_path / "p1" / ChannelRegistry.FILENAME
+    fp.parent.mkdir(parents=True)
+    fp.write_text(json.dumps([{
+        "id": "chan_legacy",
+        "kind": "feishu",
+        "config": {"app_id": "a"},
+        "session_id": None,
+        "event_types": [],
+        "created_at": "old",
+    }]), encoding="utf-8")
+    reg = ChannelRegistry(tmp_path, "p1")
+    loaded = reg.get("chan_legacy")
+    assert loaded is not None
+    assert loaded.transport == "webhook"
+
+
+def test_registry_persists_transport_field(tmp_path):
+    """Round-trip: transport survives a registry reload so ws bindings
+    don't downgrade to webhook on restart."""
+    reg = ChannelRegistry(tmp_path, "p1")
+    reg.add("feishu", {"app_id": "a"}, transport="ws")
+    reg.add("feishu", {"app_id": "b"}, transport="webhook")
+    reg2 = ChannelRegistry(tmp_path, "p1")
+    transports = {b.config["app_id"]: b.transport for b in reg2.list()}
+    assert transports == {"a": "ws", "b": "webhook"}
+
+
+def test_registry_load_backfills_assistant_message_into_old_event_types(tmp_path):
+    """Pre-fix bindings subscribed to a list of event types that did NOT
+    include ``assistant_message`` (the per-turn consolidated event the
+    AgentLoop emits via on_event). Without backfill, dispatcher's
+    matches_event filters it out and Feishu chat stays quiet even though
+    the session transcript captures the reply.
+
+    Fix: registry load appends ``assistant_message`` to any non-empty
+    explicit filter list missing it. Append (not replace) so operators'
+    explicit filter intent is preserved."""
+    fp = tmp_path / "p1" / ChannelRegistry.FILENAME
+    fp.parent.mkdir(parents=True)
+    fp.write_text(json.dumps([{
+        "id": "chan_old",
+        "kind": "feishu",
+        "config": {"app_id": "a"},
+        "session_id": None,
+        "event_types": ["text", "teammate_message", "lead_nudged"],
+        "created_at": "old",
+        "transport": "ws",
+    }]), encoding="utf-8")
+    reg = ChannelRegistry(tmp_path, "p1")
+    loaded = reg.get("chan_old")
+    assert loaded is not None
+    assert "assistant_message" in loaded.event_types
+    # Original entries preserved — append, not replace.
+    assert "text" in loaded.event_types
+    assert "teammate_message" in loaded.event_types
+
+
+def test_registry_load_does_not_backfill_when_event_types_empty(tmp_path):
+    """Empty event_types means 'subscribe to all' — backfilling would
+    flip it to an explicit list and silently narrow future event routing.
+    Must stay empty."""
+    fp = tmp_path / "p1" / ChannelRegistry.FILENAME
+    fp.parent.mkdir(parents=True)
+    fp.write_text(json.dumps([{
+        "id": "chan_all",
+        "kind": "feishu",
+        "config": {"app_id": "a"},
+        "session_id": None,
+        "event_types": [],
+        "created_at": "old",
+        "transport": "ws",
+    }]), encoding="utf-8")
+    reg = ChannelRegistry(tmp_path, "p1")
+    loaded = reg.get("chan_all")
+    assert loaded is not None
+    assert loaded.event_types == []
+
+
+def test_registry_load_skips_backfill_when_already_present(tmp_path):
+    """If the operator (or a prior backfill) already added
+    ``assistant_message``, we must not duplicate it."""
+    fp = tmp_path / "p1" / ChannelRegistry.FILENAME
+    fp.parent.mkdir(parents=True)
+    fp.write_text(json.dumps([{
+        "id": "chan_dup",
+        "kind": "feishu",
+        "config": {"app_id": "a"},
+        "session_id": None,
+        "event_types": ["assistant_message", "text"],
+        "created_at": "old",
+        "transport": "ws",
+    }]), encoding="utf-8")
+    reg = ChannelRegistry(tmp_path, "p1")
+    loaded = reg.get("chan_dup")
+    assert loaded is not None
+    assert loaded.event_types.count("assistant_message") == 1
 
 
 # ── Feishu inbound ──────────────────────────────────────────────────────
@@ -279,7 +424,7 @@ def test_feishu_deliver_skips_when_no_chat_id(monkeypatch):
 def test_feishu_deliver_text_event_posts_message(monkeypatch):
     chan = feishu_mod.FeishuChannel(_binding({
         "app_id": "a", "app_secret": "s", "chat_id": "oc_x"}))
-    monkeypatch.setattr(chan, "_get_token", lambda: "tok-123")
+    monkeypatch.setattr(chan._token_cache, "get", lambda: "tok-123")
     captured = {}
 
     def _post(url, **kw):
@@ -300,7 +445,7 @@ def test_feishu_deliver_text_event_posts_message(monkeypatch):
 
 def test_feishu_deliver_skips_unsupported_event_types(monkeypatch):
     chan = feishu_mod.FeishuChannel(_binding({"chat_id": "oc"}))
-    monkeypatch.setattr(chan, "_get_token", lambda: "t")
+    monkeypatch.setattr(chan._token_cache, "get", lambda: "t")
     called = {"n": 0}
 
     def _post(*a, **kw):
@@ -313,7 +458,7 @@ def test_feishu_deliver_skips_unsupported_event_types(monkeypatch):
 
 def test_feishu_deliver_lead_nudged_renders_items(monkeypatch):
     chan = feishu_mod.FeishuChannel(_binding({"chat_id": "oc"}))
-    monkeypatch.setattr(chan, "_get_token", lambda: "t")
+    monkeypatch.setattr(chan._token_cache, "get", lambda: "t")
     captured = {}
 
     def _post(url, **kw):
@@ -326,6 +471,26 @@ def test_feishu_deliver_lead_nudged_renders_items(monkeypatch):
                   "items": [{"from": "alice", "kind": "milestone"}]})
     assert "alice" in captured["content"]
     assert "milestone" in captured["content"]
+
+
+def test_feishu_deliver_assistant_message_renders_text(monkeypatch):
+    """``assistant_message`` is the per-turn consolidated event AgentLoop
+    emits via on_event (one per assistant reply). The Feishu deliver
+    path must render it just like ``text`` — without this, even though
+    the dispatcher fires, no IM message gets pushed. Regression for the
+    "session sees reply, Feishu chat doesn't" bug."""
+    chan = feishu_mod.FeishuChannel(_binding({"chat_id": "oc"}))
+    monkeypatch.setattr(chan._token_cache, "get", lambda: "t")
+    captured = {}
+
+    def _post(url, **kw):
+        captured["content"] = kw["json"]["content"]
+        class _Resp:
+            def json(self): return {}
+        return _Resp()
+    monkeypatch.setattr(feishu_mod.requests, "post", _post)
+    chan.deliver({"type": "assistant_message", "text": "hello from bot"})
+    assert json.loads(captured["content"]) == {"text": "hello from bot"}
 
 
 def test_feishu_token_caches_across_calls(monkeypatch):
@@ -355,7 +520,7 @@ def test_feishu_token_caches_across_calls(monkeypatch):
 
 def test_feishu_token_returns_empty_on_missing_credentials():
     chan = feishu_mod.FeishuChannel(_binding({}))
-    assert chan._get_token() == ""
+    assert chan._token_cache.get() == ""
 
 
 # ── ChannelDispatcher ────────────────────────────────────────────────────

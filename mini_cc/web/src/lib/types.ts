@@ -294,10 +294,15 @@ export interface CardEvent {
 export interface ChannelOut {
   id: string;
   kind: string;
+  enable: string; // "true" or "false" (string, not boolean) to match backend wire contract
   config: Record<string, unknown>;
   session_id: string | null;
   event_types: string[];
   created_at: string;
+  /** Inbound transport — "ws" (long connection, no public URL) or
+   *  "webhook" (Feishu POSTs to our public URL). Defaults to "webhook"
+   *  for old bindings created before this field existed. */
+  transport: "ws" | "webhook";
 }
 
 // ── Team Activity (Phase I.C.2) ──────────────────────────────────────

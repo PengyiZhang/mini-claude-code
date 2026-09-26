@@ -22,6 +22,11 @@ dependencies = [
     "python-multipart>=0.0.9",
     "portalocker>=2.8",
     "requests>=2.31",
+    # WS long-connection mode for Feishu channels — only imported by
+    # ``mini_cc.channels.feishu_ws`` when a ws-mode binding actually
+    # starts its receiver. Webhook-mode deployments can ignore the dep.
+    "lark-oapi>=1.4.0",
+    "pycryptodome>=3.20",
 ]
 
 [project.optional-dependencies]

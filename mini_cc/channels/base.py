@@ -39,10 +39,13 @@ channel layer keeps each transport's logic in one file
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
 import uuid
+
+_log = logging.getLogger("mini_cc.channels.base")
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Protocol, runtime_checkable
@@ -82,16 +85,29 @@ class ChannelBinding:
     ``chat_id``; future channels store their own shape. Kept as a
     free-form dict so the registry doesn't have to know about each
     transport's schema.
+
+    ``transport`` selects how events arrive — ``"webhook"`` (Feishu
+    POSTs to our public URL) or ``"ws"`` (we hold a long connection
+    out to Feishu, no public URL needed). Orthogonal to ``kind``:
+    future Slack can use ``"webhook"`` / ``"socket-mode"``. Old
+    ``channels.json`` records missing this field fall back to
+    ``"webhook"`` for backward compatibility; new bindings default
+    to ``"ws"``.
     """
     id: str
     kind: str
     config: dict
+    # Runtime on/off switch ('true'/'false' strings — matches the
+    # persisted JSON shape). Defaults to enabled; bindings written
+    # before this field existed were always active.
+    enable: str = "true"
     # Lead session the channel routes inbound into. None = project's
     # default session (resolved by the HTTP layer via SessionManager).
     session_id: str | None = None
     # Outbound filter; empty list subscribes to all event types.
     event_types: list[str] = field(default_factory=list)
     created_at: str = ""
+    transport: str = "webhook"
 
 
 # ── Channel protocol ────────────────────────────────────────────────────
@@ -104,9 +120,19 @@ class Channel(Protocol):
     with the binding's config dict; they live in-memory only (not
     persisted) so token caches / signature state are reset on registry
     reload.
+
+    The receiver-lifecycle methods (``start_receiver`` /
+    ``stop_receiver`` / ``receiver_running``) are **optional** —
+    webhook-only kinds don't implement them. ``ChannelReceiverSupervisor``
+    uses ``hasattr`` + ``supported_transports`` to decide whether to
+    drive a long-lived receiver thread for a binding.
     """
 
     kind: str
+    # Class-level declaration of which inbound transports this kind
+    # supports. Supervisor + HTTP layer consult this to reject
+    # ``transport="ws"`` on webhook-only kinds at create time.
+    supported_transports: tuple[str, ...]
 
     def handle_inbound(self, body: bytes,
                        headers: dict[str, str]) -> InboundResult:
@@ -155,16 +181,35 @@ class ChannelRegistry:
         out: dict[str, ChannelBinding] = {}
         for rec in raw if isinstance(raw, list) else []:
             try:
-                out[rec["id"]] = ChannelBinding(
+                event_types = list(rec.get("event_types") or [])
+                binding = ChannelBinding(
                     id=rec["id"],
                     kind=rec["kind"],
+                    # Bindings written before the enable field existed
+                    # were always active — default them to enabled rather
+                    # than silently disabling every hand-written
+                    # channels.json on upgrade.
+                    enable=str(rec.get("enable") or "true"),
                     config=dict(rec.get("config") or {}),
                     session_id=rec.get("session_id"),
-                    event_types=list(rec.get("event_types") or []),
+                    event_types=event_types,
                     created_at=rec.get("created_at", ""),
+                    transport=str(rec.get("transport") or "webhook"),
                 )
             except (KeyError, TypeError):
                 continue
+            # One-time backfill: pre-`assistant_message` bindings subscribed
+            # to "text" (streaming delta) but not "assistant_message" (the
+            # per-turn consolidated event AgentLoop emits via on_event).
+            # Without this, every existing binding silently misses the new
+            # event — Feishu chat stays quiet even though the session
+            # transcript captures the reply. Append (don't replace) so an
+            # operator's explicit filter intent is preserved. Empty list
+            # means 'subscribe to all' and must NOT be flipped to a list.
+            if binding.event_types and \
+                    "assistant_message" not in binding.event_types:
+                binding.event_types.append("assistant_message")
+            out[binding.id] = binding
         return out
 
     def _persist_locked(self) -> None:
@@ -176,6 +221,8 @@ class ChannelRegistry:
                 "session_id": b.session_id,
                 "event_types": list(b.event_types),
                 "created_at": b.created_at,
+                "transport": b.transport,
+                "enable": b.enable,
             }
             for b in self._bindings.values()
         ]
@@ -193,17 +240,21 @@ class ChannelRegistry:
             return self._bindings.get(channel_id)
 
     def add(self, kind: str, config: dict,
-            *, session_id: str | None = None,
-            event_types: Iterable[str] = ()) -> ChannelBinding:
+            *, enable: str = "true",
+            session_id: str | None = None,
+            event_types: Iterable[str] = (),
+            transport: str = "ws") -> ChannelBinding:
         with self._lock:
             binding = ChannelBinding(
                 id=f"chan_{uuid.uuid4().hex[:12]}",
                 kind=kind,
+                enable=enable,
                 config=dict(config),
                 session_id=session_id,
                 event_types=[t for t in event_types if t],
                 created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                          time.gmtime()),
+                transport=transport,
             )
             self._bindings[binding.id] = binding
             self._persist_locked()
@@ -212,10 +263,18 @@ class ChannelRegistry:
     def update(self, channel_id: str, *,
                config: dict | None = None,
                session_id: str | None | "UNSET" = "UNSET",  # type: ignore[assignment]
-               event_types: list[str] | None = None) -> ChannelBinding | None:
-        """Patch a binding in place. ``session_id`` accepts None to
-        rebind to project default; pass the literal ``"UNSET"`` sentinel
-        (default) to leave the field untouched."""
+               event_types: list[str] | None = None,
+               enable: str | None = None,
+               transport: str | None = None) -> ChannelBinding | None:
+        """Patch a binding in place.
+
+        ``session_id`` accepts None to rebind to project default; pass the
+        literal ``"UNSET"`` sentinel (default) to leave the field
+        untouched.
+
+        New optional fields ``enable`` and ``transport`` allow updating
+        those persisted values as well.
+        """
         with self._lock:
             b = self._bindings.get(channel_id)
             if b is None:
@@ -226,6 +285,10 @@ class ChannelRegistry:
                 b.session_id = session_id  # type: ignore[assignment]
             if event_types is not None:
                 b.event_types = list(event_types)
+            if enable is not None:
+                b.enable = enable
+            if transport is not None:
+                b.transport = transport
             self._persist_locked()
             return b
 
@@ -250,13 +313,25 @@ class ChannelRegistry:
         registered for that kind — the caller treats this as 'skip this
         binding' rather than raising so a single broken/unsupported kind
         doesn't stall the whole fan-out."""
-        factory = _CHANNEL_KINDS.get(binding.kind)
-        if factory is None:
+        entry = _CHANNEL_KINDS.get(binding.kind)
+        if entry is None:
             return None
+        factory = entry[0]
         try:
             return factory(binding)
         except Exception:
             return None
+
+
+def supports_transport(kind: str, transport: str) -> bool:
+    """Whether a registered kind declares support for ``transport``.
+    Default fallback for unknown kinds is ``("webhook",)`` so a half-
+    configured binding can still be deleted over HTTP."""
+    rec = _CHANNEL_KINDS.get(kind)
+    if rec is None:
+        return transport == "webhook"
+    supported = rec[1]
+    return transport in supported
 
 
 # ── Kind registry ───────────────────────────────────────────────────────
@@ -266,20 +341,33 @@ class ChannelRegistry:
 # (e.g. ``mini_cc.channels.feishu`` calls ``register_channel_kind`` in its
 # module body). Lazy-imported by the server so unused channels impose
 # zero startup cost.
-_CHANNEL_KINDS: dict[str, Callable[[ChannelBinding], Channel]] = {}
+# Value shape: ``(factory, supported_transports)`` so the HTTP layer
+# can validate ``transport`` at create time without instantiating.
+_CHANNEL_KINDS: dict[str, tuple[Callable[[ChannelBinding], Channel], tuple[str, ...]]] = {}
 
 
 def register_channel_kind(kind: str,
-                          factory: Callable[[ChannelBinding], Channel]) -> None:
+                          factory: Callable[[ChannelBinding], Channel],
+                          supported_transports: tuple[str, ...] = ("webhook",)
+                          ) -> None:
     """Register a factory for a channel kind. Idempotent: re-registering
     the same kind overwrites the previous factory, which is convenient
-    for tests that swap in a fake implementation."""
-    _CHANNEL_KINDS[kind] = factory
+    for tests that swap in a fake implementation.
+
+    ``supported_transports`` declares which inbound transports the kind
+    accepts (e.g. ``("ws", "webhook")`` for Feishu). Defaults to
+    ``("webhook",)`` — webhook-only kinds don't need to pass anything."""
+    _CHANNEL_KINDS[kind] = (factory, supported_transports)
 
 
-def registered_kinds() -> list[str]:
-    """Sorted list of registered channel kinds — for diagnostics / UI."""
-    return sorted(_CHANNEL_KINDS.keys())
+def registered_kinds() -> list[dict]:
+    """Sorted list of registered channel kinds with their supported
+    transports — for diagnostics / UI. Each entry is
+    ``{"kind": str, "supported_transports": [str, ...]}``."""
+    return [
+        {"kind": k, "supported_transports": list(v[1])}
+        for k, v in sorted(_CHANNEL_KINDS.items())
+    ]
 
 
 # ── Channel dispatcher (outbound fan-out) ────────────────────────────────
@@ -319,24 +407,43 @@ class ChannelDispatcher:
         if not targets:
             return
         for binding in targets:
+            if binding.enable != "true":
+                _log.info(
+                    "ChannelDispatcher: skipping disabled binding %s (%s)",
+                    binding.id, binding.kind)
+                continue
             try:
                 channel = self._channel_factory(binding)
             except Exception:
+                _log.exception(
+                    "ChannelDispatcher: factory raised for kind=%s",
+                    binding.kind)
                 continue
             if channel is None:
+                _log.warning(
+                    "ChannelDispatcher: no channel built for binding %s "
+                    "(kind=%s) — factory returned None",
+                    binding.id, binding.kind)
                 continue
+            _log.info(
+                "ChannelDispatcher: dispatch %s -> binding %s (%s)",
+                etype, binding.id, getattr(binding, "transport", "?"))
             t = threading.Thread(
                 target=self._safe_deliver,
-                args=(channel, event),
+                args=(channel, event, binding),
                 daemon=True,
+                name=f"chan-deliver:{binding.id}",
             )
             t.start()
 
-    def _safe_deliver(self, channel: Channel, event: dict) -> None:
+    def _safe_deliver(self, channel: Channel, event: dict,
+                      binding) -> None:
         try:
             channel.deliver(event)
         except Exception:
-            pass
+            _log.exception(
+                "ChannelDispatcher: deliver raised for binding %s",
+                binding.id)
 
 
 __all__ = [
@@ -345,4 +452,5 @@ __all__ = [
     "ChannelRegistry",
     "ChannelDispatcher",
     "InboundResult",
+    "supports_transport",
 ]

@@ -234,6 +234,24 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, profile.apiKey]);
 
+  // Poll sessions list every 5s so a session created by an inbound
+  // channel turn (Feishu/Slack/etc.) shows up without a manual refresh.
+  // Inbound turns persist to events.jsonl so the active-session SSE tail
+  // already streams their content; this poll only catches the *new
+  // session* case where the user wasn't already viewing one.
+  useEffect(() => {
+    let cancelled = false;
+    const id = setInterval(() => {
+      if (cancelled) return;
+      void refreshSessions();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, profile.apiKey]);
+
   // Poll team activity at the Workspace level so the chat-tab
   // TeamSidebar timeline has data as soon as the page loads (the
   // sidebar's own TeammatesPanel poll dedups via the store's busy

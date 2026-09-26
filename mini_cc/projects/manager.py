@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -153,6 +154,12 @@ class ProjectManager:
         # Project object. See _config_signature for the invalidation rule.
         self._cache: dict[tuple[str, str], Project] = {}
         self._sigs: dict[tuple[str, str], tuple] = {}
+        # Serialises cache-miss assembly in get(). Without it, N parallel
+        # first requests each assemble the same project — each assembly
+        # re-runs the MCP connect sweep and (worse) churns WS channel
+        # receivers stop/start, where Feishu's frontier sees a burst of
+        # competing connections for one app. Double-checked inside get().
+        self._get_lock = threading.RLock()
 
     def _config_signature(self, tenant_id: str, workspace: Path) -> tuple:
         """Cheap fingerprint of the MCP plugin config across all tiers.
@@ -187,6 +194,15 @@ class ProjectManager:
             if meta is None:
                 return
             tenant_id = meta.tenant_id
+        # Stop WS-mode receivers for this project before dropping the
+        # cached Project — _assemble will respawn them on next get().
+        # Best-effort: never block cache invalidation on supervisor
+        # teardown.
+        try:
+            from ..channels import get_supervisor
+            get_supervisor().stop_project(tenant_id, project_id)
+        except Exception:
+            pass
         self._cache.pop((tenant_id, project_id), None)
         self._sigs.pop((tenant_id, project_id), None)
 
@@ -247,10 +263,16 @@ class ProjectManager:
         cached = self._cache.get(key)
         if cached is not None and self._sigs.get(key) == sig:
             return cached
-        project = self._assemble(project_id, meta)
-        self._cache[key] = project
-        self._sigs[key] = sig
-        return project
+        with self._get_lock:
+            # Double-check: a concurrent getter may have assembled while
+            # we waited on the lock.
+            cached = self._cache.get(key)
+            if cached is not None and self._sigs.get(key) == sig:
+                return cached
+            project = self._assemble(project_id, meta)
+            self._cache[key] = project
+            self._sigs[key] = sig
+            return project
 
     def get_any(self, project_id: str) -> Project:
         """EXPLICIT cross-tenant lookup by global project scan. For
@@ -354,6 +376,22 @@ class ProjectManager:
         if storage_root is not None:
             project.webhooks = WebhookRegistry(storage_root, project_id)
             project.channels = ChannelRegistry(storage_root, project_id)
+            # Spawn WS-mode receivers for every ws binding on disk. Same
+            # pattern as MCP auto-connect above: failures don't block
+            # project assembly, just log a warning. Supervisor is a
+            # process-wide singleton (MCPPool-style) so re-assembling
+            # the project (e.g. after pm.invalidate) restarts cleanly.
+            try:
+                from ..channels import get_supervisor
+                sup = get_supervisor()
+                for b in project.channels.list():
+                    if getattr(b, "transport", "webhook") == "ws" and getattr(b, "enable", "false") == "true":
+                        sup.start_for(project, b)
+            except Exception:
+                # Channels subsystem might be unavailable (legacy deploy
+                # without lark-oapi). Don't let WS spawn failures break
+                # project assembly.
+                pass
         # Workflow V2 (W1): same pattern — one WorkflowService per
         # project, backed by the same FSStorage, shared between the
         # HTTP routes and any in-process driver (tests, future UI).

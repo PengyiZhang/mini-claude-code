@@ -43,8 +43,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hashlib
 import json
+import re
 import time
 import threading
 from typing import Any
@@ -61,11 +61,16 @@ from .base import (
     InboundResult,
     register_channel_kind,
 )
-
-
-_FEISHU_OPEN_BASE = "https://open.feishu.cn"
-_TOKEN_REFRESH_MARGIN = 60.0  # refresh 60s before expiry
-_HTTP_TIMEOUT = 5.0
+from .feishu_common import (
+    TokenCache,
+    _FEISHU_OPEN_BASE,
+    _HTTP_TIMEOUT,
+    lookup_inbound_chat_id,
+    parse_message_event,
+    remember_inbound_chat_id,
+    render_event,
+    strip_bot_mention,
+)
 
 
 # AES-256-CBC decrypt for the encrypted envelope. Implemented via the
@@ -160,12 +165,14 @@ class FeishuChannel:
     """Feishu (Lark) bidirectional channel. Implements both
     ``handle_inbound`` (webhook receiver) and ``deliver`` (outbound push).
 
-    Token refresh: ``_get_token`` caches the tenant_access_token with its
-    expiry; concurrent callers serialise on ``_token_lock`` so we never
-    fire two refresh requests for one channel instance.
+    Token refresh is delegated to ``feishu_common.TokenCache``.
     """
 
     kind = "feishu"
+    # Webhook mode is the long-shipped default; WS mode is implemented
+    # in ``feishu_ws.py`` and dispatched via a separate factory that
+    # supports both. This class is the webhook implementation.
+    supported_transports = ("ws", "webhook")
 
     def __init__(self, binding: ChannelBinding):
         self.binding = binding
@@ -177,10 +184,15 @@ class FeishuChannel:
         self.chat_id = str(cfg.get("chat_id", "") or "")
         # Override base URL for testing / on-prem deployments.
         self.open_base = str(cfg.get("open_base", _FEISHU_OPEN_BASE))
-        # Cached tenant_access_token + expiry (unix epoch).
-        self._token: str = ""
-        self._token_expire: float = 0.0
-        self._token_lock = threading.Lock()
+        self._token_cache = TokenCache(self.app_id, self.app_secret,
+                                       open_base=self.open_base)
+        # Last-seen inbound chat_id — outbound target fallback when
+        # config.chat_id is empty. Mirrors FeishuWsChannel so operators
+        # can leave chat_id blank in both transports.
+        self._last_chat_id: str | None = None
+        # Module-level logger (feishu.py has no `log` defined).
+        import logging as _logging
+        self._log = _logging.getLogger("mini_cc.channels.feishu")
 
     @property
     def verification_configured(self) -> bool:
@@ -236,45 +248,17 @@ class FeishuChannel:
         if event_type != "im.message.receive_v1":
             return InboundResult()
 
-        event = payload.get("event") or {}
-        sender = event.get("sender") or {}
-        sender_id = (sender.get("sender_id") or {}).get("open_id", "?")
-        message = event.get("message") or {}
-        msg_type = message.get("message_type", "")
-        chat_id = message.get("chat_id", "")
-
-        if msg_type != "text":
-            # Non-text messages: inject a placeholder rather than
-            # silently dropping — the lead should know the user tried.
-            text = f"[Feishu non-text message: type={msg_type}]"
-        else:
-            content_raw = message.get("content", "{}")
-            try:
-                content = json.loads(content_raw) if content_raw else {}
-            except json.JSONDecodeError:
-                content = {}
-            text = str(content.get("text", "")).strip()
-            if not text:
-                return InboundResult()
-            # Strip @mentions of the bot itself, if any. Feishu embeds
-            # @bot as `@_user_1` tokens with a separate mention field;
-            # leaving them in user_input confuses the LLM. We only
-            # strip the programmatic form (`@_user_N`), preserving
-            # legitimate @-mentions of human peers.
-            import re
-            text = re.sub(r"@_user_\d+", "", text).strip()
-            if not text:
-                return InboundResult()
-
-        return InboundResult(
-            user_input=text,
-            metadata={
-                "source": "feishu",
-                "sender_open_id": sender_id,
-                "chat_id": chat_id,
-                "message_id": message.get("message_id", ""),
-            },
-        )
+        text, metadata = parse_message_event(payload.get("event") or {})
+        if text is None:
+            return InboundResult()
+        # Remember chat_id for outbound fallback (mirrors FeishuWsChannel).
+        # Stored in module-level shared cache so deliver() — which runs
+        # on a freshly-built Channel instance — can read it.
+        cid = metadata.get("chat_id")
+        if cid:
+            self._last_chat_id = cid
+            remember_inbound_chat_id(self.binding.id, cid)
+        return InboundResult(user_input=text, metadata=metadata)
 
     # ── Outbound ─────────────────────────────────────────────────────
 
@@ -284,21 +268,33 @@ class FeishuChannel:
         text messages; other event types are ignored to avoid spamming
         the chat with per-tool-call noise.
 
-        Skipped silently when ``chat_id`` is empty (binding configured
-        for inbound-only)."""
-        if not self.chat_id:
+        Target resolves to ``config.chat_id`` if set, else the most
+        recently seen inbound chat_id. Empty fallback logs a warning
+        rather than silent no-op (operators get a clear signal)."""
+        target = self.chat_id or self._last_chat_id \
+            or lookup_inbound_chat_id(self.binding.id)
+        if not target:
+            self._log.warning(
+                "feishu webhook binding %s deliver skipped: no chat_id "
+                "(config empty AND no inbound seen yet) — set chat_id "
+                "in binding config or wait for an inbound message",
+                self.binding.id)
             return
         if not _HAS_REQUESTS:
             return
-        text = self._render(event)
+        text = render_event(event)
         if not text:
             return
-        token = self._get_token()
+        token = self._token_cache.get()
         if not token:
+            self._log.warning(
+                "feishu webhook binding %s deliver skipped: no tenant token "
+                "(app_id/app_secret missing or wrong)",
+                self.binding.id)
             return
         content = json.dumps({"text": text}, ensure_ascii=False)
         try:
-            requests.post(
+            resp = requests.post(
                 f"{self.open_base}/open-apis/im/v1/messages",
                 params={"receive_id_type": "chat_id"},
                 headers={
@@ -306,83 +302,34 @@ class FeishuChannel:
                     "Content-Type": "application/json; charset=utf-8",
                 },
                 json={
-                    "receive_id": self.chat_id,
+                    "receive_id": target,
                     "msg_type": "text",
                     "content": content,
                 },
                 timeout=_HTTP_TIMEOUT,
             )
+            self._log.info(
+                "feishu webhook binding %s deliver to %s: HTTP %s",
+                self.binding.id, target, resp.status_code)
         except Exception:
-            pass
-
-    def _render(self, event: dict) -> str:
-        """Flatten an event into a single Feishu text payload. Returns
-        empty string when the event shouldn't be pushed (non-text /
-        tool noise / etc.) so ``deliver`` can short-circuit."""
-        etype = event.get("type", "")
-        if etype == "text":
-            return str(event.get("text", "")).strip()
-        if etype == "teammate_message":
-            sender = event.get("from", "?")
-            content = event.get("content", "")
-            return f"[{sender}] {content}".strip()
-        if etype == "lead_nudged":
-            items = event.get("items") or []
-            names = ", ".join(
-                f"{i.get('from','?')} ({i.get('kind','?')})" for i in items
-            )
-            return f"🔔 Lead nudged by: {names}" if names else ""
-        if etype == "tool_result":
-            # Only surface results that look like user-facing answers
-            # (heuristic: content longer than 40 chars). Short tool
-            # outputs are tool noise.
-            content = str(event.get("content", "")).strip()
-            if len(content) > 40:
-                return f"[tool] {content[:500]}"
-        return ""
-
-    # ── Token management ─────────────────────────────────────────────
-
-    def _get_token(self) -> str:
-        """Return a fresh tenant_access_token, refreshing if needed.
-        Serialised on ``_token_lock`` so concurrent dispatchers don't
-        fire two refresh requests. Returns "" on failure (missing
-        credentials / network error) — caller treats as 'skip'."""
-        if not self.app_id or not self.app_secret:
-            return ""
-        with self._token_lock:
-            now = time.time()
-            if self._token and now < self._token_expire - _TOKEN_REFRESH_MARGIN:
-                return self._token
-            if not _HAS_REQUESTS:
-                return ""
-            try:
-                resp = requests.post(
-                    f"{self.open_base}/open-apis/auth/v3/tenant_access_token/internal",
-                    json={
-                        "app_id": self.app_id,
-                        "app_secret": self.app_secret,
-                    },
-                    timeout=_HTTP_TIMEOUT,
-                )
-                data = resp.json() or {}
-            except Exception:
-                return ""
-            token = data.get("tenant_access_token") or ""
-            expire = data.get("expire") or 0
-            if not token:
-                return ""
-            self._token = token
-            self._token_expire = now + (float(expire) if expire else 7200.0)
-            return token
+            self._log.exception(
+                "feishu webhook binding %s deliver HTTP request failed",
+                self.binding.id)
 
 
 def _factory(binding: ChannelBinding) -> Channel:
+    # Dispatch on binding.transport: ws mode requires lark-oapi (handled
+    # in feishu_ws.py); webhook mode is the plain HTTP implementation.
+    if getattr(binding, "transport", "webhook") == "ws":
+        from .feishu_ws import FeishuWsChannel
+        return FeishuWsChannel(binding)  # type: ignore[return-value]
     return FeishuChannel(binding)  # type: ignore[return-value]
 
 
 # Self-register on import so the registry knows about "feishu" bindings.
-register_channel_kind("feishu", _factory)
+# Declares both transports: the factory dispatches by binding.transport.
+register_channel_kind("feishu", _factory,
+                      supported_transports=("ws", "webhook"))
 
 
 __all__ = ["FeishuChannel"]

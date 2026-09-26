@@ -44,9 +44,13 @@ def _client(tmp_path, *, channel_rpm: int | None = 5):
 
 
 def _bind(c, config):
+    # These tests exercise the public HTTP webhook surface, so the
+    # binding must be webhook transport (the create default is ws,
+    # whose HTTP path is handshake-only by design).
     r = c.post("/tenants/tenant1/projects/p1/channels",
                headers=AUTH,
-               json={"kind": "feishu", "config": config})
+               json={"kind": "feishu", "transport": "webhook",
+                     "config": config})
     assert r.status_code == 201, r.text
     return r.json()["id"]
 
