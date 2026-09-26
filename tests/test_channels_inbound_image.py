@@ -41,8 +41,10 @@ def test_inbound_turn_with_image_calls_asset_put_and_send(monkeypatch):
     project.project_id = "p1"
     project.assets.put.return_value = "asset_id_aaa"
 
-    def fake_download(image_key, cache):
-        # Sanity: TokenCache was constructed from binding_config.
+    def fake_download(msg_id, image_key, cache):
+        # Sanity: TokenCache was constructed from binding_config; msg_id
+        # is the 8fabb9e first arg (the /messages/{id}/resources endpoint).
+        assert msg_id == "msg_x"
         assert cache.app_id == "app_id_x"
         assert cache.app_secret == "app_secret_y"
         return (b"\xff\xd8fake", "image/jpeg")
@@ -66,7 +68,7 @@ def test_inbound_turn_with_image_calls_asset_put_and_send(monkeypatch):
 
     inbound.enqueue_inbound_turn(
         sm, project, "sess-1", "",
-        {"kind": "image", "image_keys": ["img_key_x"],
+        {"kind": "image", "image_keys": ["img_key_x"], "message_id": "msg_x",
          "source": "feishu",
          "_binding_config": {"app_id": "app_id_x",
                               "app_secret": "app_secret_y"}})
@@ -113,7 +115,7 @@ def test_inbound_turn_download_failure_falls_back_to_placeholder(monkeypatch):
 
     inbound.enqueue_inbound_turn(
         sm, project, "sess-1", "",
-        {"kind": "image", "image_keys": ["bad_key"],
+        {"kind": "image", "image_keys": ["bad_key"], "message_id": "msg_x",
          "source": "feishu",
          "_binding_config": {"app_id": "a", "app_secret": "b"}})
 

@@ -1,6 +1,6 @@
 import type { TenantProfile } from "../lib/types";
 import type { PendingAssetRef } from "../lib/store";
-import UserImage from "./UserImage";
+import { useAssetUrl } from "../lib/useAssetUrl";
 
 interface Props {
   text: string;

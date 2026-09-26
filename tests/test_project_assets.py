@@ -51,10 +51,10 @@ def test_assets_persisted_across_manager_instances(tmp_path: Path):
     root = tmp_path / "projects"
     pm1 = ProjectManager(root)
     pm1.create("tenant1", "p1")
-    p1 = pm1.get("p1")
+    p1 = pm1.get("p1", tenant_id="tenant1")
     aid = p1.assets.put(_png_bytes(), media_type="image/png", src="test")
 
     pm2 = ProjectManager(root)
-    p2 = pm2.get("p1")
+    p2 = pm2.get("p1", tenant_id="tenant1")
     assert p2.assets.get_meta(aid) is not None
     assert p2.assets.get_meta(aid)["bytes"] == len(_png_bytes())

@@ -316,3 +316,9 @@ export interface TeamEvent {
   type: string; // "text" | "tool_use" | "tool_result" | "send_message" | "error" | ...
   [key: string]: unknown;
 }
+
+export interface AssetRef {
+  asset_id: string;
+  media_type: string;
+  bytes: number;
+}
