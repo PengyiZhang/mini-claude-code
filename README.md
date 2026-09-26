@@ -10,6 +10,8 @@ FastAPI HTTP/SSE service, and drive from the bundled web console — with
 multi-agent teammates, gated workflows, and bidirectional IM channels built
 in.
 
+![Demo](assets/mini-cc-demo-video.gif)
+
 ```
 Agency comes from the model. mini_cc gives the model hands, eyes,
 a workspace, teammates, and a network surface.

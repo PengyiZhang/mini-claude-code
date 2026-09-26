@@ -8,6 +8,8 @@
 SDK 嵌入你的后端，也可作为 FastAPI HTTP/SSE 服务独立运行，并附带完整的
 Web 控制台——内置多 agent 团队协作、审批工作流与双向 IM 渠道。
 
+![Demo](assets/mini-cc-demo-video.gif)
+
 ```
 Agency 来自模型。mini_cc 给模型双手、双眼、工作区、队友和网络接口。
 ```
