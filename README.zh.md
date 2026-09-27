@@ -14,7 +14,8 @@ Web 控制台——内置多 agent 团队协作、审批工作流与双向 IM �
 Agency 来自模型。mini_cc 给模型双手、双眼、工作区、队友和网络接口。
 ```
 
-![mini_cc web 控制台](docs/mini_cc/zh/img/01-fresh-session.png)
+![Demo2](assets/mini-cc-demo-video.gif)
+
 
 模型是司机，本项目是车辆。mini_cc 起源于对
 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)
@@ -44,7 +45,16 @@ HTTP/SSE 传输层。
   SSE 权限弹窗，支持批准/拒绝/超时）
 - 子代理、按需**技能加载**（SKILL.md 技能包）、三层声明式**记忆**
   （system → tenant → project，关键词召回，写入走工具门控）
-- per-project **MCP** 连接池（`/mcp connect|tools|reconnect`）
+- per-project **MCP** 连接池（`/mcp connect|tools|reconnect`）：服务器
+  **后台连接**（项目装配零阻塞）、stdio **NDJSON** 帧（现行规范）、
+  Streamable HTTP **Mcp-Session-Id** 协商
+- **图片输入（多模态）**：Web 端选择 / 拖拽 / 粘贴上传，飞书图片消息自动
+  下载入库（per-project AssetStore）；Anthropic 原生图片块与 LiteLLM
+  `image_url` 双路水合——DeepSeek / Qwen 等后端同样"看得见"图
+- **扩展思考渲染**：extended-thinking 增量经 SSE 流式呈现为可折叠推理
+  面板；刷新后从持久化 thinking 块重建
+- **视觉降级路由**：`MINI_CC_MODEL_VISION=false` 声明模型无原生视觉时，
+  图片附件经签名 URL 自动转发给 MCP 视觉工具（如 zai / playwright-mcp）
 - **LSP 工具**：按需启动语言服务器（pyright、clangd、TS、rust-analyzer、
   gopls...），暴露跳转定义 / 引用 / 调用层次
 - per-project **cron** 调度 + 秒级一次性**唤醒**（agent 自我调度节奏）；
@@ -79,8 +89,11 @@ HTTP/SSE 传输层。
 
 - **双向渠道抽象**：把会话绑定到外部 IM——入站聊天变成 agent 轮次，
   agent/队友事件推送出去；按渠道过滤事件类型；密钥读取时脱敏
-- **内置飞书**：URL 验证握手、签名校验、AES 加密信封解密、出站走缓存
-  `tenant_access_token`；新渠道类型用 `register_channel_kind` 注册
+- **内置飞书**：**WS 长连接**（默认，官方 SDK 直连，无需公网 URL）与
+  webhook（URL 握手 / 签名校验 / AES 信封解密）双模式；图片消息自动下载
+  入库；渠道支持运行时 **modify / enable / disable**；出站走缓存
+  `tenant_access_token`，未配置 `chat_id` 时自动回复到最近来消息的群；
+  新渠道类型用 `register_channel_kind` 注册
 
 ### 沙箱与隔离
 

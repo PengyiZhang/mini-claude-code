@@ -50,7 +50,18 @@ storage, no module globals, and an optional HTTP/SSE transport.
 - Subagents, on-demand **skill loading** (SKILL.md packs), three-tier
   declarative **memory** (system → tenant → project, keyword recall,
   tool-gated writes)
-- **MCP** client pool per project (`/mcp connect|tools|reconnect`)
+- **MCP** client pool per project (`/mcp connect|tools|reconnect`):
+  **background connects** (project assembly never blocks), stdio **NDJSON**
+  framing (current spec), Streamable HTTP **Mcp-Session-Id** negotiation
+- **Image input (multimodal)**: pick / drag / paste uploads in the Web UI,
+  Feishu image messages auto-downloaded into a per-project AssetStore;
+  dual-path hydration (Anthropic native image blocks + LiteLLM
+  `image_url`) so DeepSeek / Qwen backends see images too
+- **Extended-thinking rendering**: thinking deltas stream over SSE into a
+  collapsible reasoning panel, rebuilt from persisted blocks on reload
+- **Vision fallback routing**: with `MINI_CC_MODEL_VISION=false`, image
+  attachments are auto-forwarded via signed URL to MCP vision tools
+  (zai / playwright-mcp)
 - **LSP tool**: on-demand language servers (pyright, clangd, TS, rust-analyzer,
   gopls, ...) exposing go-to-definition / references / call hierarchy
 - Per-project **cron** scheduler plus second-precision one-shot **wakeups**
@@ -93,9 +104,13 @@ storage, no module globals, and an optional HTTP/SSE transport.
 - **Bidirectional channel abstraction**: bind a session to an external
   messenger — inbound chat becomes agent turns, agent/teammate events push
   back out; per-channel event-type filter; secrets masked on read
-- **Feishu (Lark) built in**: URL-verification handshake, signature check,
-  AES-encrypted envelope decryption, cached `tenant_access_token` outbound;
-  new kinds register via `register_channel_kind`
+- **Feishu (Lark) built in**: dual transport — **WS long-connection**
+  (default; official SDK dials out, no public URL needed) or webhook
+  (URL handshake / signature check / AES envelope decryption); image
+  messages auto-downloaded; runtime **modify / enable / disable**;
+  cached `tenant_access_token` outbound that replies to the most recent
+  inbound chat when `chat_id` is unset; new kinds register via
+  `register_channel_kind`
 
 ### Sandbox & isolation
 
