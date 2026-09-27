@@ -6,9 +6,11 @@ tools/list handshake, and exposes the discovered tools through the
 existing ``MCPClient`` interface so ``MCPPool.all_tools()`` picks them
 up automatically.
 
-Wire format (per MCP spec):
-- Each JSON-RPC message is framed with a ``Content-Length: <n>`` header
-  followed by ``\r\n\r\n`` and the JSON body, encoded as UTF-8.
+Wire format (per MCP spec, 2025-06-18 and later):
+- Each JSON-RPC message is one UTF-8 JSON object terminated by ``\n``
+  (newline-delimited JSON, a.k.a. NDJSON). Early MCP drafts inherited
+  LSP-style ``Content-Length`` framing; current servers (Playwright MCP
+  v0.0.77+, everything tracking the modern spec) emit NDJSON instead.
 - Requests carry an incrementing numeric id; responses are matched on
   that id.
 - Notifications (no id) flow one-way from server to client (e.g.
@@ -157,27 +159,36 @@ class StdioMCPClient(MCPClient):
     def _write_message(self, payload: dict) -> None:
         assert self._proc is not None and self._proc.stdin is not None
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        self._proc.stdin.write(header + body)
+        # NDJSON framing: one JSON object terminated by \n. Modern MCP
+        # servers (Playwright MCP, anything tracking the 2025-06-18 spec)
+        # expect this — the legacy LSP ``Content-Length`` framing breaks
+        # them silently (server reads stdin forever, never responds).
+        self._proc.stdin.write(body + b"\n")
         self._proc.stdin.flush()
 
     def _reader_loop(self) -> None:
-        """Single reader thread that demuxes responses onto waiters."""
+        """Single reader thread that demuxes responses onto waiters.
+
+        Reads one line at a time from the server's stdout and parses
+        each non-empty line as a JSON-RPC message. Blank lines (some
+        servers emit them as keep-alives) and unparseable lines are
+        skipped — same tolerant-reader principle the old header parser
+        had, just over a simpler wire format.
+        """
         assert self._proc is not None and self._proc.stdout is not None
         stream = self._proc.stdout
         try:
             while True:
-                # Parse framed message.
-                length = self._read_content_length(stream)
-                if length is None:
-                    break  # EOF
-                body = stream.read(length)
-                if not body or len(body) < length:
-                    break  # truncated / EOF
+                line = stream.readline()
+                if not line:
+                    break  # EOF — server closed stdout
+                line = line.strip()
+                if not line:
+                    continue  # keep-alive blank line
                 try:
-                    msg = json.loads(body.decode("utf-8"))
+                    msg = json.loads(line.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
-                    continue
+                    continue  # tolerant: skip malformed line
                 self._dispatch(msg)
         except Exception as e:
             self._reader_error = f"reader: {type(e).__name__}: {e}"
@@ -186,28 +197,6 @@ class StdioMCPClient(MCPClient):
             if slot[0] is not None:
                 slot[0].set()
                 slot[1] = slot[1] or {"error": "reader terminated"}
-
-    @staticmethod
-    def _read_content_length(stream) -> int | None:
-        """Read CRLF-terminated headers up to the blank line; return the
-        Content-Length value or None on EOF."""
-        length = None
-        while True:
-            line = stream.readline()
-            if not line:
-                return None  # EOF
-            # Allow either CRLF or LF terminators; tolerant reader.
-            line_s = line.decode("ascii", errors="replace").strip()
-            if line_s == "":
-                break  # end of headers
-            if ":" in line_s:
-                k, _, v = line_s.partition(":")
-                if k.strip().lower() == "content-length":
-                    try:
-                        length = int(v.strip())
-                    except ValueError:
-                        length = None
-        return length
 
     def _dispatch(self, msg: dict) -> None:
         """Route one decoded JSON-RPC message to its waiter (if any)."""

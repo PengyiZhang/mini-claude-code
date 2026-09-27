@@ -1,5 +1,6 @@
 import type {
   ApiErrorEnvelope,
+  AssetRef,
   ChannelOut,
   FileContent,
   KeyOut,
@@ -720,4 +721,37 @@ export async function deleteChannel(
     },
   );
   if (!res.ok && res.status !== 204) await parseErr(res);
+}
+
+
+export async function uploadAsset(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+  file: File,
+): Promise<AssetRef> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(
+    tenantPath(profile, `/projects/${pid}/sessions/${sid}/assets`),
+    {
+      method: "POST",
+      headers: authHeaders(profile),
+      body: form,
+    },
+  );
+  if (!res.ok) await parseErr(res);
+  return res.json();
+}
+
+export function assetUrl(
+  profile: TenantProfile,
+  pid: string,
+  sid: string,
+  assetId: string,
+): string {
+  return tenantPath(
+    profile,
+    `/projects/${pid}/sessions/${sid}/assets/${assetId}`,
+  );
 }

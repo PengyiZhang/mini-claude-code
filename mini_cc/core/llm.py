@@ -12,7 +12,7 @@ Loop.py consumes :class:`StreamEvent` instances from either provider
 and never touches the underlying SDK shapes.
 """
 from __future__ import annotations
-
+import logging
 import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Literal, Protocol
@@ -27,6 +27,7 @@ LITELLM_PREFIXES: tuple[str, ...] = (
     "perplexity/", "voyage/", "ai21/", "baseten/", "custom/",
 )
 
+logger = logging.getLogger(__name__)
 
 def looks_like_litellm(model: str) -> bool:
     """Return True if ``model`` should route through the litellm backend."""
@@ -41,6 +42,10 @@ class StreamEvent:
 
     - ``text_delta``  — partial assistant text. Loop yields it as a
       streaming ``{"type": "text"}`` event to the client.
+    - ``thinking_delta`` — partial reasoning content from Claude's
+      extended-thinking blocks. Loop yields it as a streaming
+      ``{"type": "thinking"}`` event so the UI can render a
+      collapsible "thinking" disclosure alongside the answer.
     - ``tool_use``    — completed tool-call block (accumulated across
       deltas by the provider). Loop dispatches the tool and emits the
       matching tool_result.
@@ -50,8 +55,11 @@ class StreamEvent:
     - ``error``       — provider raised mid-stream. ``message`` carries
       the human-readable string; loop decides whether to retry or surface.
     """
-    kind: Literal["text_delta", "tool_use", "message_stop", "error"]
+    kind: Literal["text_delta", "thinking_delta", "tool_use",
+                  "message_stop", "error"]
     text: str | None = None
+    # Carries partial reasoning text when kind == "thinking_delta".
+    thinking: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
     tool_input: dict | None = None
@@ -65,7 +73,11 @@ class LLMProvider(Protocol):
     """Unified streaming interface for AgentLoop."""
 
     def stream(self, *, model: str, system: str, messages: list[dict],
-               tools: list[dict], max_tokens: int) -> Iterator[StreamEvent]:
+               tools: list[dict], max_tokens: int,
+               asset_store: Any = None,
+               vision_capable: bool = True,
+               asset_url_minter: Callable[[str], str | None] | None = None
+               ) -> Iterator[StreamEvent]:
         ...
 
     @property
@@ -74,6 +86,62 @@ class LLMProvider(Protocol):
 
 
 # ── Anthropic backend ──────────────────────────────────────────────────────
+
+def _hydrate_messages(messages: list[dict], store: Any,
+                      *,
+                      vision_capable: bool = True,
+                      asset_url_minter: Callable[[str], str | None] | None = None
+                      ) -> list[dict]:
+    """Walk ``messages`` and expand ``{type:"image", asset_id:"..."}`` blocks
+    into Anthropic base64 image blocks via ``store.hydrate_block``.
+
+    - If ``store`` is None or ``hydrate_block`` returns None (unknown id),
+      the image block is replaced with a ``{type:"text", text:"[image: missing]"}``
+      placeholder so message count stays aligned with the transcript.
+    - String content and non-image blocks pass through untouched.
+    - Non-dict blocks (pydantic objects, etc.) pass through untouched.
+
+    Vision gating: when ``vision_capable=False`` and ``asset_url_minter``
+    is callable, image blocks are instead replaced with a text block
+    carrying a short-lived signed URL. The model is then expected to
+    pass that URL to a vision-capable MCP tool (the system prompt tells
+    it which tool to use). If the minter returns None (e.g. no
+    ``MINI_CC_PUBLIC_BASE_URL`` configured), fall back to base64
+    embedding so the request still goes through.
+    """
+    out: list[dict] = []
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else None
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        new_blocks = []
+        for b in content:
+            if (isinstance(b, dict)
+                    and b.get("type") == "image"
+                    and "asset_id" in b):
+                if not vision_capable and asset_url_minter is not None:
+                    url = asset_url_minter(b["asset_id"])
+                    if url:
+                        new_blocks.append({
+                            "type": "text",
+                            "text": (f"[image attached at {url} — use a "
+                                     f"vision tool to inspect]"),
+                        })
+                        continue
+                hydrated = (store.hydrate_block(b["asset_id"])
+                            if store is not None else None)
+                if hydrated is None:
+                    logger.warning(
+                        "hydrate_messages: unknown asset_id %s", b["asset_id"])
+                new_blocks.append(hydrated
+                                  or {"type": "text",
+                                      "text": "[image: missing]"})
+            else:
+                new_blocks.append(b)
+        out.append({**m, "content": new_blocks})
+    return out
+
 
 def _dump_block(b: Any) -> dict:
     """Convert an Anthropic SDK content block to a JSON-safe dict.
@@ -124,7 +192,19 @@ class AnthropicProvider:
         return self._client
 
     def stream(self, *, model: str, system: str, messages: list[dict],
-               tools: list[dict], max_tokens: int) -> Iterator[StreamEvent]:
+               tools: list[dict], max_tokens: int,
+               asset_store: Any = None,
+               vision_capable: bool = True,
+               asset_url_minter: Callable[[str], str | None] | None = None
+               ) -> Iterator[StreamEvent]:
+        # Hydrate {type:image, asset_id:"..."} transcript references into
+        # Anthropic base64 image blocks before the SDK call. Unknown /
+        # missing asset_id → placeholder text block (message count stays
+        # aligned so user/assistant alternation isn't broken). Pure-text
+        # turns are a no-op pass-through.
+        messages = _hydrate_messages(messages, asset_store,
+                                     vision_capable=vision_capable,
+                                     asset_url_minter=asset_url_minter)
         # Use the SDK's context-manager form so the underlying HTTP
         # stream is closed deterministically. We yield events while
         # inside the context, then a final message_stop after.
@@ -138,7 +218,12 @@ class AnthropicProvider:
                 if etype == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     dtype = getattr(delta, "type", None) if delta else None
-                    if dtype == "text_delta":
+                    if dtype == "thinking_delta":
+                        thinking = getattr(delta, "thinking", "") or ""
+                        if thinking:
+                            yield StreamEvent(
+                                kind="thinking_delta", thinking=thinking)
+                    elif dtype == "text_delta":
                         text = getattr(delta, "text", "") or ""
                         if text:
                             yield StreamEvent(kind="text_delta", text=text)
@@ -192,7 +277,21 @@ class LiteLLMProvider:
         self._extra_headers = extra_headers or {}
 
     def stream(self, *, model: str, system: str, messages: list[dict],
-               tools: list[dict], max_tokens: int) -> Iterator[StreamEvent]:
+               tools: list[dict], max_tokens: int,
+               asset_store: Any = None,
+               vision_capable: bool = True,
+               asset_url_minter: Callable[[str], str | None] | None = None
+               ) -> Iterator[StreamEvent]:
+        # Hydrate {type:image, asset_id:"..."} transcript references into
+        # Anthropic base64 image blocks before converting. _convert_messages
+        # then rewrites them to OpenAI image_url data-URI form so the image
+        # actually reaches the model. Without this, image attachments sent
+        # via any LiteLLM-routed provider (DeepSeek/Qwen/Gemini/etc.) would
+        # be silently dropped by _convert_messages (which only handles
+        # text + tool_result user-block types).
+        messages = _hydrate_messages(messages, asset_store,
+                                     vision_capable=vision_capable,
+                                     asset_url_minter=asset_url_minter)
         import litellm  # local import — keeps cold-start fast if unused
 
         # litellm emits a noisy deprecation warning for every call; mute
@@ -400,6 +499,23 @@ class LiteLLMProvider:
                         })
                     elif bt == "text":
                         plain.append(b.get("text", ""))
+                    elif bt == "image":
+                        # Anthropic-shape image block (output of
+                        # _hydrate_messages). OpenAI expects image_url
+                        # with a data: URI. If the block lacks source
+                        # data (shouldn't happen post-hydrate, but be
+                        # defensive), fall back to a text placeholder so
+                        # the user knows the image was dropped.
+                        src = b.get("source") or {}
+                        if src.get("type") == "base64" and src.get("data"):
+                            mt = src.get("media_type", "image/png")
+                            url = f"data:{mt};base64,{src['data']}"
+                            out.append({"role": "user",
+                                        "content": [{"type": "image_url",
+                                                     "image_url": {"url": url}}]})
+                        else:
+                            out.append({"role": "user",
+                                        "content": "[image: missing]"})
                     elif isinstance(b, str):
                         plain.append(b)
                 if tool_results:

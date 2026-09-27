@@ -55,6 +55,14 @@ class _RemoteMCPClientBase(MCPClient):
         self._next_id = 1
         self._lock = threading.Lock()
         self._initialized = False
+        # MCP Streamable HTTP session id, learned from the server's
+        # ``Mcp-Session-Id`` response header (typically on initialize)
+        # and echoed on every subsequent request. Servers that enforce
+        # sessions reject header-less requests with HTTP 400 "Missing
+        # session ID" — kept here so the HTTP transport can satisfy
+        # that contract without the base class knowing the wire
+        # detail. None means "server hasn't assigned one yet".
+        self._session_id: str | None = None
 
     # Subclass hook: return the raw JSON-RPC response dict.
     def _post_request(self, payload: dict, *, timeout: float) -> dict:
@@ -152,12 +160,28 @@ class HttpMCPClient(_RemoteMCPClientBase):
 
     def _post_request(self, payload: dict, *, timeout: float) -> dict:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        # Per-request headers: copy the base set + session id if we have
+        # one. urllib lowercases header keys when sending, so the wire
+        # header is ``Mcp-Session-Id`` regardless of how we capitalize
+        # it here. Servers enforce sessions by rejecting requests
+        # without it (HTTP 400 "Missing session ID") — see the user's
+        # web-mcp endpoint.
+        out_headers = dict(self.headers)
+        if self._session_id:
+            out_headers["Mcp-Session-Id"] = self._session_id
         req = urllib.request.Request(
-            self.url, data=body, headers=self.headers, method="POST")
+            self.url, data=body, headers=out_headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 ctype = (resp.headers.get("Content-Type") or "").lower()
                 raw = resp.read(2_000_000)
+                # Capture session id on ANY response that carries it.
+                # The spec assigns it on initialize, but some servers
+                # rotate it on later requests (reauth, expiry) — picking
+                # up the latest keeps us aligned with the server's view.
+                sid = resp.headers.get("Mcp-Session-Id")
+                if sid:
+                    self._session_id = sid
         except urllib.error.HTTPError as e:
             raise HttpMCPError(
                 f"MCP server `{self.name}`: HTTP {e.code} {e.reason}") from e

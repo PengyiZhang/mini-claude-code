@@ -73,24 +73,44 @@ def parse_message_event(event: dict) -> tuple[str | None, dict]:
 
     ``metadata`` always carries ``source="feishu"``, ``sender_open_id``,
     ``chat_id``, ``message_id`` so the agent context can attribute the
-    message."""
+    message. ``metadata["kind"]`` is ``"text"`` for normal text messages
+    and ``"image"`` for image messages; in the image case the caller
+    also gets ``metadata["image_keys"]`` (list of Feishu image_key
+    strings) and an empty ``user_input`` to indicate that the actual
+    content is image bytes referenced by those keys (downloaded
+    downstream via ``download_image``)."""
     sender = event.get("sender") or {}
     sender_id = (sender.get("sender_id") or {}).get("open_id", "?")
     message = event.get("message") or {}
     msg_type = message.get("message_type", "")
     chat_id = message.get("chat_id", "")
 
+    base_meta = {
+        "source": "feishu",
+        "sender_open_id": sender_id,
+        "chat_id": chat_id,
+        "message_id": message.get("message_id", ""),
+    }
+
+    if msg_type == "image":
+        content_raw = message.get("content", "{}")
+        try:
+            content = json.loads(content_raw) if content_raw else {}
+        except json.JSONDecodeError:
+            content = {}
+        image_key = content.get("image_key")
+        if not image_key:
+            return None, {}
+        return "", {**base_meta, "kind": "image",
+                    "image_keys": [image_key]}
+
     if msg_type != "text":
-        # Non-text: inject a placeholder so the lead sees the user tried,
-        # rather than silently dropping. Keeps chat_id+message_id visible.
+        # Non-text (post / audio / etc.): inject a placeholder so the
+        # lead sees the user tried, rather than silently dropping. Keeps
+        # chat_id+message_id visible.
         return (
             f"[Feishu non-text message: type={msg_type}]",
-            {
-                "source": "feishu",
-                "sender_open_id": sender_id,
-                "chat_id": chat_id,
-                "message_id": message.get("message_id", ""),
-            },
+            {**base_meta, "kind": "text"},
         )
     content_raw = message.get("content", "{}")
     try:
@@ -103,12 +123,7 @@ def parse_message_event(event: dict) -> tuple[str | None, dict]:
     text = strip_bot_mention(text)
     if not text:
         return None, {}
-    return text, {
-        "source": "feishu",
-        "sender_open_id": sender_id,
-        "chat_id": chat_id,
-        "message_id": message.get("message_id", ""),
-    }
+    return text, {**base_meta, "kind": "text"}
 
 
 def render_event(event: dict) -> str:
@@ -190,6 +205,50 @@ class TokenCache:
             return token
 
 
+def download_image(
+            message_id: str,
+            image_key: str,
+            token_cache: "TokenCache") -> tuple[bytes, str]:
+    """Download a Feishu image by ``image_key``. Returns
+    ``(content_bytes, media_type)``.
+
+    Uses ``token_cache.get()`` to obtain a tenant_access_token, then calls
+    ``GET {open_base}/open-apis/im/v1/images/{image_key}?image_type=message``.
+    The response body is the raw image binary; ``Content-Type`` reflects
+    the image format (possibly with ``; charset=...`` which we strip).
+
+    Raises ``ConnectionError`` when the token can't be acquired (missing
+    creds / network), ``requests`` isn't installed, or the upstream
+    returns non-200. Caller (channel supervisor) treats this as
+    "download failed -> fall back to placeholder text".
+    """
+    token = token_cache.get()
+    if not token:
+        raise ConnectionError(
+            "no tenant_access_token; check app_id/app_secret")
+    if not _HAS_REQUESTS:
+        raise ConnectionError("requests not installed")
+    # 机器人消息中获取图片的接口已经变更为： 
+    # url = f"{token_cache.open_base}/open-apis/im/v1/images/{image_key}"
+    # 用户消息接口
+    url = f"{token_cache.open_base}/open-apis/im/v1/messages/{message_id}/resources/{image_key}"
+    resp = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        params={"type": "image"},
+        # Image fetches can be 5MB over slow links — give them more room
+        # than the 5s default (which is sized for token-refresh + the
+        # inbound-event API). A timeout here degrades to a text placeholder
+        # ("[image: download failed: ...]"), which is correct behavior —
+        # but a longer timeout gives the image a fighting chance to land.
+        timeout=15.0,
+    )
+    resp.raise_for_status()
+    media_type = (resp.headers.get("Content-Type", "image/jpeg")
+                  .split(";")[0].strip() or "image/jpeg")
+    return resp.content, media_type
+
+
 __all__ = [
     "TokenCache",
     "parse_message_event",
@@ -197,6 +256,7 @@ __all__ = [
     "strip_bot_mention",
     "remember_inbound_chat_id",
     "lookup_inbound_chat_id",
+    "download_image",
     "_FEISHU_OPEN_BASE",
     "_HTTP_TIMEOUT",
 ]

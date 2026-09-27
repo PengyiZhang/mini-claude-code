@@ -243,6 +243,11 @@ class ProjectRef:
     prompt_tools: set[str] = field(default_factory=set)
     tenant_id: str = ""
     metrics: "object | None" = None  # MetricsRegistry or None
+    # AssetStore handle. Injected so LLM providers can hydrate
+    # {type:image, asset_id:"..."} transcript refs into Anthropic base64
+    # image blocks at call time. None on old/test refs is fine — the
+    # hydrate path falls back to a "[image: missing]" text placeholder.
+    assets: "object | None" = None
 
 
 class AgentLoop:
@@ -661,6 +666,15 @@ class AgentLoop:
             if self.system_prompt_override is not None:
                 system = self.system_prompt_override
             else:
+                from ..config import default_config
+                cfg = default_config()
+                # getattr fallbacks keep legacy test mocks (which only
+                # stub the attributes they care about) working.
+                model_vision = getattr(cfg, "model_vision", True)
+                public_base_url = getattr(cfg, "public_base_url", None)
+                vision_tools = None
+                if (not model_vision) and self.project.mcp_pool:
+                    vision_tools = self.project.mcp_pool.vision_tools()
                 system = assemble_system_prompt(
                     project_root=self.project.project_root,
                     tools=self.tools,
@@ -669,6 +683,7 @@ class AgentLoop:
                                  if self.project.mcp_pool else self.project.mcp_servers),
                     skills_catalog=self.project.skills_catalog,
                     project_guide=load_project_guide(self.project.project_root),
+                    vision_tools=vision_tools,
                 )
 
             try:
@@ -687,16 +702,49 @@ class AgentLoop:
                 # prompt-too-long errors, and extract tool blocks for
                 # the tool dispatcher below.
                 from ..server.tracing import log_span
-                from ..config import MAX_RETRIES
+                from ..config import MAX_RETRIES, default_config as _dc
+                _cfg = _dc()
+                _model_vision = getattr(_cfg, "model_vision", True)
+                _public_base_url = getattr(_cfg, "public_base_url", None)
+
+                def _mint_asset_url(asset_id: str):
+                    if not _public_base_url:
+                        return None
+                    from ..sharing.tokens import issue_asset_token
+                    tok = issue_asset_token(
+                        self.project.project_id,
+                        self.session_id,
+                        asset_id)
+                    return f"{_public_base_url}/shared/asset/{tok}"
+
+                # Detect once whether the provider's stream() accepts the
+                # vision-gating kwargs. Pre-existing test stubs may not —
+                # fall back to the legacy signature in that case so this
+                # feature doesn't break unrelated tests.
+                import inspect
+                _stream_params = set()
+                try:
+                    _stream_params = set(
+                        inspect.signature(self.provider.stream).parameters)
+                except (TypeError, ValueError):
+                    pass
+                _stream_supports_vision = (
+                    "vision_capable" in _stream_params
+                    and "asset_url_minter" in _stream_params)
 
                 def _open_stream():
-                    return self.provider.stream(
+                    base_kwargs = dict(
                         model=self.state.current_model,
                         system=system,
                         messages=self.messages,
                         tools=to_anthropic(self.tools),
                         max_tokens=max_tokens,
+                        asset_store=getattr(self.project, "assets", None),
                     )
+                    if _stream_supports_vision:
+                        base_kwargs["vision_capable"] = _model_vision
+                        base_kwargs["asset_url_minter"] = _mint_asset_url
+                    return self.provider.stream(**base_kwargs)
 
                 # Retry connection setup on transient errors — 429 / 529 /
                 # network — classified via the shared recovery module
@@ -779,6 +827,8 @@ class AgentLoop:
                                 partial_text_parts.append(ev.text)
                                 assistant_text_parts.append(ev.text)
                                 yield {"type": "text", "text": ev.text}
+                            elif ev.kind == "thinking_delta" and ev.thinking:
+                                yield {"type": "thinking", "text": ev.thinking}
                             elif ev.kind == "tool_use":
                                 # Litellm provider emits streaming tool_use
                                 # events; capture the partial so cancel/error

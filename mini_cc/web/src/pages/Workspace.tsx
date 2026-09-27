@@ -4,6 +4,7 @@ import TopBar from "../components/TopBar";
 import FileTree from "../components/FileTree";
 import FilePreview from "../components/FilePreview";
 import MessageBubble from "../components/MessageBubble";
+import UserImage from "../components/UserImage";
 import PermissionPrompt, {
   PermissionPromptData,
   pendingToData,
@@ -33,8 +34,9 @@ import type { ChatMessage } from "../lib/store";
 import { streamSend, streamSessionEvents } from "../lib/sse";
 import { fetchCommands, streamRunCommand } from "../lib/commands";
 import type { CommandDef } from "../lib/commands";
+import { useComposerAttachments } from "./useComposerAttachments";
 
-type Tab = "chat" | "files" | "run" | "channels";
+type Tab = "Chat" | "Files" | "Run" | "Channels";
 
 const EMPTY: ChatMessage[] = [];
 const EMPTY_PERMS: PermissionPromptData[] = [];
@@ -42,7 +44,7 @@ const EMPTY_PERMS: PermissionPromptData[] = [];
 export default function Workspace() {
   const { pid = "" } = useParams();
   const profile = useAuth((s) => s.current())!;
-  const [tab, setTab] = useState<Tab>("chat");
+  const [tab, setTab] = useState<Tab>("Chat");
   const [sessions, setSessions] = useState<string[]>([]);
   const [warmSet, setWarmSet] = useState<Record<string, boolean>>({});
   const [sid, setSid] = useState<string | null>(null);
@@ -61,6 +63,7 @@ export default function Workspace() {
   const addTeammateMessage = useChat((s) => s.addTeammateMessage);
   const startAssistant = useChat((s) => s.startAssistant);
   const appendText = useChat((s) => s.appendText);
+  const appendThinking = useChat((s) => s.appendThinking);
   const addActivity = useChat((s) => s.addActivity);
   const addCard = useChat((s) => s.addCard);
   const setActivityResult = useChat((s) => s.setActivityResult);
@@ -376,6 +379,13 @@ export default function Workspace() {
     }
   }, [jumpTarget, consumeJump]);
 
+  // Composer attachment state — uploads + pending thumbnails. Extracted
+  // into a hook so the filtering/dedup/url-building logic is unit-tested
+  // in isolation (rendering the whole Workspace for these would be
+  // theatre). The send() handler reads `assetIds` to build the request
+  // body; the composer JSX renders thumbnails + the file input.
+  const attachments = useComposerAttachments(profile, pid, sid);
+
   async function removeSession(s: string) {
     if (!confirm(`remove session ${s}?`)) return;
     try {
@@ -438,6 +448,10 @@ export default function Workspace() {
       case "text":
         ensureStreamingBubble(key);
         appendText(key, ev.text);
+        break;
+      case "thinking":
+        ensureStreamingBubble(key);
+        appendThinking(key, ev.text);
         break;
       case "tool_use":
         ensureStreamingBubble(key);
@@ -575,10 +589,18 @@ export default function Workspace() {
   }, [chatKey, sid, pid, profile.apiKey]);
 
   async function send() {
-    if (!sid || !input.trim() || streaming) return;
+    if (!sid || streaming) return;
     const text = input;
+    const assetIds = attachments.assetIds;
+    // Allow send when there's text OR at least one pending image. The
+    // legacy guard was "!input.trim()" alone — that blocks image-only
+    // turns, which are now valid (the backend accepts a {text:"",assets}
+    // body and builds content blocks from it).
+    if (!text.trim() && assetIds.length === 0) return;
+    const pendingAssets = attachments.pendingAssets;
     setInput("");
-    appendUser(chatKey!, text);
+    attachments.clear();
+    appendUser(chatKey!, text, pendingAssets);
     startAssistant(chatKey!);
     setStreaming(chatKey!, true);
     setError(null);
@@ -590,7 +612,14 @@ export default function Workspace() {
       {
         url: `${profile.baseUrl}/tenants/${profile.tenantId}/projects/${pid}/sessions/${sid}/send`,
         apiKey: profile.apiKey,
-        body: { user_input: text },
+        // Backend accepts either legacy {user_input} or {text, assets}.
+        // Only attach `assets` when we actually have them — keeps
+        // pure-text turns on the legacy path so existing backend
+        // behavior doesn't shift under our feet.
+        body:
+          assetIds.length > 0
+            ? { text, assets: assetIds }
+            : { user_input: text },
         signal: controller.signal,
         // B8: auto-resume from the per-session event log if the
         // connection drops mid-stream. Server-side resume-only path
@@ -718,9 +747,9 @@ export default function Workspace() {
       <TopBar title={`${pid}`} />
       <div className="flex-1 flex min-h-0">
         {/* Sidebar */}
-        <aside className="w-64 border-r border-border bg-bg-panel p-3 flex flex-col gap-3 overflow-y-auto shrink-0">
+        <aside className="w-80 border-r border-border bg-bg-panel p-3 flex flex-col gap-3 overflow-y-auto shrink-0">
           <div className="flex gap-1 text-sm">
-            {(["chat", "files", "run", "channels"] as Tab[]).map((t) => (
+            {(["Chat", "Files", "Run", "Channels"] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -733,7 +762,7 @@ export default function Workspace() {
             ))}
           </div>
 
-          {tab === "chat" && (
+          {tab === "Chat" && (
             <div className="space-y-2">
               <div className="text-xs text-ink-dim uppercase tracking-wide">sessions</div>
               <button
@@ -760,7 +789,7 @@ export default function Workspace() {
             </div>
           )}
 
-          {tab === "files" && (
+          {tab === "Files" && (
             <div className="space-y-2">
               <div className="text-xs text-ink-dim">
                 Workspace files live in the tree. Use the <span className="font-mono">＋</span> button at the top of the tree to upload, and the <span className="font-mono">⬇</span> button to download. Right-click any folder for per-folder actions.
@@ -768,11 +797,11 @@ export default function Workspace() {
             </div>
           )}
 
-          {tab === "run" && (
+          {tab === "Run" && (
             <RunTablePanel profile={profile} pid={pid} sid={sid} />
           )}
 
-          {tab === "channels" && (
+          {tab === "Channels" && (
             <ChannelsPanel profile={profile} pid={pid} />
           )}
 
@@ -792,7 +821,7 @@ export default function Workspace() {
             </div>
           )}
 
-          {tab === "chat" && (
+          {tab === "Chat" && (
             <>
               {/* Pending permission prompts */}
               {sid && pending.length > 0 && (
@@ -832,7 +861,41 @@ export default function Workspace() {
               {chatKey && <TodoPanel chatKey={chatKey} />}
 
               <div className="border-t border-border p-4 bg-bg-panel">
-                <div className="flex gap-2 relative">
+                {/* Pending image attachments — thumbnail chips above the
+                    textarea. Each chip has a remove (×) button so the
+                    user can drop an accidental upload before sending.
+                    Hidden when there's nothing pending and not uploading. */}
+                {(attachments.pendingAssets.length > 0 || attachments.uploading) && (
+                  <div className="flex gap-1 flex-wrap items-center mb-2">
+                    {attachments.pendingAssets.map((a) => (
+                      <div
+                        key={a.asset_id}
+                        className="relative"
+                        data-testid={`pending-asset-${a.asset_id}`}
+                      >
+                        <UserImage
+                          profile={profile}
+                          pid={pid}
+                          sid={sid!}
+                          assetId={a.asset_id}
+                          className="w-12 h-12 object-cover rounded border border-border"
+                        />
+                        <button
+                          type="button"
+                          aria-label={`remove attachment ${a.asset_id}`}
+                          onClick={() => attachments.remove(a.asset_id)}
+                          className="absolute -top-1 -right-1 bg-err text-white rounded-full w-4 h-4 text-xs leading-none flex items-center justify-center"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    {attachments.uploading && (
+                      <div className="text-xs text-ink-dim">uploading…</div>
+                    )}
+                  </div>
+                )}
+                <div className="flex gap-2 relative items-end">
                   {slashOpen && commands.length > 0 && (
                     <SlashMenu
                       commands={slashFiltered}
@@ -863,12 +926,67 @@ export default function Workspace() {
                       }}
                     />
                   )}
+                  {/* Hidden file input toggled by the paperclip button.
+                      accept is restricted to the four MIME types the
+                      backend AssetStore supports (jpeg/png/gif/webp) so
+                      the native picker only offers uploadable files. */}
+                  <input
+                    id="composer-file-input"
+                    type="file"
+                    multiple
+                    accept="image/jpeg,image/png,image/gif,image/webp"
+                    className="hidden"
+                    onChange={(e) => {
+                      if (e.target.files) {
+                        void attachments.onFiles(e.target.files);
+                      }
+                      // Reset so the same file can be re-picked after
+                      // the user removes it from pending.
+                      e.target.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    title="attach image"
+                    disabled={!sid || streaming}
+                    onClick={() =>
+                      document
+                        .getElementById("composer-file-input")
+                        ?.click()
+                    }
+                    className="px-2 py-1 text-sm border border-border rounded text-ink-dim hover:bg-bg-hover disabled:opacity-50"
+                  >
+                    +
+                  </button>
                   <textarea
                     rows={2}
                     placeholder={sid ? "send a message…  (type / for commands)" : "create a session first"}
                     disabled={!sid || streaming}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
+                    // Paste handler: if the clipboard carries image files
+                    // (screenshot paste, copied image), hand them to the
+                    // attachment uploader and swallow the default paste so
+                    // the textarea doesn't receive garbage binary text.
+                    onPaste={(e) => {
+                      const files = Array.from(e.clipboardData.files).filter(
+                        (f) => f.type.startsWith("image/"),
+                      );
+                      if (files.length > 0) {
+                        e.preventDefault();
+                        void attachments.onFiles(files);
+                      }
+                    }}
+                    // Drag/drop: only preventDefault on dragover so the
+                    // browser signals a valid drop target. On drop, route
+                    // image files to the uploader.
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (e.dataTransfer.files.length > 0) {
+                        void attachments.onFiles(e.dataTransfer.files);
+                      }
+                    }}
                     onKeyDown={(e) => {
                       if (mentionOpen && mentionFiltered.length > 0) {
                         const n = mentionFiltered.length;
@@ -964,7 +1082,12 @@ export default function Workspace() {
                   />
                   <button
                     onClick={streaming ? abort : send}
-                    disabled={!sid || (!streaming && !input.trim())}
+                    // Allow click when there's text OR a pending image
+                    // attachment (image-only send is now valid).
+                    disabled={
+                      !sid ||
+                      (!streaming && !input.trim() && attachments.pendingAssets.length === 0)
+                    }
                     className={`px-4 text-white rounded font-medium disabled:opacity-50 ${
                       streaming
                         ? "bg-err hover:bg-err/90"
@@ -978,9 +1101,9 @@ export default function Workspace() {
             </>
           )}
 
-          {tab === "files" && (
-            <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-0 min-h-0">
-              <div className="border-r border-border overflow-auto p-3">
+          {tab === "Files" && (
+            <div className="flex-1 grid grid-cols-1 xl:grid-cols-[1.5fr_1fr] gap-0 min-h-0">
+              <div className="border-r border-border overflow-auto p-3 min-w-0">
                 <FileTree
                   pid={pid}
                   onPickFile={(p) => setPreviewPath(p)}
@@ -1001,7 +1124,7 @@ export default function Workspace() {
           )}
 
           </div>
-          {tab === "chat" && (
+          {tab === "Chat" && (
             <TeamSidebar pid={pid} sid={sid} setSid={setSid} />
           )}
         </main>

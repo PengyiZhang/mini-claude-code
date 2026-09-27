@@ -17,6 +17,8 @@ Then per project:
 from __future__ import annotations
 
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable
 
@@ -93,13 +95,56 @@ class MCPPool:
         # (debug.8 Task B). Pre-fix, disconnect dropped the entry
         # entirely and reconnect failed with "Unknown server".
         self._specs: dict[str, dict] = {}
+        # In-flight async connect names. Tracked separately from
+        # _attempts so /mcp can render a 'connecting' badge while a
+        # server warms up in the background; the entry moves out of
+        # here the moment the background thread finishes (success or
+        # failure) and into _clients / _attempts as usual.
+        self._connecting: set[str] = set()
+        # Guards _clients / _attempts / _specs / _connecting mutations.
+        # Connect dispatch happens off-thread now, so the pool's state
+        # dicts can't stay lock-free.
+        self._lock = threading.RLock()
+        # Daemon pool: connect attempts are I/O-bound (subprocess spawn,
+        # HTTP handshake) and bounded by the number of configured
+        # servers in .mcp.json — typically <10. A small thread pool is
+        # plenty; one thread per server would also work but adds
+        # nothing here.
+        self._executor = ThreadPoolExecutor(
+            max_workers=8, thread_name_prefix=f"mcp-{project_id}")
 
     def _record_attempt(self, name: str, ok: bool, message: str) -> None:
-        self._attempts[name] = AttemptRecord(name=name, ok=ok, message=message)
+        with self._lock:
+            self._attempts[name] = AttemptRecord(name=name, ok=ok, message=message)
 
     def list_attempts(self) -> dict[str, AttemptRecord]:
         """Return every recorded connect attempt keyed by server name."""
-        return dict(self._attempts)
+        with self._lock:
+            return dict(self._attempts)
+
+    def list_connecting(self) -> list[str]:
+        """Names of servers currently mid-async-connect. Used by /mcp
+        to render a 'connecting' badge while a slow server (cold npx
+        download, network handshake) warms up in the background."""
+        with self._lock:
+            return sorted(self._connecting)
+
+    def wait_for_connect(self, name: str, *, timeout: float) -> bool:
+        """Block until ``name`` leaves _connecting. Returns True if the
+        server settled (success or failure) within ``timeout``, False if
+        it's still in flight. Mostly for tests; production code reads
+        ``list_connecting()`` / ``list_connected()`` non-blockingly."""
+        deadline = threading.Event()
+        deadline.wait(0)  # no-op; placeholder for clarity
+        import time as _time
+        t0 = _time.monotonic()
+        while _time.monotonic() - t0 < timeout:
+            with self._lock:
+                if name not in self._connecting:
+                    return True
+            _time.sleep(0.02)
+        with self._lock:
+            return name not in self._connecting
 
     # ── Factory registry (app-level) ───────────────────────────────────
     @classmethod
@@ -264,6 +309,54 @@ class MCPPool:
             return self.connect_sse(name, url, headers=spec.get("headers"))
         return False, f"MCP server '{name}': unknown type {spec_type!r}"
 
+    def connect_from_spec_async(self, name: str, spec: dict) -> tuple[bool, str]:
+        """Non-blocking variant of :meth:`connect_from_spec`.
+
+        Records ``name`` in ``_connecting`` immediately and dispatches
+        the underlying connect to a background thread. Returns
+        ``(True, 'connecting')`` right away so the caller (project
+        assembly) can keep going — `/mcp` shows a 'connecting' badge
+        until the thread settles.
+
+        On completion the server transitions out of ``_connecting``
+        into the same connected/failed state the sync path would have
+        produced, so existing roster rendering keeps working once the
+        connect finishes. A repeated dispatch for an already-connected
+        or already-connecting name is a no-op success — same contract
+        as :meth:`connect_from_spec`.
+        """
+        with self._lock:
+            if name in self._clients:
+                return True, f"MCP server '{name}' already connected"
+            if name in self._connecting:
+                return True, f"MCP server '{name}' already connecting"
+            # Record the spec up-front so /mcp's connecting card can
+            # render transport type, AND reconnect() has the data if
+            # the user clicks reconnect while we're still mid-connect.
+            self._specs[name] = spec
+            self._connecting.add(name)
+        self._executor.submit(self._async_connect_worker, name, spec)
+        return True, f"MCP server '{name}' connecting in background"
+
+    def _async_connect_worker(self, name: str, spec: dict) -> None:
+        """Background connect — runs :meth:`connect_from_spec` then clears
+        the connecting flag. ``connect_from_spec`` already records the
+        outcome in _attempts via the underlying connect_* method; this
+        just needs to release the connecting slot. The defensive
+        except-clause is for surprise exceptions (bugs in the transport,
+        monkeypatch glitches in tests) so a name never gets stuck in
+        _connecting forever."""
+        try:
+            self.connect_from_spec(name, spec)
+        except Exception as e:
+            with self._lock:
+                self._record_attempt(
+                    name, False,
+                    f"async connect raised: {type(e).__name__}: {e}")
+        finally:
+            with self._lock:
+                self._connecting.discard(name)
+
     def reconnect(self, name: str) -> tuple[bool, str]:
         """Re-establish a connection from the stored spec (debug.8 Task B).
 
@@ -371,3 +464,35 @@ class MCPPool:
                     fn=_make_fn(),
                 ))
         return wrappers
+
+    # Parameter names that strongly indicate "this tool takes an image".
+    # Bare ``url`` is intentionally excluded — too generic (could be a
+    # fetch endpoint, S3 link, etc.); the prefixed variants
+    # (image_url, image_path) are safe.
+    _VISION_PARAM_NAMES = frozenset({
+        "image", "imagesource", "imageurl", "image_url",
+        "image_path", "picture", "screenshot",
+    })
+    _VISION_DESC_KEYWORDS = ("image", "screenshot", "picture")
+
+    def vision_tools(self):
+        """Subset of all_tools() limited to MCP tools that look like
+        they accept an image input — used to compose the vision-gated
+        system prompt when the configured model lacks native vision."""
+        seen = set()
+        out = []
+        for tool in self.all_tools():
+            if tool.name in seen:
+                continue
+            schema = getattr(tool, "input_schema", {}) or {}
+            props = set((schema.get("properties") or {}).keys())
+            props_lower = {p.lower() for p in props}
+            if props_lower & self._VISION_PARAM_NAMES:
+                seen.add(tool.name)
+                out.append(tool)
+                continue
+            desc = (getattr(tool, "description", "") or "").lower()
+            if any(k in desc for k in self._VISION_DESC_KEYWORDS):
+                seen.add(tool.name)
+                out.append(tool)
+        return out

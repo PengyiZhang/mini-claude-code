@@ -186,6 +186,10 @@ export interface TodoItem {
 
 export type SendEvent =
   | { type: "text"; text: string }
+  // Extended-thinking reasoning delta from Claude. Streamed alongside
+  // the answer text; rendered as a collapsible disclosure above the
+  // markdown body in MessageBubble.
+  | { type: "thinking"; text: string }
   | { type: "tool_use"; name: string; input: Record<string, unknown>; id: string }
   | { type: "tool_result"; tool_use_id: string; content: string }
   | { type: "permission_request"; request_id: string; tool_name: string; tool_input: Record<string, unknown>; ttl_seconds?: number }
@@ -315,4 +319,10 @@ export interface TeamEvent {
   ts: string; // ISO timestamp from backend
   type: string; // "text" | "tool_use" | "tool_result" | "send_message" | "error" | ...
   [key: string]: unknown;
+}
+
+export interface AssetRef {
+  asset_id: string;
+  media_type: string;
+  bytes: number;
 }

@@ -397,8 +397,13 @@ async def inbound_webhook(channel_id: str = Path(...),
     # ``channels.inbound.enqueue_inbound_turn`` function — kept as a
     # wrapper so existing monkeypatch-based tests (which patch
     # ``chan_routes._enqueue_inbound_turn``) keep intercepting.
+    # Attach ``_binding_config`` so image turns can build a TokenCache
+    # for download_image without the route handler importing Feishu
+    # specifics.
+    md = dict(result.metadata)
+    md.setdefault("_binding_config", dict(getattr(binding, "config", {})))
     _enqueue_inbound_turn(sm, project, binding.session_id,
-                          result.user_input, result.metadata)
+                          result.user_input, md)
     return PlainTextResponse("", status_code=200)
 
 

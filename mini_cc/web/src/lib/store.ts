@@ -103,6 +103,28 @@ export interface ChatMessage {
   sender?: "lead" | "teammate";
   // When sender === "teammate", name of the sender (e.g. "alice").
   teammateName?: string;
+  // Image attachments the user uploaded for this turn. Each entry is the
+  // pending-asset shape (asset_id + media_type + canonical url) so the
+  // renderer can build an <img src=url> without re-deriving anything.
+  // Absent on legacy messages and pure-text turns. Task 14 (image-block
+  // rendering in user bubbles) consumes this; Task 13 just captures it.
+  assets?: PendingAssetRef[];
+  // Concatenated extended-thinking reasoning for this assistant turn.
+  // Built up from {type:"thinking"} SSE deltas during streaming, and
+  // rehydrated from persisted thinking blocks on page reload. Rendered
+  // as a collapsible disclosure in MessageBubble; absent on legacy
+  // turns and non-thinking models.
+  thinking?: string;
+}
+
+export interface PendingAssetRef {
+  asset_id: string;
+  media_type: string;
+  // Optional since Bug B fix: UserMessageContent no longer uses this
+  // field — it derives the blob URL via useAssetUrl(profile,pid,sid,
+  // asset_id). Kept for back-compat with callers that pre-bake the URL
+  // (Task 13's composer pending state).
+  url?: string;
 }
 
 interface ChatState {
@@ -116,7 +138,11 @@ interface ChatState {
   _commandRunner: ((cmd: string) => void) | null;
   setCommandRunner: (fn: ((cmd: string) => void) | null) => void;
   runCommand: (command: string) => void;
-  appendUser: (key: string, text: string) => void;
+  appendUser: (key: string, text: string, assets?: PendingAssetRef[]) => void;
+  // Concatenate a thinking reasoning delta onto the last assistant
+  // bubble's .thinking field. Mirrors appendText but for the reasoning
+  // channel — used by applyEvent's {type:"thinking"} SSE case.
+  appendThinking: (key: string, text: string) => void;
   // debug.8 Task A: push a teammate→lead message into the chat log
   // as its own bubble so it's visually distinguished from the lead's
   // own assistant turns. Rendered with a distinct avatar/name by
@@ -158,10 +184,32 @@ export const useChat = create<ChatState>((set, get) => ({
     const fn = get()._commandRunner;
     if (fn) fn(command);
   },
-  appendUser: (key, text) =>
+  appendUser: (key, text, assets) =>
     set((s) => ({
-      messages: { ...s.messages, [key]: [...(s.messages[key] ?? []), { role: "user", text }] },
+      messages: {
+        ...s.messages,
+        [key]: [
+          ...(s.messages[key] ?? []),
+          // Only attach the `assets` field when the caller actually passed
+          // something — keeps legacy pure-text turns free of an empty
+          // array, which the renderer would otherwise have to guard.
+          {
+            role: "user",
+            text,
+            ...(assets && assets.length > 0 ? { assets } : {}),
+          },
+        ],
+      },
     })),
+  appendThinking: (key, text) =>
+    set((s) => {
+      const list = [...(s.messages[key] ?? [])];
+      const last = lastAssistant(list);
+      if (last && last.streaming) {
+        last.thinking = (last.thinking ?? "") + text;
+      }
+      return { messages: { ...s.messages, [key]: list } };
+    }),
   addTeammateMessage: (key, from, content) =>
     set((s) => ({
       messages: {
@@ -326,6 +374,15 @@ export interface RawBlock {
   tool_use_id?: string;
   content?: unknown;
   is_error?: boolean;
+  // Task 14: image content blocks persisted on user turns.
+  asset_id?: string;
+  media_type?: string;
+  // Anthropic extended-thinking blocks: {type:"thinking",
+  // thinking:"...", signature:"..."}. Field name conflicts with the
+  // block type — that's Anthropic's choice, not ours. The reasoning
+  // text lives here, the signature lives in `signature`.
+  thinking?: string;
+  signature?: string;
 }
 
 export interface RawMessage {
@@ -397,23 +454,58 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
     const m = raw[i];
 
     if (m.role === "user") {
-      // Array content = tool_results for the in-flight assistant run.
-      // Fold them into `cur`'s activities by id; do NOT start a new bubble.
+      // Array content has two interpretations:
+      //   1. tool_results for the in-flight assistant run → fold into `cur`'s
+      //      activities by id; do NOT start a new bubble.
+      //   2. A real, visible user turn that carried image attachments
+      //      (Task 14) → reconstruct a ChatMessage with text + assets.
+      // Distinguish by block type: tool_result-only arrays go to (1),
+      // arrays containing any text/image block go to (2).
       if (Array.isArray(m.content)) {
-        if (cur) {
-          for (const b of m.content) {
-            if (b.type === "tool_result" && b.tool_use_id) {
-              // The synthetic __card__ tool_result is just "ok" — it
-              // exists to satisfy the Anthropic transcript's tool_use/
-              // tool_result pairing requirement, not for display. Skip
-              // it so it doesn't leak as an activity entry.
-              const owner = findOwner(cur, b.tool_use_id);
-              if (owner === "card") continue;
-              const act = cur.activities?.find((a) => a.id === b.tool_use_id);
-              if (act) act.result = resultText(b);
+        const hasVisibleBlocks = m.content.some(
+          (b) => b.type === "text" || b.type === "image",
+        );
+        if (!hasVisibleBlocks) {
+          // Pure tool_result continuation of the in-flight assistant run.
+          if (cur) {
+            for (const b of m.content) {
+              if (b.type === "tool_result" && b.tool_use_id) {
+                // The synthetic __card__ tool_result is just "ok" — it
+                // exists to satisfy the Anthropic transcript's tool_use/
+                // tool_result pairing requirement, not for display. Skip
+                // it so it doesn't leak as an activity entry.
+                const owner = findOwner(cur, b.tool_use_id);
+                if (owner === "card") continue;
+                const act = cur.activities?.find((a) => a.id === b.tool_use_id);
+                if (act) act.result = resultText(b);
+              }
             }
           }
+          continue;
         }
+        // Visible user turn with content blocks (text and/or image).
+        // Reconstruct text + assets. asset `url` is left blank — the
+        // renderer (UserMessageContent) re-derives it via assetUrl at
+        // render time so the store doesn't need to know the active
+        // profile/pid/sid.
+        const text = m.content
+          .filter((b) => b.type === "text" && typeof b.text === "string")
+          .map((b) => b.text!)
+          .join("");
+        const assets = m.content
+          .filter((b) => b.type === "image" && typeof b.asset_id === "string")
+          .map((b) => ({
+            asset_id: b.asset_id!,
+            media_type:
+              typeof b.media_type === "string" ? b.media_type : "image/png",
+            url: "",
+          }));
+        cur = null;
+        out.push({
+          role: "user",
+          text,
+          ...(assets.length > 0 ? { assets } : {}),
+        });
         continue;
       }
       // String content = a real, visible user turn. It closes the
@@ -433,6 +525,16 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
       .filter((b) => b.type === "text" && typeof b.text === "string")
       .map((b) => b.text!)
       .join("");
+    // Thinking blocks: Anthropic persists extended-thinking content as
+    // {type:"thinking", thinking:"...", signature:"..."} blocks. We
+    // concatenate their text into cur.thinking so the disclosure
+    // survives a page reload. The signature stays in the persisted
+    // transcript (untouched here) so the next turn round-trips
+    // correctly.
+    const thinkingText = blocks
+      .filter((b) => b.type === "thinking" && typeof b.thinking === "string")
+      .map((b) => b.thinking!)
+      .join("");
     const toolUses = blocks.filter((b) => b.type === "tool_use");
 
     // Start a new bubble for this run if there isn't an open one (i.e.
@@ -440,6 +542,9 @@ export function rawToChatMessages(raw: RawMessage[]): ChatMessage[] {
     if (!cur) {
       cur = { role: "assistant", text: "", streaming: false, notices: [], activities: [], cards: [] };
       out.push(cur);
+    }
+    if (thinkingText) {
+      cur.thinking = (cur.thinking ?? "") + thinkingText;
     }
     // Append this round's text + tool calls to the merged bubble.
     if (text) cur.text += text;

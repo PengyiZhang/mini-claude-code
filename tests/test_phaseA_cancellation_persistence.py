@@ -36,7 +36,8 @@ class _ScriptedProvider:
         self._pause_at = pause_at
         self._pause_signal = pause_signal
 
-    def stream(self, *, model, system, messages, tools, max_tokens):
+    def stream(self, *, model, system, messages, tools, max_tokens,
+               asset_store=None):
         for i, ev in enumerate(self._events):
             if self._pause_at == i and self._pause_signal is not None:
                 # Wait until the test signals stop() has fired.

@@ -92,6 +92,11 @@ class Project:
     # as webhooks: cached on Project so the HTTP routes + the live
     # dispatcher share one object. None when storage has no FS root.
     channels: "ChannelRegistry | None" = None
+    # Per-project image asset store. Always present after _assemble (so
+    # downstream code can rely on `project.assets` being non-None). Lives
+    # at <root>/tenants/<tid>/projects/<pid>/.assets so asset bytes stay
+    # tenant + project scoped and survive cache invalidation.
+    assets: "object | None" = None  # AssetStore; set in _assemble
 
     @property
     def metrics(self):
@@ -119,6 +124,7 @@ class Project:
             prompt_tools=self.prompt_tools or set(),
             tenant_id=self.meta.tenant_id,
             metrics=self._metrics,
+            assets=self.assets,
         )
 
     def rescan_skills(self) -> None:
@@ -392,6 +398,12 @@ class ProjectManager:
                 # without lark-oapi). Don't let WS spawn failures break
                 # project assembly.
                 pass
+        # Image asset store — always present so HTTP/inbound/teams paths
+        # can rely on `project.assets` being non-None. Lands at
+        # <root>/tenants/<tid>/projects/<pid>/.assets (sibling of the
+        # workspace dir) so bytes stay per-project + per-tenant.
+        from ..assets import AssetStore
+        project.assets = AssetStore(ws.parent / ".assets")
         # Workflow V2 (W1): same pattern — one WorkflowService per
         # project, backed by the same FSStorage, shared between the
         # HTTP routes and any in-process driver (tests, future UI).
@@ -420,10 +432,14 @@ def _connect_configured_mcp_servers(pool: MCPPool, *,
     4. ``default_config().mcp_servers``     — env (legacy escape hatch)
 
     Each spec is dispatched by ``type`` (stdio/http/sse) via
-    :meth:`MCPPool.connect_from_spec`. Best-effort: a server that fails
-    to spawn or handshake is recorded on the pool's attempt log (visible
-    in ``/mcp`` under "failed to connect") rather than aborting
-    assembly. Successful connections show up in ``/mcp`` immediately.
+    :meth:`MCPPool.connect_from_spec_async` — fire-and-forget so project
+    assembly doesn't block on cold ``npx -y <pkg>`` downloads (one slow
+    server used to hold up load for tens of seconds). Servers land in
+    ``_connecting`` immediately and transition to connected/failed in
+    the background; ``/mcp`` renders a 'connecting' badge until they
+    settle. Best-effort: a server that fails to spawn or handshake is
+    recorded on the pool's attempt log (visible in ``/mcp`` under
+    "failed to connect") rather than aborting assembly.
     """
     from ..plugins import (PluginTier, discover_mcp_servers, project_tier_dirs)
     tier_dirs: list[Path] = []
@@ -446,10 +462,10 @@ def _connect_configured_mcp_servers(pool: MCPPool, *,
         return
     for name, spec in servers.items():
         try:
-            pool.connect_from_spec(name, spec)
+            pool.connect_from_spec_async(name, spec)
         except Exception:
-            # connect_from_spec returns (False, message) for expected
-            # error paths; this guard catches surprise exceptions without
+            # connect_from_spec_async returns (True, ...) for expected
+            # paths; this guard catches surprise exceptions without
             # aborting the rest of the list.
             pass
 
