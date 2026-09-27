@@ -14,7 +14,7 @@ Web 控制台——内置多 agent 团队协作、审批工作流与双向 IM �
 Agency 来自模型。mini_cc 给模型双手、双眼、工作区、队友和网络接口。
 ```
 
-![Demo2](assets/mini-cc-demo-video.gif)
+![Demo2](assets/mini-cc-demo-video-2.gif)
 
 
 模型是司机，本项目是车辆。mini_cc 起源于对

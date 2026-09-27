@@ -17,7 +17,8 @@ Agency comes from the model. mini_cc gives the model hands, eyes,
 a workspace, teammates, and a network surface.
 ```
 
-![mini_cc web console](docs/mini_cc/zh/img/01-fresh-session.png)
+![Demo2](assets/mini-cc-demo-video-2.gif)
+
 
 The model is the driver; this project is the vehicle. mini_cc started as a
 production-oriented port of the 19-subsystem harness pattern taught by
